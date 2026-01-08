@@ -33,7 +33,7 @@ For Raspberry Pi or Linux PC users, we have a unified **Easy Installer**:
 
 1. **Clone the repo**:
    ```bash
-   git clone https://github.com/colonelpanic/flock-you.git
+   git clone https://github.com/dustinth2004/flock-you.git
    cd flock-you
    ```
 

@@ -13,7 +13,7 @@ This guide is for users running **Flock Drive** on a Linux laptop (e.g., Kali, U
 ## 1. Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/colonelpanic/flock-you.git
+git clone https://github.com/dustinth2004/flock-you.git
    cd flock-you
    ```
 2. Run the **Easy Installer**:

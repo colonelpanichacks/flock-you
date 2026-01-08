@@ -11,7 +11,7 @@ echo -e "${BLUE}
   ______ _            _      _____       _
  |  ____| |          | |    |  __ \     (_)
  | |__  | | ___   ___| | __ | |  | |_ __ ___   _____
- |  __| | |/ _ \ / __| |/ / | |  | | '__| \ \ / / _ \\
+ |  __| | |/ _ \ / __| |/ / | |  | | '__| \ \ / / _ \
  | |    | | (_) | (__|   <  | |__| | |  | |\ V /  __/
  |_|    |_|\___/ \___|_|\_\ |_____/|_|  |_| \_/ \___|
 
@@ -24,10 +24,23 @@ if [ "$EUID" -ne 0 ]; then
   exit
 fi
 
+# Detect Package Manager
+PKG_MANAGER=""
+if command -v apk &> /dev/null; then
+    PKG_MANAGER="apk"
+    echo -e "${GREEN}[+] Detected Alpine Linux / PostmarketOS (apk)${NC}"
+elif command -v apt-get &> /dev/null; then
+    PKG_MANAGER="apt"
+    echo -e "${GREEN}[+] Detected Debian / Ubuntu (apt)${NC}"
+else
+    echo -e "${RED}[!] Unsupported package manager. This script supports apt (Debian) and apk (Alpine).${NC}"
+    exit 1
+fi
+
 # Interactive Menu
 echo "Select Installation Type:"
 echo "1) Dedicated Device (Raspberry Pi / Headless)"
-echo "   - Installs as Systemd Service (Auto-start on boot)"
+echo "   - Installs as System Service (Auto-start on boot)"
 echo "   - Optimized for always-on operation"
 echo "2) Personal Computer (Laptop / Desktop)"
 echo "   - Installs dependencies and tools"
@@ -41,12 +54,30 @@ if [[ "$INSTALL_TYPE" != "1" && "$INSTALL_TYPE" != "2" ]]; then
 fi
 
 echo -e "${GREEN}[+] Installing System Dependencies...${NC}"
-apt-get update
-# Core dependencies
-apt-get install -y python3-pip python3-venv libglib2.0-dev git libsdl2-dev
 
-# GPS and WiFi tools
-apt-get install -y gpsd gpsd-clients aircrack-ng wireless-tools
+if [ "$PKG_MANAGER" == "apk" ]; then
+    # Alpine / PostmarketOS
+    apk update
+
+    # Core tools
+    apk add python3 py3-pip git build-base python3-dev
+
+    # Libraries for Python builds
+    apk add openblas-dev linux-headers glib-dev sdl2-dev
+    apk add freetype-dev libpng-dev libjpeg-turbo-dev portmidi-dev sdl2_image-dev sdl2_mixer-dev sdl2_ttf-dev
+
+    # WiFi and GPS tools
+    # 'wireless-tools' and 'gpsd' are standard. 'aircrack-ng' is in community.
+    apk add wireless-tools gpsd gpsd-clients aircrack-ng || echo -e "${YELLOW}[!] Warning: Failed to install some wireless tools. Ensure community repo is enabled.${NC}"
+
+elif [ "$PKG_MANAGER" == "apt" ]; then
+    # Debian / Ubuntu
+    apt-get update
+    # Core dependencies
+    apt-get install -y python3-pip python3-venv libglib2.0-dev git libsdl2-dev
+    # GPS and WiFi tools
+    apt-get install -y gpsd gpsd-clients aircrack-ng wireless-tools
+fi
 
 # Install Directory
 INSTALL_DIR="/opt/flock_drive"
@@ -69,23 +100,36 @@ cp setup.py $INSTALL_DIR/ 2>/dev/null || true
 # Setup Virtual Environment
 echo -e "${GREEN}[+] Setting up Python Virtual Environment...${NC}"
 cd $INSTALL_DIR
-if [ ! -d "venv" ]; then
+
+# Remove old venv if exists to ensure clean state
+if [ -d "venv" ]; then
+    echo -e "${YELLOW}[!] Found existing venv, verifying...${NC}"
+else
     python3 -m venv venv
 fi
+
 source venv/bin/activate
 
 # Install Python Requirements
 echo -e "${GREEN}[+] Installing Python Dependencies...${NC}"
 pip install --upgrade pip
+
+# On Alpine, numpy compilation can be slow.
+if [ "$PKG_MANAGER" == "apk" ]; then
+    echo -e "${YELLOW}[!] Note: Compiling numpy on ARM devices may take 10-20 minutes. Please be patient.${NC}"
+fi
+
 pip install -r flock_drive/requirements.txt
 
 # --- Branching Logic ---
 
 if [ "$INSTALL_TYPE" == "1" ]; then
     # === Dedicated Device Setup ===
-    echo -e "${GREEN}[+] Configuring Systemd Service (Dedicated Mode)...${NC}"
 
-    cat > /etc/systemd/system/flockdrive.service <<EOL
+    if [ "$PKG_MANAGER" == "apt" ]; then
+        # Systemd (Debian/Ubuntu/Raspbian)
+        echo -e "${GREEN}[+] Configuring Systemd Service (Dedicated Mode)...${NC}"
+        cat > /etc/systemd/system/flockdrive.service <<EOL
 [Unit]
 Description=Flock Drive Surveillance Scanner
 After=network.target bluetooth.target sound.target
@@ -102,15 +146,46 @@ Environment=SDL_AUDIODRIVER=alsa
 [Install]
 WantedBy=multi-user.target
 EOL
+        systemctl daemon-reload
+        systemctl enable flockdrive
+        echo -e "${GREEN}[+] Service enabled. Starting now...${NC}"
+        systemctl start flockdrive
 
-    systemctl daemon-reload
-    systemctl enable flockdrive
-    echo -e "${GREEN}[+] Service enabled. Starting now...${NC}"
-    systemctl start flockdrive
+        echo -e "${BLUE}=== Installation Complete (Dedicated Mode) ===${NC}"
+        echo "Service Status: sudo systemctl status flockdrive"
+        echo "View Logs:      sudo journalctl -u flockdrive -f"
 
-    echo -e "${BLUE}=== Installation Complete (Dedicated Mode) ===${NC}"
-    echo "Service Status: sudo systemctl status flockdrive"
-    echo "View Logs:      sudo journalctl -u flockdrive -f"
+    elif [ "$PKG_MANAGER" == "apk" ]; then
+        # OpenRC (Alpine/PostmarketOS)
+        echo -e "${GREEN}[+] Configuring OpenRC Service (Dedicated Mode)...${NC}"
+
+        cat > /etc/init.d/flockdrive <<EOL
+#!/sbin/openrc-run
+
+name="flockdrive"
+description="Flock Drive Surveillance Scanner"
+directory="$INSTALL_DIR"
+command="$INSTALL_DIR/venv/bin/python"
+command_args="-m flock_drive.main"
+command_background=true
+pidfile="/run/flockdrive.pid"
+user="root"
+
+depend() {
+    need net
+    after firewall
+}
+EOL
+        chmod +x /etc/init.d/flockdrive
+        rc-update add flockdrive default
+        echo -e "${GREEN}[+] Service added to default runlevel. Starting now...${NC}"
+        rc-service flockdrive start
+
+        echo -e "${BLUE}=== Installation Complete (Dedicated Mode) ===${NC}"
+        echo "Service Status: sudo rc-service flockdrive status"
+        echo "View Logs:      Check /var/log/messages or enable internal logging"
+    fi
+
     echo "Dashboard:      http://<DEVICE_IP>:5000"
 
 else

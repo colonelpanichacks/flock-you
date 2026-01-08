@@ -35,7 +35,7 @@ This guide walks you through setting up **Flock Drive** on a Raspberry Pi as a d
    ```
 4. Clone the repository:
    ```bash
-   git clone https://github.com/colonelpanic/flock-you.git
+   git clone https://github.com/dustinth2004/flock-you.git
    cd flock-you
    ```
 5. Run the **Easy Installer**:
