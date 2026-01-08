@@ -4,6 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FLOCK DRIVE // SURVEILLANCE SCANNER</title>
+
+    <!-- Leaflet Local Assets -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='lib/leaflet.css') }}">
+    <script src="{{ url_for('static', filename='lib/leaflet.js') }}"></script>
+
     <link rel="stylesheet" href="{{ url_for('static', filename='css/cyber.css') }}">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.0/chart.min.js"></script>
@@ -11,6 +16,7 @@
 <body>
     <div class="overlay"></div>
     <div class="scanlines"></div>
+    <div id="alert-flash" class="alert-flash"></div>
 
     <div class="container">
         <!-- HEADER -->
@@ -39,12 +45,25 @@
         <main>
             <!-- LEFT COLUMN: RADAR & INFO -->
             <div class="col-left">
-                <div class="panel radar-panel">
-                    <h3><span class="icon">⌖</span> PROXIMITY RADAR</h3>
-                    <div class="radar-container">
+                <div class="panel">
+                    <div class="panel-header">
+                        <h3><span class="icon">⌖</span> TACTICAL VIEW</h3>
+                        <div class="controls">
+                            <button id="btn-radar" class="toggle-btn active">RADAR</button>
+                            <button id="btn-map" class="toggle-btn">MAP</button>
+                        </div>
+                    </div>
+
+                    <!-- RADAR VIEW -->
+                    <div id="radar-view" class="radar-container">
                         <div class="radar-sweep"></div>
                         <div class="radar-grid"></div>
                         <div id="radar-blips"></div>
+                    </div>
+
+                    <!-- MAP VIEW -->
+                    <div id="map-view" class="map-view">
+                        <div id="map" class="map-container"></div>
                     </div>
                 </div>
 
