@@ -63,7 +63,7 @@ if [ "$PKG_MANAGER" == "apk" ]; then
     apk add python3 py3-pip git build-base python3-dev
 
     # Libraries for Python builds
-    apk add openblas-dev linux-headers glib-dev sdl2-dev
+    apk add openblas-dev linux-headers glib-dev sdl2-dev pkgconf
     apk add freetype-dev libpng-dev libjpeg-turbo-dev portmidi-dev sdl2_image-dev sdl2_mixer-dev sdl2_ttf-dev
 
     # WiFi and GPS tools
