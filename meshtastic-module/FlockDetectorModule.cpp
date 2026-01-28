@@ -413,6 +413,7 @@ void FlockDetectorModule::sendDetectionAlert(FlockDetection *detection)
     meshtastic_MeshPacket *p = allocDataPacket();
     if (p) {
         p->to = NODENUM_BROADCAST;
+        p->channel = 1;  // Use secondary channel for alerts
         p->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
         p->want_ack = false;
         p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;

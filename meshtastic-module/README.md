@@ -60,6 +60,20 @@ RSSI:-72dBm
 Loc:37.774900,-122.419400
 ```
 
+**Note:** Alerts are sent to **channel 1** (secondary channel), not the primary channel. Configure channel 1 on your Meshtastic devices to receive alerts.
+
+## Channel Setup
+
+Before using, configure channel 1 on all devices that should receive alerts:
+
+```bash
+# Using meshtastic CLI
+meshtastic --ch-index 1 --ch-set name "FLOCK"
+meshtastic --ch-index 1 --ch-set psk random
+```
+
+Or in the Meshtastic app: **Settings → Channels → Channel 1** → Set name and PSK.
+
 ## Integration Instructions
 
 ### 1. Clone Meshtastic Firmware
