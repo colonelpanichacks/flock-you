@@ -16,7 +16,9 @@
 // ============================================================================
 
 // Hardware Configuration
+#ifndef BUZZER_PIN // Allow BUZZER_PIN to be overwritten by build arguments
 #define BUZZER_PIN 3  // GPIO3 (D2) - PWM capable pin on Xiao ESP32 S3
+#endif
 
 // Audio Configuration
 #define LOW_FREQ 200      // Boot sequence - low pitch

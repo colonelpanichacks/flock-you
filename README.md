@@ -52,6 +52,18 @@ GPIO3 (D2)  ---> Positive (+)
 GND         ---> Negative (-)
 ```
 
+### Option 3: DOIT ESP32 DEVKITV1
+- **Microcontroller**: DOIT ESP32 DEVKIT V1
+- **Buzzer**: 3V buzzer connected to GPIO25 (D25)
+- **Power**: Micro USB cable for programming and power
+
+#### Wiring for DEVKITV1
+```
+DOIT ESP32 DEVKITV1    Buzzer
+GPIO25 (D25)      ---> Positive (+)
+GND               ---> Negative (-)
+```
+
 ## Installation
 
 ### Prerequisites
