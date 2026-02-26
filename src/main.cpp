@@ -27,12 +27,20 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "esp_wifi.h"
+#include <TinyGPSPlus.h>
+#include <HardwareSerial.h>
+#include <FastLED.h>
 
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
 
-#define BUZZER_PIN 3
+#define BUZZER_PIN   3
+#define GPS_RX_PIN   18     // GPIO for GT-U7 TX -> ESP32 RX (board pin 17 = GPIO 18)
+#define GPS_BAUD     9600   // NEO-6M default baud rate
+#define LED_PIN      48     // WS2812 RGB_LED pin (Lonely Binary ESP32-S3 Gold Edition)
+#define LED_BRIGHTNESS 80   // 0-255, increase if too dim
+#define LED_FLASH_MS 300    // Detection flash duration
 
 // Audio
 #define LOW_FREQ 200
@@ -180,13 +188,25 @@ static unsigned long         fyLastSerialHeartbeat = 0;
 // loop() applies the WiFi/scan changes in the Arduino task context.
 static volatile bool         fyCompanionChangePending = false;
 
-// Phone GPS state (updated via browser Geolocation API -> /api/gps)
+// GPS state (shared by hardware module and phone browser fallback)
 static double fyGPSLat = 0;
 static double fyGPSLon = 0;
 static float  fyGPSAcc = 0;
 static bool   fyGPSValid = false;
 static unsigned long fyGPSLastUpdate = 0;
 #define GPS_STALE_MS 30000  // GPS considered stale after 30s without update
+
+// Hardware GPS module (NEO-6M via UART1)
+static TinyGPSPlus   fyGPSParser;
+static HardwareSerial fyGPSSerial(1);  // UART1
+static bool           fyGPSModuleActive = false;  // true once module sends valid NMEA
+static uint32_t       fyGPSSatellites = 0;
+static float          fyGPSHDOP = 99.9;
+static bool           fyGPSFix3D = false;
+
+// Status LED (FastLED / WS2812)
+static CRGB fyLED[1];
+static unsigned long fyLEDFlashUntil = 0;  // millis() timestamp for detection flash end
 
 // Session persistence (SPIFFS)
 #define FY_SESSION_FILE  "/session.json"
@@ -346,6 +366,15 @@ static const char* estimateRavenFW(NimBLEAdvertisedDevice* device) {
 }
 
 // ============================================================================
+// STATUS LED
+// ============================================================================
+
+static void fySetLED(uint8_t r, uint8_t g, uint8_t b) {
+    fyLED[0] = CRGB(r, g, b);
+    FastLED.show();
+}
+
+// ============================================================================
 // GPS HELPERS
 // ============================================================================
 
@@ -360,6 +389,77 @@ static void fyAttachGPS(FYDetection& d) {
         d.gpsLon = fyGPSLon;
         d.gpsAcc = fyGPSAcc;
     }
+}
+
+// Read NMEA data from hardware GPS module (non-blocking)
+static void fyReadGPSModule() {
+    while (fyGPSSerial.available()) {
+        char c = fyGPSSerial.read();
+        fyGPSParser.encode(c);
+        if (!fyGPSModuleActive) {
+            fyGPSModuleActive = true;
+            printf("[FLOCK-YOU] GPS module detected (receiving NMEA)\n");
+        }
+    }
+
+    // Update satellite/HDOP tracking regardless of fix
+    if (fyGPSParser.satellites.isValid())
+        fyGPSSatellites = fyGPSParser.satellites.value();
+    if (fyGPSParser.hdop.isValid())
+        fyGPSHDOP = fyGPSParser.hdop.hdop();
+
+    // 3D fix requires >= 4 satellites
+    fyGPSFix3D = (fyGPSSatellites >= 4);
+
+    // Update shared GPS globals when we have a valid location
+    if (fyGPSParser.location.isUpdated() && fyGPSParser.location.isValid()) {
+        fyGPSLat = fyGPSParser.location.lat();
+        fyGPSLon = fyGPSParser.location.lng();
+        // Approximate accuracy from HDOP (HDOP * 5m is a rough horizontal estimate)
+        fyGPSAcc = fyGPSHDOP * 5.0f;
+        fyGPSValid = true;
+        fyGPSLastUpdate = millis();
+    }
+}
+
+// Returns the current GPS source for status reporting
+static const char* fyGPSSource() {
+    if (fyGPSModuleActive && fyGPSIsFresh()) return "module";
+    if (fyGPSIsFresh()) return "phone";
+    if (fyGPSModuleActive) return "module";  // module connected but no fix yet
+    return "none";
+}
+
+static void fyUpdateLED() {
+    // Priority 1: Detection flash (magenta)
+    if (millis() < fyLEDFlashUntil) {
+        fySetLED(LED_BRIGHTNESS, 0, LED_BRIGHTNESS);
+        return;
+    }
+
+    // Priority 2: Companion connected (blue)
+    if (fyBLEClientConnected || fySerialHostConnected) {
+        fySetLED(0, 0, LED_BRIGHTNESS);
+        return;
+    }
+
+    // Priority 3: GPS status
+    const char* src = fyGPSSource();
+    if (strcmp(src, "module") == 0 || strcmp(src, "phone") == 0) {
+        if (fyGPSIsFresh()) {
+            if (fyGPSFix3D) {
+                fySetLED(0, LED_BRIGHTNESS, 0);        // 3D fix: green
+            } else {
+                fySetLED(LED_BRIGHTNESS, LED_BRIGHTNESS / 2, 0);  // 2D fix: yellow
+            }
+        } else {
+            fySetLED(LED_BRIGHTNESS, 0, 0);             // module active, no fix: red
+        }
+        return;
+    }
+
+    // Default: scanning, no GPS source (purple)
+    fySetLED(LED_BRIGHTNESS / 2, 0, LED_BRIGHTNESS);
 }
 
 // ============================================================================
@@ -405,9 +505,11 @@ static int fyAddDetection(const char* mac, const char* name, int rssi,
         d.count = 1;
         d.isRaven = isRaven;
         strncpy(d.ravenFW, ravenFW ? ravenFW : "", sizeof(d.ravenFW) - 1);
-        // Attach GPS from phone
+        // Attach GPS
         fyAttachGPS(d);
         int idx = fyDetCount++;
+        // Flash LED magenta for new detection
+        fyLEDFlashUntil = millis() + LED_FLASH_MS;
         xSemaphoreGive(fyMutex);
         return idx;
     }
@@ -817,7 +919,7 @@ function refresh(){fetch('/api/detections').then(r=>r.json()).then(d=>{D=d;rende
 function render(){const el=document.getElementById('dL');if(!D.length){el.innerHTML='<div class="empty">Scanning for surveillance devices...<br>BLE active on all channels</div>';return;}
 D.sort((a,b)=>b.last-a.last);el.innerHTML=D.map(card).join('');}
 function stats(){document.getElementById('sT').textContent=D.length;document.getElementById('sR').textContent=D.filter(d=>d.raven).length;
-fetch('/api/stats').then(r=>r.json()).then(s=>{let g=document.getElementById('sG');if(s.gps_valid){g.textContent=s.gps_tagged+'/'+s.total;g.style.color='#22c55e';}else{g.textContent='OFF';g.style.color='#ef4444';}}).catch(()=>{});}
+fetch('/api/stats').then(r=>r.json()).then(s=>{let g=document.getElementById('sG');if(s.gps_source==='module'){if(s.gps_valid){g.textContent=(s.gps_fix3d?'3D ':'2D ')+s.gps_satellites+'sat '+s.gps_tagged+'/'+s.total;g.style.color=s.gps_fix3d?'#22c55e':'#facc15';}else{g.textContent=s.gps_satellites+'sat';g.style.color='#ef4444';}}else if(s.gps_source==='phone'){if(s.gps_valid){g.textContent='PHONE '+s.gps_tagged+'/'+s.total;g.style.color='#22c55e';}else{g.textContent='PHONE';g.style.color='#facc15';}}else{g.textContent='OFF';g.style.color='#ef4444';}}).catch(()=>{});}
 function card(d){return '<div class="det"><div class="mac">'+d.mac+(d.name?'<span class="nm">'+d.name+'</span>':'')+'</div><div class="inf"><span>RSSI: '+d.rssi+'</span><span>'+d.method+'</span><span style="color:#ec4899;font-weight:bold">&times;'+d.count+'</span>'+(d.raven?'<span class="rv">RAVEN '+d.fw+'</span>':'')+(d.gps?'<span style="color:#22c55e">&#9673; '+d.gps.lat.toFixed(5)+','+d.gps.lon.toFixed(5)+'</span>':'<span style="color:#666">no gps</span>')+'</div></div>';}
 function loadHistory(){fetch('/api/history').then(r=>r.json()).then(d=>{H=d;let el=document.getElementById('hL');if(!H.length){el.innerHTML='<div class="empty">No prior session data</div>';return;}
 H.sort((a,b)=>b.last-a.last);el.innerHTML='<div style="font-size:11px;color:#8b5cf6;margin-bottom:8px">'+H.length+' detections from prior session</div>'+H.map(card).join('');window._hL=1;}).catch(()=>{document.getElementById('hL').innerHTML='<div class="empty">No prior session data</div>';});}
@@ -881,19 +983,28 @@ static void fySetupServer() {
             }
             xSemaphoreGive(fyMutex);
         }
-        char buf[256];
+        char buf[384];
         snprintf(buf, sizeof(buf),
             "{\"total\":%d,\"raven\":%d,\"ble\":\"active\","
-            "\"gps_valid\":%s,\"gps_age\":%lu,\"gps_tagged\":%d}",
+            "\"gps_valid\":%s,\"gps_age\":%lu,\"gps_tagged\":%d,"
+            "\"gps_source\":\"%s\",\"gps_satellites\":%lu,"
+            "\"gps_hdop\":%.1f,\"gps_fix3d\":%s}",
             fyDetCount, raven,
             fyGPSIsFresh() ? "true" : "false",
             fyGPSValid ? (millis() - fyGPSLastUpdate) : 0UL,
-            withGPS);
+            withGPS,
+            fyGPSSource(), (unsigned long)fyGPSSatellites,
+            fyGPSHDOP, fyGPSFix3D ? "true" : "false");
         r->send(200, "application/json", buf);
     });
 
-    // API: Receive GPS from phone browser
+    // API: Receive GPS from phone browser (fallback when no hardware module)
     fyServer.on("/api/gps", HTTP_GET, [](AsyncWebServerRequest *r) {
+        // Hardware GPS module takes priority — ignore phone data when module has a fix
+        if (fyGPSModuleActive && fyGPSIsFresh()) {
+            r->send(200, "application/json", "{\"status\":\"module_active\"}");
+            return;
+        }
         if (r->hasParam("lat") && r->hasParam("lon")) {
             fyGPSLat = r->getParam("lat")->value().toDouble();
             fyGPSLon = r->getParam("lon")->value().toDouble();
@@ -1087,11 +1198,20 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
+    // Status LED init (FastLED / WS2812 — must happen before BLE/WiFi)
+    FastLED.addLeds<NEOPIXEL, LED_PIN>(fyLED, 1);
+    FastLED.setBrightness(255);  // brightness controlled per-color in fySetLED
+    fySetLED(LED_BRIGHTNESS / 2, 0, LED_BRIGHTNESS);  // purple while booting
+
     // Standalone mode: buzzer always on by default
     fyBuzzerOn = true;
 
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
+
+    // Init hardware GPS module (NEO-6M on UART1, RX only)
+    fyGPSSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, -1);
+    printf("[FLOCK-YOU] GPS module UART1 on GPIO %d @ %d baud\n", GPS_RX_PIN, GPS_BAUD);
 
     fyMutex = xSemaphoreCreateMutex();
 
@@ -1162,6 +1282,12 @@ void setup() {
 }
 
 void loop() {
+    // Read hardware GPS module (non-blocking, drains UART1 buffer)
+    fyReadGPSModule();
+
+    // Update status LED
+    fyUpdateLED();
+
     // Serial host detection (heartbeat from DeFlock desktop app)
     if (Serial.available()) {
         while (Serial.available()) Serial.read();  // drain buffer
