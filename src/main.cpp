@@ -63,11 +63,11 @@ static unsigned long fyBleScanInterval = 3000; // ms between scans
 #endif
 
 #ifndef RAYHUNTER_SSID
-#define RAYHUNTER_SSID "Rayhunter-AP"    // Rayhunter SSID (default placeholder)
+#define RAYHUNTER_SSID "Rayhunter-SSID"    // Rayhunter SSID (default placeholder)
 #endif
 
 #ifndef RAYHUNTER_PASS
-#define RAYHUNTER_PASS "rayhunter123"    // Rayhunter WiFi Password (default placeholder)
+#define RAYHUNTER_PASS "Rayhunter-PASS"    // Rayhunter WiFi Password (default placeholder)
 #endif
 
 // ============================================================================
