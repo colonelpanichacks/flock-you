@@ -901,7 +901,7 @@ let g=document.getElementById('sG');g.textContent='...';g.style.color='#facc15';
 _gW=navigator.geolocation.watchPosition(sendGPS,gpsErr,{enableHighAccuracy:true,maximumAge:5000,timeout:15000});return true;}
 function reqGPS(){if(!navigator.geolocation){alert('GPS not available in this browser.');return;}
 if(_gOk){return;}
-if(!window.isSecureContext){alert('GPS requires a secure context (HTTPS). This HTTP page may not get GPS permission.\n\nAndroid Chrome: try chrome://flags and enable "Insecure origins treated as secure", add http://{{ADDRESS}}\n\niPhone: GPS will not work over HTTP.');}
+if(!window.isSecureContext){alert('GPS requires a secure context (HTTPS). This HTTP page may not get GPS permission.\n\nAndroid Chrome: try chrome://flags and enable "Insecure origins treated as secure", add http://'+window.location.hostname+'\n\niPhone: GPS will not work over HTTP.');}
 startGPS();_gTried=true;}
 refresh();setInterval(refresh,2500);
 </script></body></html>
@@ -911,13 +911,10 @@ refresh();setInterval(refresh,2500);
 // WEB SERVER SETUP
 // ============================================================================
 
-static void fySetupServer(IPAddress localIP) {
+static void fySetupServer() {
     // Dashboard
     fyServer.on("/", HTTP_GET, [localIP](AsyncWebServerRequest *r) {
-        // Serve the dashboard HTML, but replace {{ADDRESS}} with the actual IP address for better user instructions
-        String html = FY_HTML;
-        html.replace("{{ADDRESS}}", localIP.toString().c_str());
-        r->send(200, "text/html", html);
+        r->send(200, "text/html", FY_HTML);
     });
 
     // API: Detection list
@@ -1242,8 +1239,9 @@ void setup() {
         printf("[FLOCK-YOU] AP: %s / %s\n", FY_AP_SSID, FY_AP_PASS);
         localIP = WiFi.softAPIP();
     }
-    // Start web dashboard, passing in the localIP
-    fySetupServer(localIP);
+
+    // Start web dashboard
+    fySetupServer();
 
     printf("[FLOCK-YOU] IP: %s\n", localIP.toString().c_str());
     printf("[FLOCK-YOU] Detection methods: MAC prefix, device name, manufacturer ID, Raven UUID\n");
