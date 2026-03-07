@@ -913,7 +913,7 @@ refresh();setInterval(refresh,2500);
 
 static void fySetupServer() {
     // Dashboard
-    fyServer.on("/", HTTP_GET, (AsyncWebServerRequest *r) {
+    fyServer.on("/", HTTP_GET, [](AsyncWebServerRequest *r) {
         r->send(200, "text/html", FY_HTML);
     });
 
