@@ -152,6 +152,34 @@ Flock-You is part of the OUI-SPY firmware family:
 
 ---
 
+## Testing
+
+Detection logic is extracted into `src/fy_detect.h` and tested on the host machine using PlatformIO's native test framework (Unity). No hardware required.
+
+### Running Tests
+
+```bash
+pio test -e native        # run all tests
+pio test -e native -f test_detection   # detection logic only
+pio test -e native -f test_raven       # raven UUID/FW only
+```
+
+### Test Structure
+
+```
+test/
+  test_detection/
+    test_detection.cpp    # MAC prefix, device name, manufacturer ID matching
+  test_raven/
+    test_raven.cpp        # Raven UUID matching, firmware version estimation
+```
+
+### Architecture
+
+`src/fy_detect.h` contains all detection patterns, the `FYDetection` struct, and pure matching functions shared between the firmware and test builds. `main.cpp` includes this header and adds hardware-dependent code (BLE, WiFi, SPIFFS, buzzer). This separation allows the detection logic to be compiled and tested natively without ESP32 toolchains or hardware.
+
+---
+
 ## Author
 
 **colonelpanichacks**
