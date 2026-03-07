@@ -8,7 +8,7 @@
 //   4. Raven gunshot detector service UUID matching
 //   5. Raven firmware version estimation from service UUID patterns
 //
-// Optionally connects to a specified Rayhunter AP, serving web dashboard at DHCP IP
+// Optionally connects to a specified Rayhunter AP, serving web dashboard at DHCP IP or http://flockyou
 // Standalone WiFi AP "flockyou" / "flockyou123" serves web dashboard at 192.168.4.1
 // All detections stored in memory, exportable as JSON or CSV
 // Optional WiFi STA connection for future features
