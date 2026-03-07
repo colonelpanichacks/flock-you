@@ -1241,8 +1241,9 @@ void setup() {
     // Start web dashboard
     fySetupServer();
 
+    printf("[FLOCK-YOU] IP: %s\n", localIP.toString().c_str());
     printf("[FLOCK-YOU] Detection methods: MAC prefix, device name, manufacturer ID, Raven UUID\n");
-    printf("[FLOCK-YOU] Dashboard: http://192.168.4.1\n");
+    printf("[FLOCK-YOU] Dashboard: http://%s\n", localIP.toString().c_str());
     printf("[FLOCK-YOU] Ready - BLE GATT + AP mode\n\n");
 }
 
