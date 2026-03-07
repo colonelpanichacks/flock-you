@@ -899,7 +899,7 @@ let g=document.getElementById('sG');g.textContent='...';g.style.color='#facc15';
 _gW=navigator.geolocation.watchPosition(sendGPS,gpsErr,{enableHighAccuracy:true,maximumAge:5000,timeout:15000});return true;}
 function reqGPS(){if(!navigator.geolocation){alert('GPS not available in this browser.');return;}
 if(_gOk){return;}
-if(!window.isSecureContext){alert('GPS requires a secure context (HTTPS). This HTTP page may not get GPS permission.\\n\\nAndroid Chrome: try chrome://flags and enable "Insecure origins treated as secure", add http://192.168.4.1\\n\\niPhone: GPS will not work over HTTP.');}
+if(!window.isSecureContext){alert('GPS requires a secure context (HTTPS). This HTTP page may not get GPS permission.\n\nAndroid Chrome: try chrome://flags and enable "Insecure origins treated as secure", add http://{{LOCALIP}}\n\niPhone: GPS will not work over HTTP.');}
 startGPS();_gTried=true;}
 refresh();setInterval(refresh,2500);
 </script></body></html>
@@ -909,10 +909,13 @@ refresh();setInterval(refresh,2500);
 // WEB SERVER SETUP
 // ============================================================================
 
-static void fySetupServer() {
+static void fySetupServer(IPAddress localIP) {
     // Dashboard
-    fyServer.on("/", HTTP_GET, [](AsyncWebServerRequest *r) {
-        r->send(200, "text/html", FY_HTML);
+    fyServer.on("/", HTTP_GET, [localIP](AsyncWebServerRequest *r) {
+        // Serve the dashboard HTML, but replace {{LOCALIP}} with the actual IP address for better user instructions
+        String html = FY_HTML;
+        html.replace("{{LOCALIP}}", localIP.toString().c_str());
+        r->send(200, "text/html", html);
     });
 
     // API: Detection list
@@ -1239,7 +1242,7 @@ void setup() {
     }
 
     // Start web dashboard
-    fySetupServer();
+    fySetupServer(localIP);
 
     printf("[FLOCK-YOU] IP: %s\n", localIP.toString().c_str());
     printf("[FLOCK-YOU] Detection methods: MAC prefix, device name, manufacturer ID, Raven UUID\n");
