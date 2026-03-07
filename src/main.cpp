@@ -8,7 +8,8 @@
 //   4. Raven gunshot detector service UUID matching
 //   5. Raven firmware version estimation from service UUID patterns
 //
-// WiFi AP "flockyou" / "flockyou123" serves web dashboard at 192.168.4.1
+// Optionally connects to a specified Rayhunter AP, serving web dashboard at DHCP IP
+// Standalone WiFi AP "flockyou" / "flockyou123" serves web dashboard at 192.168.4.1
 // All detections stored in memory, exportable as JSON or CSV
 // Optional WiFi STA connection for future features
 // ============================================================================
@@ -528,6 +529,7 @@ static void fyOnCompanionChange() {
             printf("[FLOCK-YOU] Standalone mode: WiFi AP ON (%s), scan duration %ds\n",
                 FY_AP_SSID, fyBleScanDuration);
         }
+    }
 }
 
 // ============================================================================
@@ -1203,7 +1205,7 @@ void setup() {
     // Set an empty localIP for now; will be updated after WiFi setup
     IPAddress localIP(0,0,0,0);
 
-// If Rayhunter is enabled, try to connect to their AP, but fall back to standalone AP if connection fails
+    // If Rayhunter is enabled, try to connect to their AP, but fall back to standalone AP if connection fails
     if ( RAYHUNTER_ENABLED ) {
         WiFi.setHostname("flockyou");
         printf("[FLOCK-YOU] Attempting to connect to RayHunter WiFi (SSID: %s)\n", RAYHUNTER_SSID);
@@ -1240,8 +1242,7 @@ void setup() {
         printf("[FLOCK-YOU] AP: %s / %s\n", FY_AP_SSID, FY_AP_PASS);
         localIP = WiFi.softAPIP();
     }
-
-    // Start web dashboard
+    // Start web dashboard, passing in the localIP
     fySetupServer(localIP);
 
     printf("[FLOCK-YOU] IP: %s\n", localIP.toString().c_str());
