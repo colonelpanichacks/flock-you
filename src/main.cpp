@@ -86,6 +86,10 @@ static unsigned long         fyLastSerialHeartbeat = 0;
 // loop() applies the WiFi/scan changes in the Arduino task context.
 static volatile bool         fyCompanionChangePending = false;
 
+// Deferred buzzer — detection alert must not block BLE/HTTP task contexts.
+// Callers set this flag; loop() plays the sound in the Arduino task.
+static volatile bool         fyDetectBeepPending = false;
+
 // Phone GPS state (updated via browser Geolocation API -> /api/gps)
 static double fyGPSLat = 0;
 static double fyGPSLon = 0;
@@ -446,7 +450,7 @@ class FYBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
 
             if (!fyTriggered && highConfidence) {
                 fyTriggered = true;
-                fyDetectBeep();
+                fyDetectBeepPending = true;
             }
             if (highConfidence) {
                 fyDeviceInRange = true;
@@ -935,6 +939,87 @@ static void fySetupServer() {
         printf("[FLOCK-YOU] All detections cleared (session saved)\n");
     });
 
+#ifdef FY_ENABLE_TEST_API
+    // API: Inject a simulated detection for testing the full pipeline.
+    // Only compiled when FY_ENABLE_TEST_API is defined in build flags.
+    // Usage: /api/test/inject?type=flock|raven|soundthinking|mfr
+    fyServer.on("/api/test/inject", HTTP_GET, [](AsyncWebServerRequest *r) {
+        const char* type = "flock";
+        if (r->hasParam("type")) type = r->getParam("type")->value().c_str();
+
+        const char* mac;
+        const char* name;
+        int rssi;
+        const char* method;
+        bool isRaven = false;
+        const char* ravenFW = "";
+        bool highConfidence = true;
+
+        if (strcasecmp(type, "raven") == 0) {
+            mac = "DE:AD:00:RA:VE:01";
+            name = "Raven Test Unit";
+            rssi = -55;
+            method = "raven_uuid";
+            isRaven = true;
+            ravenFW = "1.3.x";
+        } else if (strcasecmp(type, "soundthinking") == 0) {
+            mac = "D4:11:D6:TE:ST:01";
+            name = "SoundThinking Test";
+            rssi = -60;
+            method = "mac_prefix_soundthinking";
+        } else if (strcasecmp(type, "mfr") == 0) {
+            mac = "F4:6A:DD:TE:ST:01";
+            name = "Mfr Test Device";
+            rssi = -75;
+            method = "mac_prefix_mfr";
+            highConfidence = false;
+        } else {
+            mac = "DE:AD:BE:EF:00:01";
+            name = "FS Ext Battery Test";
+            rssi = -65;
+            method = "mac_prefix";
+        }
+
+        int idx = fyAddDetection(mac, name, rssi, method, isRaven, ravenFW);
+
+        // Serial + BLE JSON output (mirrors real detection path)
+        char gpsBuf[80] = "";
+        if (fyGPSIsFresh()) {
+            snprintf(gpsBuf, sizeof(gpsBuf),
+                ",\"gps\":{\"latitude\":%.8f,\"longitude\":%.8f,\"accuracy\":%.1f}",
+                fyGPSLat, fyGPSLon, fyGPSAcc);
+        }
+        char jsonBuf[512];
+        int jsonLen = snprintf(jsonBuf, sizeof(jsonBuf),
+            "{\"event\":\"detection\",\"detection_method\":\"%s\","
+            "\"protocol\":\"test_inject\",\"mac_address\":\"%s\","
+            "\"device_name\":\"%s\",\"rssi\":%d,"
+            "\"is_raven\":%s,\"raven_fw\":\"%s\"%s}",
+            method, mac, name, rssi,
+            isRaven ? "true" : "false", isRaven ? ravenFW : "", gpsBuf);
+        printf("[FLOCK-YOU] TEST INJECT: %s\n", jsonBuf);
+        if (jsonLen > 0 && jsonLen < (int)sizeof(jsonBuf) - 1) {
+            jsonBuf[jsonLen] = '\n';
+            fySendBLE(jsonBuf, jsonLen + 1);
+        }
+
+        // Buzzer and heartbeat tracking (same as real detection)
+        if (!fyTriggered && highConfidence) {
+            fyTriggered = true;
+            fyDetectBeepPending = true;
+        }
+        if (highConfidence) {
+            fyDeviceInRange = true;
+            fyLastDetTime = millis();
+            fyLastHB = millis();
+        }
+
+        r->send(200, "application/json", jsonBuf);
+        printf("[FLOCK-YOU] Test detection injected: %s [%s] idx:%d\n",
+               mac, method, idx);
+    });
+#endif // FY_ENABLE_TEST_API
+
     fyServer.begin();
     printf("[FLOCK-YOU] Web server started on port 80\n");
 }
@@ -1040,6 +1125,12 @@ void loop() {
     if (fyCompanionChangePending) {
         fyCompanionChangePending = false;
         fyOnCompanionChange();
+    }
+
+    // Play deferred detection alert (set by BLE callback or test endpoint)
+    if (fyDetectBeepPending) {
+        fyDetectBeepPending = false;
+        fyDetectBeep();
     }
 
     // BLE scanning cycle

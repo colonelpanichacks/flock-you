@@ -160,19 +160,38 @@ Detection logic is extracted into `src/fy_detect.h` and tested on the host machi
 
 ```bash
 pio test -e native        # run all tests
-pio test -e native -f test_detection   # detection logic only
-pio test -e native -f test_raven       # raven UUID/FW only
+pio test -e native -f test_ble_matching    # MAC, name, manufacturer ID
+pio test -e native -f test_uuid_matching   # Raven UUID/FW estimation
 ```
 
 ### Test Structure
 
 ```
 test/
-  test_detection/
-    test_detection.cpp    # MAC prefix, device name, manufacturer ID matching
-  test_raven/
-    test_raven.cpp        # Raven UUID matching, firmware version estimation
+  test_ble_matching/
+    test_ble_matching.cpp     # MAC prefix, device name, manufacturer ID matching
+  test_uuid_matching/
+    test_uuid_matching.cpp    # Raven UUID matching, firmware version estimation
 ```
+
+### Hardware Testing (Test Firmware)
+
+A separate test build includes an endpoint that injects simulated detections through the full pipeline — storage, dashboard, buzzer, serial output, BLE notification, and SPIFFS persistence.
+
+```bash
+pio run -e xiao_esp32s3_test -t upload   # flash test firmware
+```
+
+Then trigger simulated detections:
+
+```bash
+curl http://192.168.4.1/api/test/inject?type=flock          # Flock camera
+curl http://192.168.4.1/api/test/inject?type=raven          # Raven gunshot detector
+curl http://192.168.4.1/api/test/inject?type=soundthinking  # SoundThinking sensor
+curl http://192.168.4.1/api/test/inject?type=mfr            # low-confidence mfr match (no buzzer)
+```
+
+The test endpoint is compiled out of production firmware (`pio run -e xiao_esp32s3`) and does not exist in the binary.
 
 ### Architecture
 
