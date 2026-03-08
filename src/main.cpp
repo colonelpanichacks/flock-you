@@ -998,6 +998,10 @@ static void fySetupServer() {
             method, mac, name, rssi,
             isRaven ? "true" : "false", isRaven ? ravenFW : "", gpsBuf);
         printf("[FLOCK-YOU] TEST INJECT: %s\n", jsonBuf);
+
+        // Send HTTP response before BLE framing overwrites the null terminator
+        r->send(200, "application/json", jsonBuf);
+
         if (jsonLen > 0 && jsonLen < (int)sizeof(jsonBuf) - 1) {
             jsonBuf[jsonLen] = '\n';
             fySendBLE(jsonBuf, jsonLen + 1);
@@ -1013,8 +1017,6 @@ static void fySetupServer() {
             fyLastDetTime = millis();
             fyLastHB = millis();
         }
-
-        r->send(200, "application/json", jsonBuf);
         printf("[FLOCK-YOU] Test detection injected: %s [%s] idx:%d\n",
                mac, method, idx);
     });
