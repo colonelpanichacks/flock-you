@@ -152,6 +152,53 @@ Flock-You is part of the OUI-SPY firmware family:
 
 ---
 
+## Testing
+
+Detection logic is extracted into `src/fy_detect.h` and tested on the host machine using PlatformIO's native test framework (Unity). No hardware required.
+
+### Running Tests
+
+```bash
+pio test -e native        # run all tests
+pio test -e native -f test_ble_matching    # MAC, name, manufacturer ID
+pio test -e native -f test_uuid_matching   # Raven UUID/FW estimation
+```
+
+### Test Structure
+
+```
+test/
+  test_ble_matching/
+    test_ble_matching.cpp     # MAC prefix, device name, manufacturer ID matching
+  test_uuid_matching/
+    test_uuid_matching.cpp    # Raven UUID matching, firmware version estimation
+```
+
+### Hardware Testing (Test Firmware)
+
+A separate test build includes an endpoint that injects simulated detections through the full pipeline — storage, dashboard, buzzer, serial output, BLE notification, and SPIFFS persistence.
+
+```bash
+pio run -e xiao_esp32s3_test -t upload   # flash test firmware
+```
+
+Then trigger simulated detections:
+
+```bash
+curl http://192.168.4.1/api/test/inject?type=flock          # Flock camera
+curl http://192.168.4.1/api/test/inject?type=raven          # Raven gunshot detector
+curl http://192.168.4.1/api/test/inject?type=soundthinking  # SoundThinking sensor
+curl http://192.168.4.1/api/test/inject?type=mfr            # low-confidence mfr match (no buzzer)
+```
+
+The test endpoint is compiled out of production firmware (`pio run -e xiao_esp32s3`) and does not exist in the binary.
+
+### Architecture
+
+`src/fy_detect.h` contains all detection patterns, the `FYDetection` struct, and pure matching functions shared between the firmware and test builds. `main.cpp` includes this header and adds hardware-dependent code (BLE, WiFi, SPIFFS, buzzer). This separation allows the detection logic to be compiled and tested natively without ESP32 toolchains or hardware.
+
+---
+
 ## Author
 
 **colonelpanichacks**
