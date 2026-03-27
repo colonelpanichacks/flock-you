@@ -529,6 +529,13 @@ static void fyOnCompanionChange() {
             printf("[FLOCK-YOU] Standalone mode: WiFi AP ON (%s), scan duration %ds\n",
                 FY_AP_SSID, fyBleScanDuration);
         }
+        // Standalone mode — re-enable WiFi AP and web dashboard
+        WiFi.mode(WIFI_AP);
+        delay(100);
+        WiFi.softAP(FY_AP_SSID, FY_AP_PASS);
+        fyBleScanDuration = 2;
+        printf("[FLOCK-YOU] Standalone mode: WiFi AP ON (%s), scan duration %ds\n",
+               FY_AP_SSID, fyBleScanDuration);
     }
 }
 
