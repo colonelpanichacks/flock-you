@@ -32,8 +32,9 @@ All detection is BLE-based:
 
 ## Features
 
-- **WiFi AP**: `flockyou` / password `flockyou123`
-- **Web dashboard** at `192.168.4.1` — live detection feed, pattern database, export tools
+- **Standalone WiFi AP** (ssid `flockyou` / password `flockyou123`) or connects to Rayhunter AP for multi-tool usage
+- **Web dashboard**  live detection feed, pattern database, export tools. `192.168.4.1` for standalone AP mode, or at 
+  either `http://flockyou` or the DHCP address with Rayhunter
 - **GPS wardriving** — phone GPS via browser Geolocation API tags every detection with coordinates
 - **Session persistence** — detections auto-save to flash (SPIFFS) every 60 seconds
 - **Prior session tab** — previous session survives reboot and is viewable in the PREV tab
@@ -83,6 +84,17 @@ pio run                     # build
 pio run -t upload           # flash
 pio device monitor          # serial output
 ```
+### Rayhunter/External AP Integration (Optional)
+
+Update `platformio.ini` with the following values under the `build_flags` section:
+
+```ini
+-DRAYHUNTER_ENABLED=true             ; Set to true to enable Rayhunter Integration
+-DRAYHUNTER_SSID='"Rayhunter-SSID"'  ; Your Rayhunter SSID
+-DRAYHUNTER_PASS='"Rayhunter-PASS"'  ; Your Rayhunter WiFi Password
+```
+
+Build and run as above.
 
 **Dependencies** (managed by PlatformIO):
 

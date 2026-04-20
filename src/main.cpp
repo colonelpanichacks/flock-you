@@ -8,7 +8,8 @@
 //   4. Raven gunshot detector service UUID matching
 //   5. Raven firmware version estimation from service UUID patterns
 //
-// WiFi AP "flockyou" / "flockyou123" serves web dashboard at 192.168.4.1
+// Optionally connects to a specified Rayhunter AP, serving web dashboard at DHCP IP or http://flockyou
+// Standalone WiFi AP "flockyou" / "flockyou123" serves web dashboard at 192.168.4.1
 // All detections stored in memory, exportable as JSON or CSV
 // Optional WiFi STA connection for future features
 // ============================================================================
@@ -53,6 +54,21 @@ static unsigned long fyBleScanInterval = 3000; // ms between scans
 // WiFi AP credentials
 #define FY_AP_SSID "flockyou"
 #define FY_AP_PASS "flockyou123"
+
+// Rayhunter Configuration
+// Either hardcode Rayhunter config here (bad), or set via build flags and add to platformio.ini
+// Default behavior is to disable Rayhunter and run in standalone AP mode
+#ifndef RAYHUNTER_ENABLED
+#define RAYHUNTER_ENABLED false          // Set to true to enable Rayhunter integration, false to run in standalone mode with WiFi AP
+#endif
+
+#ifndef RAYHUNTER_SSID
+#define RAYHUNTER_SSID "Rayhunter-SSID"    // Rayhunter SSID (default placeholder)
+#endif
+
+#ifndef RAYHUNTER_PASS
+#define RAYHUNTER_PASS "Rayhunter-PASS"    // Rayhunter WiFi Password (default placeholder)
+#endif
 
 // ============================================================================
 // DETECTION PATTERNS
@@ -531,6 +547,50 @@ static void fyOnCompanionChange() {
         printf("[FLOCK-YOU] Companion mode: WiFi AP OFF, scan duration %ds\n",
                fyBleScanDuration);
     } else {
+        // Standalone mode
+
+        // If Rayhunter is enabled, try to connect to their AP, but fall back to standalone AP if connection fails
+        if ( RAYHUNTER_ENABLED ) {
+            WiFi.begin(RAYHUNTER_SSID, RAYHUNTER_PASS);
+            fyBleScanDuration = 2;
+            printf("[FLOCK-YOU] Attempting to connect to Rayhunter WiFi network");
+
+            int attempts = 0;
+            while(WiFi.status() != WL_CONNECTED) {
+                delay(500);
+                printf(".");
+                attempts++;
+                if (attempts >= 20) {  // ~10 seconds timeout
+                    printf("\n[FLOCK-YOU] Failed to connect to RayHunter WiFi - starting in AP mode\n");
+                    break;
+                }
+            }
+
+            // If we connected to RayHunter's WiFi, use that; otherwise, fallback to our own AP
+            if (WiFi.status() == WL_CONNECTED) {
+                printf("\n[FLOCK-YOU] Connected to RayHunter WiFi\n");
+                printf("[FLOCK-YOU] IP: %s\n", WiFi.localIP().toString());
+                printf("[FLOCK-YOU] Companion mode with RayHunter:  scan duration %ds\n", fyBleScanDuration);
+            } else {
+                printf("[FLOCK-YOU] Connection to Rayhunter AP Failed. Falling back to standalone AP mode.\n");
+                WiFi.mode(WIFI_AP);
+                delay(100);
+                WiFi.softAP(FY_AP_SSID, FY_AP_PASS);
+                fyBleScanDuration = 2;
+                            printf("[FLOCK-YOU] Standalone mode: WiFi AP ON (%s), scan duration %ds\n",
+                FY_AP_SSID, fyBleScanDuration);
+            }
+
+
+        // If Rayhunter is not enabled, re-enable WiFi AP
+        } else {
+            WiFi.mode(WIFI_AP);
+            delay(100);
+            WiFi.softAP(FY_AP_SSID, FY_AP_PASS);
+            fyBleScanDuration = 2;
+            printf("[FLOCK-YOU] Standalone mode: WiFi AP ON (%s), scan duration %ds\n",
+                FY_AP_SSID, fyBleScanDuration);
+        }
         // Standalone mode — re-enable WiFi AP and web dashboard
         WiFi.mode(WIFI_AP);
         delay(100);
@@ -1089,7 +1149,7 @@ let g=document.getElementById('sG');g.textContent='...';g.style.color='#facc15';
 _gW=navigator.geolocation.watchPosition(sendGPS,gpsErr,{enableHighAccuracy:true,maximumAge:5000,timeout:15000});return true;}
 function reqGPS(){if(!navigator.geolocation){alert('GPS not available in this browser.');return;}
 if(_gOk){return;}
-if(!window.isSecureContext){alert('GPS requires a secure context (HTTPS). This HTTP page may not get GPS permission.\\n\\nAndroid Chrome: try chrome://flags and enable "Insecure origins treated as secure", add http://192.168.4.1\\n\\niPhone: GPS will not work over HTTP.');}
+if(!window.isSecureContext){alert('GPS requires a secure context (HTTPS). This HTTP page may not get GPS permission.\n\nAndroid Chrome: try chrome://flags and enable "Insecure origins treated as secure", add http://'+window.location.hostname+'\n\niPhone: GPS will not work over HTTP.');}
 startGPS();_gTried=true;}
 refresh();setInterval(refresh,2500);
 </script></body></html>
@@ -1389,18 +1449,53 @@ void setup() {
     // Crow calls play WHILE BLE is already scanning
     fyBootBeep();
 
-    // Start WiFi AP (no need to connect to anything -- AP only)
-    WiFi.mode(WIFI_AP);
-    delay(100);
-    WiFi.softAP(FY_AP_SSID, FY_AP_PASS);
-    printf("[FLOCK-YOU] AP: %s / %s\n", FY_AP_SSID, FY_AP_PASS);
-    printf("[FLOCK-YOU] IP: %s\n", WiFi.softAPIP().toString().c_str());
+    // Set an empty localIP for now; will be updated after WiFi setup
+    IPAddress localIP(0,0,0,0);
+
+    // If Rayhunter is enabled, try to connect to their AP, but fall back to standalone AP if connection fails
+    if ( RAYHUNTER_ENABLED ) {
+        WiFi.setHostname("flockyou");
+        printf("[FLOCK-YOU] Attempting to connect to RayHunter WiFi (SSID: %s)\n", RAYHUNTER_SSID);
+        WiFi.begin(RAYHUNTER_SSID, RAYHUNTER_PASS);
+
+        int attempts = 0;
+        while(WiFi.status() != WL_CONNECTED) {
+            delay(500);
+            printf(".");
+            attempts++;
+            if (attempts >= 20) {  // ~10 seconds timeout
+                printf("\n[FLOCK-YOU] Failed to connect to RayHunter WiFi - starting in AP mode\n");
+                break;
+            }
+        }
+
+        // If we connected to RayHunter's WiFi, use that; otherwise, fallback to our own AP
+        if (WiFi.status() == WL_CONNECTED) {
+            printf("\n[FLOCK-YOU] Connected to RayHunter WiFi\n");
+            localIP = WiFi.localIP();
+        } else {
+            WiFi.mode(WIFI_AP);
+            delay(100);
+            WiFi.softAP(FY_AP_SSID, FY_AP_PASS);
+            printf("[FLOCK-YOU] AP: %s / %s\n", FY_AP_SSID, FY_AP_PASS);
+            localIP = WiFi.softAPIP();
+        }
+
+    // If Rayhunter is not enabled, start WiFi AP (no need to connect to anything -- AP only)
+    } else {
+        WiFi.mode(WIFI_AP);
+        delay(100);
+        WiFi.softAP(FY_AP_SSID, FY_AP_PASS);
+        printf("[FLOCK-YOU] AP: %s / %s\n", FY_AP_SSID, FY_AP_PASS);
+        localIP = WiFi.softAPIP();
+    }
 
     // Start web dashboard
     fySetupServer();
 
+    printf("[FLOCK-YOU] IP: %s\n", localIP.toString().c_str());
     printf("[FLOCK-YOU] Detection methods: MAC prefix, device name, manufacturer ID, Raven UUID\n");
-    printf("[FLOCK-YOU] Dashboard: http://192.168.4.1\n");
+    printf("[FLOCK-YOU] Dashboard: http://%s\n", localIP.toString().c_str());
     printf("[FLOCK-YOU] Ready - BLE GATT + AP mode\n\n");
 }
 
