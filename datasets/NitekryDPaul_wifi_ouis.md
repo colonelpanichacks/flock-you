@@ -10,7 +10,12 @@ Flock stations spend most of their duty cycle asleep, waking briefly to upload a
 
 This addr1 technique is @NitekryDPaul's discovery and is the basis of the `promiscuis-flock-you` firmware.
 
-## OUI list (30 prefixes, lowercase, colon-separated)
+## OUI list (31 prefixes, lowercase, colon-separated)
+
+@NitekryDPaul contributed the first 30. The 31st (`82:6b:f2`) was contributed
+by **DeFlockJoplin** during follow-up drive-testing in Joplin — it's
+the OUI of the 12th camera in his field test, which the original list didn't
+catch. See [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
 
 ```
 70:c9:4e
@@ -43,6 +48,7 @@ ec:1b:bd
 64:6e:69
 48:27:ea
 a4:cf:12
+82:6b:f2
 ```
 
 ## CSV form
@@ -79,6 +85,7 @@ a4:cf:12
 | 64:6e:69 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | 48:27:ea | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | a4:cf:12 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
+| 82:6b:f2 | Flock Safety infrastructure | WiFi 2.4 GHz (wildcard probe) | DeFlockJoplin |
 
 ## Detection strategy
 
@@ -89,6 +96,20 @@ For each observed 802.11 management or data frame:
 3. Match `addr2` (transmitter) against the OUI list
 4. Match `addr1` (receiver) against the OUI list — **the addr1 insight**
 5. Optional: match `addr3` (BSSID) on mgmt frames when addr2 is randomised
+
+### Wildcard-probe tightening (DeFlockJoplin)
+
+DeFlockJoplin observed that Flock cameras channel-hop and spam
+wildcard 802.11 Probe Requests on every channel. Combining that with the
+OUI match yields a very tight signature:
+
+1. Frame is Management, type=0 subtype=4 (Probe Request)
+2. SSID Information Element (tag 0) is present with length 0
+3. `addr2` (transmitter) matches the OUI list
+
+Field-tested in Joplin: **11 of 12 cameras caught with only 2 false
+positives**. The 12th camera used OUI `82:6b:f2`, which is now in the
+list above. Source: [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
 
 ## Firmware
 

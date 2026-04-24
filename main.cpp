@@ -87,7 +87,11 @@ static const char* target_ouis[] = {
   "94:08:53", "e4:aa:ea", "f4:6a:dd", "f8:a2:d6", "24:b2:b9",
   "00:f4:8d", "d0:39:57", "e8:d0:fc", "e0:4f:43", "b8:1e:a4",
   "70:08:94", "58:8e:81", "ec:1b:bd", "3c:71:bf", "58:00:e3",
-  "90:35:ea", "5c:93:a2", "64:6e:69", "48:27:ea", "a4:cf:12"
+  "90:35:ea", "5c:93:a2", "64:6e:69", "48:27:ea", "a4:cf:12",
+  // Contributed by DeFlockJoplin — discovered via wildcard-probe
+  // + OUI signature during field testing. The 12th camera in his drive-test
+  // used this prefix and wasn't in @NitekryDPaul's original 30.
+  "82:6b:f2"
 
 };
 static const size_t OUI_COUNT = sizeof(target_ouis) / sizeof(target_ouis[0]);
@@ -103,10 +107,14 @@ static uint8_t oui_bytes[OUI_COUNT][3];
 #define ALERT_QUEUE_SIZE 32
 
 typedef enum : uint8_t {
-  ALERT_OUI_ADDR2 = 0,
-  ALERT_OUI_ADDR1 = 1,
-  ALERT_OUI_ADDR3 = 2,
-  ALERT_SSID      = 3,
+  ALERT_OUI_ADDR2       = 0,
+  ALERT_OUI_ADDR1       = 1,
+  ALERT_OUI_ADDR3       = 2,
+  ALERT_SSID            = 3,
+  // Probe Request + wildcard SSID (tag 0, length 0) from a known-OUI addr2.
+  // Tight signature from DeFlockJoplin field research:
+  //   https://github.com/DeflockJoplin/flock-you
+  ALERT_WILDCARD_PROBE  = 4,
 } AlertType;
 
 typedef struct {
@@ -446,11 +454,12 @@ static void printHeartbeat() {
 
 static const char* alertTypeToMethod(AlertType t) {
   switch (t) {
-    case ALERT_OUI_ADDR2: return "oui_addr2";
-    case ALERT_OUI_ADDR1: return "oui_addr1";
-    case ALERT_OUI_ADDR3: return "oui_addr3";
-    case ALERT_SSID:      return "ssid";
-    default:              return "unknown";
+    case ALERT_OUI_ADDR2:      return "oui_addr2";
+    case ALERT_OUI_ADDR1:      return "oui_addr1";
+    case ALERT_OUI_ADDR3:      return "oui_addr3";
+    case ALERT_SSID:           return "ssid";
+    case ALERT_WILDCARD_PROBE: return "wildcard_probe";
+    default:                   return "unknown";
   }
 }
 
@@ -797,6 +806,24 @@ static bool IRAM_ATTR extractSsidFromMgmtBody(const uint8_t* body, int len,
   return false;
 }
 
+// Returns:
+//   1  = wildcard SSID IE found (tag 0, length 0)  → Flock-style probe
+//   0  = SSID IE found, non-zero length            → directed probe, not ours
+//  -1  = no SSID IE found at all                   → caller should retry with
+//                                                    FCS-stripped length, then bail
+static int IRAM_ATTR isWildcardProbeIE(const uint8_t* body, int len) {
+  if (!body || len < 2) return -1;
+  while (len >= 2) {
+    uint8_t id   = body[0];
+    uint8_t elen = body[1];
+    if ((int)elen + 2 > len) break;
+    if (id == 0) return (elen == 0) ? 1 : 0;
+    body += elen + 2;
+    len  -= elen + 2;
+  }
+  return -1;
+}
+
 static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   if (!buf || sniffingStopped) return;
 
@@ -820,8 +847,39 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   uint8_t ch = (uint8_t)pkt->rx_ctrl.channel;  // actual rx channel from driver
 
   // --- OUI check: addr2 (transmitter/source) ---
+  //
+  // For mgmt Probe Requests (type=0 subtype=4) from a matched OUI, tighten
+  // to the DeFlockJoplin wildcard-probe signature: SSID IE (tag 0) length
+  // must be zero. This reduces false positives dramatically (DeFlockJoplin's field
+  // test: 11/12 true-positive with only 2 false-positives in Joplin).
+  //
+  // Non-probe frames from the same OUI still emit the broad ADDR2 alert.
+  // See: https://github.com/DeflockJoplin/flock-you
   if (matchOuiRaw(hdr->addr2)) {
-    enqueueAlert(ALERT_OUI_ADDR2, hdr->addr2, rssi, ch, nullptr, "addr2");
+    bool emitted = false;
+    if (type == WIFI_PKT_MGMT) {
+      uint8_t fc0     = hdr->frame_ctrl & 0xFF;
+      uint8_t ftype   = (fc0 >> 2) & 0x03;
+      uint8_t subtype = (fc0 >> 4) & 0x0F;
+      if (ftype == 0 && subtype == 4) {                        // Probe Request
+        int sigLen  = (int)pkt->rx_ctrl.sig_len;
+        int bodyLen = sigLen - (int)sizeof(wifi_ieee80211_mac_hdr_t);
+        const uint8_t* body = pkt->payload + sizeof(wifi_ieee80211_mac_hdr_t);
+        int r = (bodyLen > 0) ? isWildcardProbeIE(body, bodyLen) : -1;
+        // FCS-trailer retry: only when the first parse found no SSID IE AT
+        // ALL (-1). A found-but-nonzero (0) means legit directed probe; do
+        // not retry — it would mis-classify.
+        if (r == -1 && bodyLen > 4) r = isWildcardProbeIE(body, bodyLen - 4);
+        if (r == 1) {
+          enqueueAlert(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, ch,
+                       nullptr, "probe_req");
+          emitted = true;
+        }
+      }
+    }
+    if (!emitted) {
+      enqueueAlert(ALERT_OUI_ADDR2, hdr->addr2, rssi, ch, nullptr, "addr2");
+    }
   }
 
 #if CHECK_ADDR1
