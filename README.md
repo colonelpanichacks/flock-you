@@ -237,7 +237,23 @@ pip install -r requirements.txt
 python flockyou.py
 ```
 
-Open `http://localhost:5000`, pick your serial port from the UI, detections start showing up live.
+Open `http://localhost:5000`, pick your serial port from the **Sniffer** dropdown, click **Connect**. Detections start showing up live.
+
+### Dashboard command bar
+
+Once the Sniffer is connected, five buttons appear next to the connect controls:
+
+| Button | Firmware command | What it does |
+|---|---|---|
+| **Pull Prev**  | `CMD:DUMP_PREV`  | Replays `/prev_session.json` (last boot's persisted detections) into the dashboard; entries get a purple **FLASH** badge |
+| **Pull Live**  | `CMD:DUMP_LIVE`  | Replays the device's in-RAM detection table; entries get a blue **RAM** badge |
+| **Status**     | `CMD:STATUS`     | Toasts a compact `det=N ouis=N prev=yes ch=N heap=KKB up=Ns` line |
+| **Clear Prev** | `CMD:CLEAR_PREV` | Deletes `/prev_session.json` on the device (confirmation prompt) |
+| **Clear Live** | `CMD:CLEAR_LIVE` | Wipes the device's in-RAM table (confirmation prompt) |
+
+Replay detections are visually distinct — purple/blue badges next to the detection-method label, a subtle left-border tint on the card, and `timestamp_source: device_replay`. Replays don't get GPS temporal matching (the device's stored entries only have monotonic millis, not wall-clock) and never overwrite a fresher live entry for the same MAC. Every command response surfaces as a coloured top-right toast.
+
+The dashboard is fully documented at [`api/README.md`](api/README.md) — endpoints, socket events, JSON wire formats, GPS setup, persistence layout, troubleshooting.
 
 ---
 

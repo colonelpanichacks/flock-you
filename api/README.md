@@ -1,156 +1,275 @@
-# Flock You Web Dashboard
+# Flock-You Web Dashboard
 
-A Flask-based web dashboard for real-time monitoring and analysis of Flock Safety device detections with GPS integration.
+Flask + Socket.IO dashboard for the `promiscious` branch of the Flock-You firmware. Provides:
 
-## Features
+- Live ingestion of WiFi-promiscuous-mode detections streaming over USB-CDC
+- A host command protocol over the same USB port (`CMD:STATUS` / `CMD:DUMP_PREV` / `CMD:DUMP_LIVE` / `CMD:CLEAR_PREV` / `CMD:CLEAR_LIVE` / `CMD:VERSION`) exposed as REST endpoints and dashboard buttons
+- GPS wardriving via a USB NMEA puck or the browser Geolocation API, with temporal matching between detection time and GPS timeline
+- Cumulative detection persistence (`data/cumulative_detections.pkl`) across server restarts
+- Export to CSV / KML / JSON, import from any of those, and an OUI lookup tool against the local IEEE registry
 
-### Real-Time Detection Monitoring
-- **Live Updates**: Real-time detection display via WebSocket
-- **Detection Filtering**: Filter by detection method (WiFi, BLE, MAC, Device Name)
-- **Statistics Dashboard**: Overview of detection counts and types
-- **Detailed View**: Complete device information for each detection
+The dashboard is the cross-device counterpart to the device-side firmware: the device passively sniffs and persists, and this dashboard is what you connect to over USB to read the device, watch live detections come in, and pull anything the device already caught while it was off-host.
 
-### GPS Integration
-- **GPS Dongle Support**: Connect USB GPS dongles for location tracking
-- **NMEA Parsing**: Automatic parsing of GPS coordinates
-- **Location Tagging**: Each detection can include GPS coordinates
-- **Satellite Information**: Display GPS fix quality and satellite count
+---
 
-### Data Export
-- **CSV Export**: Download detection data in CSV format
-- **KML Export**: Generate Google Earth compatible KML files
-- **GPS Coordinates**: Include latitude, longitude, and altitude
-- **Timestamped Files**: Automatic filename generation with timestamps
+## Quick start
 
-## Installation
+```bash
+pip install -r requirements.txt
+python flockyou.py
+```
 
-### Prerequisites
-- Python 3.8 or higher
-- USB GPS dongle (optional, for location tracking)
+Open `http://localhost:5000`.
 
-### Setup
-1. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+1. Plug your Flock-You device in over USB.
+2. Pick its port from the **Sniffer** dropdown and click **Connect**.
+3. Five command buttons appear next to the connect controls — that's the host command protocol.
+4. (Optional) Plug a USB NMEA GPS puck in, pick its port from the **GPS** dropdown, click **Connect**.
+5. Detections start appearing live.
 
-2. **Run the application**:
-   ```bash
-   python app.py
-   ```
+---
 
-3. **Access the dashboard**:
-   Open your browser and navigate to `http://localhost:5000`
+## The Sniffer command bar
 
-## Usage
+Once the device is connected the dashboard shows a row of five buttons:
 
-### Basic Operation
-1. **Start the web server** using the command above
-2. **Connect your Flock You device** and ensure it's sending JSON data
-3. **View detections** in real-time on the dashboard
-4. **Filter detections** using the dropdown menu
-5. **Export data** using the export buttons
+| Button | Endpoint | Firmware command | What it does |
+|---|---|---|---|
+| **Pull Prev** | `POST /api/flock/dump_prev` | `CMD:DUMP_PREV` | Streams `/prev_session.json` (the previous boot's persisted SPIFFS session) back into the dashboard. Each entry shows up tagged with a purple **FLASH** badge. |
+| **Pull Live** | `POST /api/flock/dump_live` | `CMD:DUMP_LIVE` | Streams the device's in-RAM detection table (`fyDet[]`) — what the device has seen since this boot. Entries are tagged with a blue **RAM** badge. |
+| **Status** | `GET /api/flock/status` | `CMD:STATUS` | Returns live device telemetry: detection count, OUI count, SPIFFS state, free heap, uptime, current channel, RSSI min. Shown as a top-right toast. |
+| **Clear Prev** | `POST /api/flock/clear_prev` | `CMD:CLEAR_PREV` | Deletes `/prev_session.json` and any leftover `/session.tmp` on the device. Confirmation prompt before sending. |
+| **Clear Live** | `POST /api/flock/clear_live` | `CMD:CLEAR_LIVE` | Wipes the device's in-RAM detection table; the next autosave overwrites the persisted session. Confirmation prompt before sending. |
 
-### GPS Setup
-1. **Connect GPS dongle** to your computer via USB
-2. **Select GPS port** from the dropdown in the header
-3. **Click "Connect"** to establish GPS connection
-4. **Monitor GPS status** via the status indicator
-5. **Detections will automatically include GPS data** when available
+All five buttons disable each other during a pending request so two dumps can't interleave on the wire (the protocol serializes one `CMD:*` at a time).
 
-### Data Export
-- **CSV Export**: Downloads a CSV file with all detection data
-- **KML Export**: Downloads a KML file for viewing in Google Earth
-- **GPS Data**: Both formats include GPS coordinates when available
+### Canonical "post-wardrive" workflow
 
-## API Endpoints
+You went driving with the device unplugged. Now you're back at your laptop:
 
-### Detection Management
-- `GET /api/detections` - Get all detections (with optional filtering)
-- `POST /api/detections` - Add new detection from Flock You device
-- `POST /api/clear` - Clear all detections
+1. **Plug device in → Connect**
+2. **Click "Pull Prev"** — every detection from the drive flows into the dashboard with `FLASH` badges
+3. **Click "Clear Prev"** — wipes the file from SPIFFS so the next outing starts clean
 
-### GPS Management
-- `GET /api/gps/ports` - Get available serial ports
-- `POST /api/gps/connect` - Connect to GPS dongle
-- `POST /api/gps/disconnect` - Disconnect GPS dongle
+Or the equivalent from a terminal:
 
-### Data Export
-- `GET /api/export/csv` - Export detections as CSV
-- `GET /api/export/kml` - Export detections as KML
+```bash
+curl -X POST http://localhost:5000/api/flock/dump_prev
+curl -X POST http://localhost:5000/api/flock/clear_prev
+```
 
-## Integration with Flock You Device
+---
 
-The web dashboard is designed to receive JSON detection data from the Flock You ESP32 device. The device should send POST requests to `/api/detections` with JSON data in the following format:
+## How replay detections are handled
+
+Detections pulled with **Pull Prev** or **Pull Live** flow through `add_replay_detection_from_serial()` in `flockyou.py`, separate from the live ingestion path. The differences:
+
+- **No GPS temporal matching.** The device's stored detections only have monotonic millis (`device_first_ms` / `device_last_ms`) since its last boot — not wall-clock — so we can't pair them with the GPS timeline. They land in the dashboard without GPS unless they already had it from an earlier live capture.
+- **No overwrite of fresher live data.** If a MAC is already in the dashboard (because it was just seen live), the replay only bumps `detection_count` if the device's saved count is higher. Live RSSI / channel / last-seen stay.
+- **Separate visual treatment.** A purple **FLASH** or blue **RAM** badge appears next to the detection-method label, the card gets a subtle left-border tint, and `timestamp_source` is set to `device_replay`.
+- **Separate socket event.** The browser receives `replay_detection` instead of `new_detection`, so other clients can render them differently.
+
+The end of a dump is signalled by a `flock_replay_complete` event on the socket (with `count`, `source`, `ok`, and any `reason` like `no_file` or `crc_mismatch` if the SPIFFS file was missing or corrupt).
+
+---
+
+## Toast notifications
+
+Every command response surfaces as a coloured top-right toast that auto-dismisses (4 s default, 6 s for status):
+
+| Colour | Meaning |
+|---|---|
+| Green | Success — command completed, returned data |
+| Blue (info) | In-progress / informational |
+| Yellow (warning) | Completed but nothing returned (e.g. "Pulled 0 detections" because no prev file existed) |
+| Red (error) | Timeout, device disconnected, or firmware error event |
+
+`flock_error` socket events from the firmware (e.g. unknown command) also raise an error toast.
+
+---
+
+## API endpoints
+
+### Sniffer device (USB-CDC to the ESP32-S3)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET`  | `/api/flock/ports`        | List available serial ports |
+| `POST` | `/api/flock/connect`      | Body: `{"port": "/dev/ttyACM0"}`. Opens serial @115200 and starts the reader thread |
+| `POST` | `/api/flock/disconnect`   | Closes the serial port |
+| `GET`  | `/api/flock/status`       | Sends `CMD:STATUS`, returns the `{"event":"status",...}` reply (2 s timeout) |
+| `GET`  | `/api/flock/version`      | Sends `CMD:VERSION`, returns firmware identifier and compile-time constants |
+| `POST` | `/api/flock/dump_prev`    | Sends `CMD:DUMP_PREV`. Returns when `replay_complete` arrives (30 s timeout). Replay detections stream in via socket during the call |
+| `POST` | `/api/flock/dump_live`    | Same shape as `dump_prev` but reads the in-RAM detection table |
+| `POST` | `/api/flock/clear_prev`   | Sends `CMD:CLEAR_PREV`. Returns the `{"event":"clear","target":"prev","ok":...}` reply |
+| `POST` | `/api/flock/clear_live`   | Sends `CMD:CLEAR_LIVE`. Wipes in-RAM `fyDet[]` |
+
+### GPS
+
+| Method | Path | Description |
+|---|---|---|
+| `GET`  | `/api/gps/ports`      | List available serial ports |
+| `POST` | `/api/gps/connect`    | Body: `{"port": "..."}`. Opens NMEA reader @9600 baud |
+| `POST` | `/api/gps/disconnect` | Closes the GPS port |
+
+### Detection management
+
+| Method | Path | Description |
+|---|---|---|
+| `GET`  | `/api/detections` | Query params: `filter=<method>` and `type=session\|cumulative`. Returns the matching detection list |
+| `POST` | `/api/detections` | Manually inject a detection record |
+| `POST` | `/api/clear`      | Wipe the in-memory session detections (cumulative + device-side untouched) |
+| `POST` | `/api/detection/alias` | Body: `{"id": N, "alias": "..."}`. Sets a human-readable label for a detection |
+| `GET`  | `/api/stats`      | Per-protocol counters for session + cumulative |
+| `GET`  | `/api/status`     | Connection status of Sniffer + GPS |
+
+### Export / import
+
+| Method | Path | Description |
+|---|---|---|
+| `GET`  | `/api/export/csv` | Query: `type=session\|cumulative`. Downloads a CSV |
+| `GET`  | `/api/export/kml` | Same, KML for Google Earth |
+| `POST` | `/api/import/json` | Multipart: `file=<json>`. Imports detections exported from another instance |
+| `POST` | `/api/import/csv`  | Same, CSV |
+| `POST` | `/api/import/kml`  | Same, KML |
+
+### OUI lookup
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/oui/search`  | Body: `{"query": "...."}`. Looks up a MAC prefix or manufacturer name against `oui.txt` |
+| `GET`  | `/api/oui/all`     | Dumps the entire local IEEE OUI registry |
+| `POST` | `/api/oui/refresh` | Re-downloads `oui.txt` from `standards-oui.ieee.org` |
+
+---
+
+## Socket.IO events
+
+### From server to client
+
+| Event | Payload | When |
+|---|---|---|
+| `new_detection` | detection | Live detection just arrived from the device |
+| `replay_detection` | detection (with `replay:true`) | Pulled from `/prev_session.json` or live RAM |
+| `detection_updated` | detection | A known MAC was seen again |
+| `flock_replay_complete` | `{ok, count, source, reason?}` | End of a `DUMP_*` stream |
+| `flock_status` | status object | `CMD:STATUS` reply (also broadcast to other tabs) |
+| `flock_clear` | `{target, ok}` | `CMD:CLEAR_*` reply |
+| `flock_error` | `{reason, cmd?}` | Firmware rejected an unknown command |
+| `flock_disconnected` / `flock_reconnected` | port info | Serial reader thread state changes |
+| `gps_update` / `gps_disconnected` / `gps_reconnected` | GPS data | GPS reader thread |
+| `detections_cleared` | — | Someone called `/api/clear` |
+| `serial_data` | raw line | Streams Serial output to the in-browser terminal |
+
+### From client to server
+
+| Event | When |
+|---|---|
+| `request_serial_terminal` | Open the live serial-output drawer |
+| `heartbeat` / `heartbeat_ack` | Keep-alive ping |
+
+---
+
+## JSON wire format
+
+Live detection (Flask reads one of these per line from USB-CDC):
 
 ```json
-{
-  "timestamp": 12345,
-  "detection_time": "12.345s",
-  "protocol": "wifi",
-  "detection_method": "probe_request",
-  "ssid": "Flock_Camera_001",
-  "mac_address": "aa:bb:cc:dd:ee:ff",
-  "rssi": -65,
-  "signal_strength": "MEDIUM",
-  "channel": 6
-}
+{"event":"detection","detection_method":"wifi_oui_addr2","protocol":"wifi_2_4ghz","mac_address":"aa:bb:cc:dd:ee:ff","oui":"aa:bb:cc","device_name":"","rssi":-62,"channel":6,"frequency":2437,"ssid":""}
 ```
 
-## GPS Dongle Compatibility
+Replay detection (extra fields on top of the live format):
 
-The dashboard supports standard NMEA GPS dongles that output GPGGA sentences. Compatible devices include:
-- USB GPS receivers
-- Bluetooth GPS modules (when connected via USB adapter)
-- Serial GPS modules
-
-## File Structure
+```json
+{"event":"detection","replay":true,"replay_source":"prev","detection_method":"wifi_oui_addr2","protocol":"wifi_2_4ghz","mac_address":"aa:bb:cc:dd:ee:ff","oui":"aa:bb:cc","device_name":"","rssi":-62,"channel":6,"frequency":2437,"ssid":"","detection_count":17,"device_first_ms":12345678,"device_last_ms":18900000}
 ```
-webapp/
-├── app.py              # Main Flask application
-├── requirements.txt    # Python dependencies
+
+Command reply events:
+
+```json
+{"event":"status","fy_det":42,"oui_count":42,"spiffs":1,"prev_session":1,"prev_bytes":4280,"uptime_ms":900000,"free_heap":221408,"channel":6,"channel_mode":"CUSTOM","rssi_min":-95}
+{"event":"version","firmware":"flock-you-promiscious","branch":"promiscious","oui_count":42,"max_detections":200,"autosave_ms":60000}
+{"event":"replay_complete","source":"prev","count":47,"ok":true}
+{"event":"clear","target":"prev","ok":true}
+{"event":"error","reason":"unknown_command","cmd":"CMD:GARBAGE"}
+```
+
+---
+
+## GPS wardriving setup
+
+GPS is handled server-side because the ESP32's radio is dedicated to sniffing and there's no on-device AP. Two options:
+
+- **USB NMEA puck** plugged into the host running Flask — pick its port from the **GPS** dropdown
+- **Phone browser** at `http://<host>:5000` — the dashboard's Geolocation API hook posts updates to Flask
+
+Either way, Flask does a temporal match between the detection's arrival timestamp and the GPS timeline (default ±30 s window, prefers the closest reading; "precise" matches are flagged as such in CSV/KML exports).
+
+### Android Chrome over HTTP
+
+Geolocation is restricted to HTTPS unless you whitelist the dashboard:
+
+1. `chrome://flags` → search **"Insecure origins treated as secure"**
+2. Add `http://<host>:5000`
+3. Enable, relaunch Chrome, grant location when prompted
+
+iOS Safari does not support Geolocation over plain HTTP.
+
+---
+
+## Persistence
+
+| What | Where |
+|---|---|
+| Cumulative detections | `data/cumulative_detections.pkl` (pickle, loaded on startup) |
+| Settings | `data/settings.json` |
+| OUI registry | `oui.txt` (5.9 MB, IEEE master list) |
+| Exports | `exports/` (created on first export) |
+
+The device-side persistence is separate — see [`../README.md`](../README.md#spiffs-wire-format) for the SPIFFS layout. The `Pull Prev` button is the bridge between the two.
+
+---
+
+## File structure
+
+```
+api/
+├── flockyou.py                    # Main Flask + Socket.IO app
+├── requirements.txt               # Python dependencies
 ├── templates/
-│   └── index.html     # Web dashboard template
-├── exports/           # Generated export files
-└── README.md         # This file
+│   └── index.html                 # Dashboard UI (single-file, ~3100 lines)
+├── oui.txt                        # IEEE OUI registry (mirrored from standards-oui.ieee.org)
+├── data/                          # Created on first run
+│   ├── cumulative_detections.pkl
+│   └── settings.json
+├── exports/                       # CSV / KML output (created on first export)
+└── README.md
 ```
+
+---
 
 ## Troubleshooting
 
-### GPS Connection Issues
-- Ensure GPS dongle is properly connected
-- Check that the correct serial port is selected
-- Verify GPS dongle is powered and has satellite fix
-- Check system permissions for serial port access
+**"Device did not respond (timeout)" on Pull Prev / Status / etc.**
+The firmware on the device is older than the `promiscious` branch and doesn't speak the `CMD:*` protocol. Reflash from [`../main.cpp`](../main.cpp).
 
-### No Detections Displayed
-- Verify Flock You device is running and connected
-- Check network connectivity between device and server
-- Ensure device is sending data to correct endpoint
-- Check browser console for JavaScript errors
+**Pull Prev returns count=0 with reason "no_file"**
+The device has never had a session persist to SPIFFS, or you just called Clear Prev. Drive around a bit, let the device autosave (every 60 s), reboot, plug it back in, try again.
 
-### Export Issues
-- Ensure `exports/` directory exists and is writable
-- Check available disk space
-- Verify file permissions
+**Pull Prev returns count=0 with reason "crc_mismatch"**
+The persisted session file got corrupted (interrupted write, flash wear). The firmware refuses to replay it. Call Clear Prev and start fresh.
 
-## Security Notes
+**Replay detections show up without GPS coordinates**
+Expected — the device's stored detections only have monotonic millis from the device's previous boot, not wall-clock. They can't be paired with the host-side GPS timeline. If you want GPS-tagged data, keep the device plugged in during the drive.
 
-- The dashboard runs on `0.0.0.0:5000` by default (accessible from any network)
-- Consider using a reverse proxy (nginx) for production deployment
-- Implement authentication if needed for multi-user environments
-- The Flask secret key should be changed in production
+**The Sniffer command buttons don't appear after connect**
+They're inside `#flockExtraControls` and toggled by `setFlockExtraControls()`. If the connect succeeded (status indicator green, Disconnect button visible) but the row of five buttons is missing, hard-refresh (Ctrl+Shift+R) to pull the latest template.
 
-## Development
+**Two browser tabs trigger Pull at the same time**
+Don't. The protocol serializes commands at the firmware level (one `CMD:*` at a time, blocking on the matching `event`), but the dashboard's command lock is per-Flask-process. Two tabs firing Pull simultaneously will queue, not interleave, so the second one waits — but the first tab's busy state won't reflect the second tab's request.
 
-### Adding New Features
-- Modify `app.py` for backend functionality
-- Update `templates/index.html` for frontend changes
-- Add new API endpoints as needed
-- Update requirements.txt for new dependencies
+---
 
-### Testing
-- Test GPS functionality with actual GPS dongle
-- Verify export functionality with sample data
-- Test real-time updates with multiple browser windows
-- Validate JSON data format compatibility
+## Security notes
+
+The dashboard listens on `0.0.0.0:5000` by default — anyone on your network can reach it. Bind to `127.0.0.1` or put it behind nginx/auth if that's not what you want. The Flask secret key in `flockyou.py` defaults to a dev value; set `SECRET_KEY` in the environment for anything production-shaped.
