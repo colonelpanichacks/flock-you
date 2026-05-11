@@ -1,8 +1,8 @@
 # Flock Safety WiFi OUIs — Research by @NitekryDPaul
 
-**Researcher:** ØяĐöØцяöЪöяцฐ (**@NitekryDPaul**)
+**Researcher:** OrdoOuroborous (**@NitekryDPaul**, GitHub [@nitekry](https://github.com/nitekry))
 
-This dataset documents Flock Safety and related surveillance-infrastructure WiFi MAC-address OUIs (first three octets) discovered through 2.4 GHz promiscuous-mode analysis. All 30 prefixes below were identified by @NitekryDPaul during his promiscuous-mode research on Flock camera air traffic.
+This dataset documents Flock Safety and related surveillance-infrastructure WiFi MAC-address OUIs (first three octets) discovered through 2.4 GHz promiscuous-mode analysis. The 42 active prefixes below come from @NitekryDPaul's promiscuous-mode research on Flock camera air traffic (41) and DeFlockJoplin's wildcard-probe drive-testing (1). Upstream OUI source: [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection). One prefix from the original set (`f8:a2:d6`) has been demoted — see the [Demoted](#demoted--low-confidence) section.
 
 ## Why promiscuous mode
 
@@ -10,12 +10,15 @@ Flock stations spend most of their duty cycle asleep, waking briefly to upload a
 
 This addr1 technique is @NitekryDPaul's discovery and is the basis of the `promiscuis-flock-you` firmware.
 
-## OUI list (31 prefixes, lowercase, colon-separated)
+## OUI list (42 prefixes, lowercase, colon-separated)
 
-@NitekryDPaul contributed the first 30. The 31st (`82:6b:f2`) was contributed
-by **DeFlockJoplin** during follow-up drive-testing in Joplin — it's
-the OUI of the 12th camera in his field test, which the original list didn't
-catch. See [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
+@NitekryDPaul contributed 41 active prefixes — 29 from his original
+promiscuous-mode set plus 12 from his April 2026 additions in
+[nite-oui-collection](https://github.com/nitekry/nite-oui-collection).
+The 42nd (`82:6b:f2`) was contributed by **DeFlockJoplin** during
+follow-up drive-testing in Joplin — it's the OUI of the 12th camera in his
+field test, which the original list didn't catch. See
+[DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
 
 ```
 70:c9:4e
@@ -31,7 +34,6 @@ c0:35:32
 94:08:53
 e4:aa:ea
 f4:6a:dd
-f8:a2:d6
 24:b2:b9
 00:f4:8d
 d0:39:57
@@ -48,6 +50,18 @@ ec:1b:bd
 64:6e:69
 48:27:ea
 a4:cf:12
+04:0d:84
+f0:82:c0
+1c:34:f1
+38:5b:44
+94:34:69
+b4:e3:f9
+b4:1e:52
+14:b5:cd
+94:2a:6f
+f4:e2:c6
+d4:11:d6
+e0:0a:f6
 82:6b:f2
 ```
 
@@ -68,7 +82,6 @@ a4:cf:12
 | 94:08:53 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | e4:aa:ea | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | f4:6a:dd | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
-| f8:a2:d6 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | 24:b2:b9 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | 00:f4:8d | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | d0:39:57 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
@@ -85,7 +98,28 @@ a4:cf:12
 | 64:6e:69 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | 48:27:ea | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | a4:cf:12 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
+| 04:0d:84 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| f0:82:c0 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| 1c:34:f1 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| 38:5b:44 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| 94:34:69 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| b4:e3:f9 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| b4:1e:52 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| 14:b5:cd | Flock Safety infrastructure (high confidence) | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| 94:2a:6f | Flock Safety infrastructure (high confidence) | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| f4:e2:c6 | Flock Safety infrastructure (high confidence) | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| d4:11:d6 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| e0:0a:f6 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
 | 82:6b:f2 | Flock Safety infrastructure | WiFi 2.4 GHz (wildcard probe) | DeFlockJoplin |
+
+## Demoted / low confidence
+
+These prefixes were in earlier revisions of the list but have been removed
+from the active firmware OUI array.
+
+| Prefix | Reason | Source |
+|---|---|---|
+| `f8:a2:d6` | Low confidence; observed hitting a Sony Media Player rather than a Flock device. Demoted per @NitekryDPaul's [my_tested_flock.md](https://github.com/nitekry/nite-oui-collection/blob/main/groups/flockers/my_tested_flock.md) field notes. | @NitekryDPaul |
 
 ## Detection strategy
 
