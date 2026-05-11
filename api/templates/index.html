@@ -873,80 +873,275 @@
             letter-spacing: 0.3px;
         }
 
+        /* Replay badges (FLASH = SPIFFS, RAM = in-memory dump) */
         .replay-badge {
-            background: #6366f1;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
             color: white;
-            padding: 0.15rem 0.4rem;
+            padding: 0.15rem 0.45rem;
             border-radius: 3px;
             font-size: 0.7rem;
-            font-weight: 600;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.3px;
+            letter-spacing: 0.5px;
+            box-shadow: 0 0 8px rgba(99, 102, 241, 0.4);
         }
-        .replay-badge.live { background: #0ea5e9; }
+        .replay-badge.live {
+            background: linear-gradient(135deg, #0284c7 0%, #0ea5e9 100%);
+            box-shadow: 0 0 8px rgba(14, 165, 233, 0.4);
+        }
+        .replay-badge svg {
+            width: 10px;
+            height: 10px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2.5;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
 
-        .device-extra-controls {
+        .detection-item.replay {
+            border-left: 3px solid #6366f1;
+            background: linear-gradient(90deg, rgba(99, 102, 241, 0.08) 0%, transparent 30%);
+        }
+        .detection-item.replay.live-source {
+            border-left-color: #0ea5e9;
+            background: linear-gradient(90deg, rgba(14, 165, 233, 0.08) 0%, transparent 30%);
+        }
+
+        /* =====================================================
+           Device command toolbar  —  sticky strip below header
+           ===================================================== */
+        .flock-command-bar {
+            position: sticky;
+            top: 0;
+            z-index: 50;
             display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.55rem 1rem;
+            background: linear-gradient(180deg, rgba(20, 12, 40, 0.96) 0%, rgba(15, 9, 30, 0.96) 100%);
+            border-bottom: 1px solid rgba(139, 92, 246, 0.35);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            color: #e2e8f0;
+            font-size: 0.82rem;
+            transform: translateY(-100%);
+            opacity: 0;
+            transition: transform 0.25s ease, opacity 0.25s ease;
+            pointer-events: none;
+        }
+        .flock-command-bar.show {
+            transform: translateY(0);
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .fcb-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            padding: 0.2rem 0.5rem;
+            font-family: 'Orbitron', 'Courier New', monospace;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+            color: #c4b5fd;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .fcb-label svg {
+            width: 16px;
+            height: 16px;
+            stroke: #c4b5fd;
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        .fcb-section {
+            display: inline-flex;
+            align-items: center;
             gap: 0.4rem;
-            margin-top: 0.5rem;
-            flex-wrap: wrap;
         }
-        .flock-cmd-btn {
-            background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
-            border-color: #4338ca;
-            font-size: 0.85rem;
-            padding: 0.4rem 0.7rem;
+
+        .fcb-divider {
+            width: 1px;
+            align-self: stretch;
+            background: linear-gradient(180deg, transparent, rgba(139, 92, 246, 0.35), transparent);
+            margin: 0 0.25rem;
         }
-        .flock-cmd-btn:hover {
-            background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+
+        .fcb-spacer { flex: 1; }
+
+        .fcb-status-dot {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.25rem 0.55rem;
+            border-radius: 999px;
+            background: rgba(34, 197, 94, 0.12);
+            border: 1px solid rgba(34, 197, 94, 0.4);
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: #4ade80;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
-        .flock-cmd-btn:disabled {
-            background: #475569;
-            border-color: #334155;
+        .fcb-status-dot::before {
+            content: "";
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #22c55e;
+            box-shadow: 0 0 6px #22c55e;
+            animation: fcb-pulse 1.8s ease-in-out infinite;
+        }
+        @keyframes fcb-pulse {
+            0%, 100% { opacity: 1; }
+            50%      { opacity: 0.4; }
+        }
+
+        .fcb-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.4rem 0.75rem;
+            border-radius: 6px;
+            border: 1px solid transparent;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 0.78rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+            color: white;
+            white-space: nowrap;
+        }
+        .fcb-btn svg {
+            width: 14px;
+            height: 14px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            flex-shrink: 0;
+        }
+        .fcb-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+        }
+        .fcb-btn:active { transform: translateY(0); }
+        .fcb-btn:disabled {
             cursor: not-allowed;
-            opacity: 0.65;
+            opacity: 0.5;
             transform: none;
             box-shadow: none;
         }
-        .flock-cmd-btn.danger {
-            background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%);
-            border-color: #991b1b;
+        .fcb-btn .fcb-btn-count {
+            display: inline-block;
+            min-width: 1.6rem;
+            padding: 0 0.35rem;
+            margin-left: 0.1rem;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.2);
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-align: center;
         }
-        .flock-cmd-btn.danger:hover {
-            background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+        /* Pull Prev — purple/indigo, matches FLASH badge */
+        .fcb-btn.fcb-pull-prev {
+            background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+            border-color: #4338ca;
+        }
+        .fcb-btn.fcb-pull-prev:hover {
+            background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+        }
+        /* Pull Live — cyan, matches RAM badge */
+        .fcb-btn.fcb-pull-live {
+            background: linear-gradient(135deg, #0284c7 0%, #0ea5e9 100%);
+            border-color: #0369a1;
+        }
+        .fcb-btn.fcb-pull-live:hover {
+            background: linear-gradient(135deg, #0ea5e9 0%, #38bdf8 100%);
+        }
+        /* Status — slate (neutral info) */
+        .fcb-btn.fcb-status {
+            background: linear-gradient(135deg, #475569 0%, #64748b 100%);
+            border-color: #334155;
+        }
+        .fcb-btn.fcb-status:hover {
+            background: linear-gradient(135deg, #64748b 0%, #94a3b8 100%);
+        }
+        /* Clear — red (destructive). Subtler shade than the connect/disconnect danger
+           so the destructive ops don't dominate the bar. */
+        .fcb-btn.fcb-danger {
+            background: linear-gradient(135deg, #991b1b 0%, #b91c1c 100%);
+            border-color: #7f1d1d;
+        }
+        .fcb-btn.fcb-danger:hover {
+            background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%);
         }
 
+        /* Toast — fixed top-right notification stack */
         #flockToast {
             position: fixed;
             top: 1rem;
             right: 1rem;
             min-width: 280px;
             max-width: 420px;
-            padding: 0.7rem 1rem;
-            border-radius: 6px;
-            background: #1e293b;
+            padding: 0.85rem 1rem 0.85rem 1.1rem;
+            border-radius: 8px;
+            background: rgba(15, 9, 30, 0.97);
             color: #e2e8f0;
+            border: 1px solid rgba(139, 92, 246, 0.35);
             border-left: 4px solid #6366f1;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            font-size: 0.9rem;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+            font-size: 0.88rem;
+            line-height: 1.4;
             z-index: 9999;
             opacity: 0;
-            transform: translateY(-10px);
-            transition: opacity 0.2s, transform 0.2s;
+            transform: translate(20px, -10px);
+            transition: opacity 0.25s ease, transform 0.25s ease;
             pointer-events: none;
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
         }
         #flockToast.show {
             opacity: 1;
-            transform: translateY(0);
+            transform: translate(0, 0);
         }
-        #flockToast.success { border-left-color: #22c55e; }
-        #flockToast.warning { border-left-color: #f59e0b; }
-        #flockToast.error   { border-left-color: #ef4444; }
-        #flockToast.info    { border-left-color: #6366f1; }
+        #flockToast.success {
+            border-left-color: #22c55e;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.45), 0 0 18px rgba(34, 197, 94, 0.2);
+        }
+        #flockToast.warning {
+            border-left-color: #f59e0b;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.45), 0 0 18px rgba(245, 158, 11, 0.2);
+        }
+        #flockToast.error {
+            border-left-color: #ef4444;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.45), 0 0 18px rgba(239, 68, 68, 0.25);
+        }
+        #flockToast.info {
+            border-left-color: #6366f1;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.45), 0 0 18px rgba(99, 102, 241, 0.2);
+        }
 
-        .detection-item.replay {
-            border-left: 3px solid #6366f1;
-            background: rgba(99, 102, 241, 0.04);
+        @media (max-width: 800px) {
+            .flock-command-bar {
+                flex-wrap: wrap;
+                gap: 0.5rem;
+                padding: 0.5rem 0.75rem;
+            }
+            .fcb-divider, .fcb-spacer, .fcb-status-dot { display: none; }
+            .fcb-label { font-size: 0.65rem; }
+            .fcb-btn { font-size: 0.72rem; padding: 0.35rem 0.6rem; }
         }
 
         .detection-count {
@@ -1376,13 +1571,6 @@
                         </div>
                         <button id="connectFlockBtn">Connect</button>
                         <button id="disconnectFlockBtn" class="danger" style="display: none;">Disconnect</button>
-                        <div class="device-extra-controls" id="flockExtraControls" style="display: none;">
-                            <button class="flock-cmd-btn" id="dumpPrevBtn" title="Pull /prev_session.json from device SPIFFS (CMD:DUMP_PREV)" onclick="flockDumpPrev()">Pull Prev</button>
-                            <button class="flock-cmd-btn" id="dumpLiveBtn" title="Pull the device's in-RAM detection table (CMD:DUMP_LIVE)" onclick="flockDumpLive()">Pull Live</button>
-                            <button class="flock-cmd-btn" id="flockStatusBtn" title="Query device status (CMD:STATUS)" onclick="flockStatusQuery()">Status</button>
-                            <button class="flock-cmd-btn danger" id="clearPrevBtn" title="Delete /prev_session.json on the device (CMD:CLEAR_PREV)" onclick="flockClearPrev()">Clear Prev</button>
-                            <button class="flock-cmd-btn danger" id="clearLiveBtn" title="Wipe the device's in-RAM detection table (CMD:CLEAR_LIVE)" onclick="flockClearLive()">Clear Live</button>
-                        </div>
                     </div>
                     
                     <div class="device-control-group">
@@ -1418,6 +1606,51 @@
                     <button id="map-btn" class="map-btn" onclick="toggleMap()">Map</button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div id="flockCommandBar" class="flock-command-bar" role="toolbar" aria-label="Device commands">
+        <div class="fcb-label">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/><rect x="10" y="10" width="4" height="4"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
+            <span>Device</span>
+        </div>
+        <div class="fcb-status-dot" id="fcbStatusDot" title="Connected to Sniffer device">Online</div>
+        <div class="fcb-divider"></div>
+        <div class="fcb-section">
+            <button id="dumpPrevBtn" class="fcb-btn fcb-pull-prev"
+                    title="Pull /prev_session.json from device SPIFFS (CMD:DUMP_PREV)"
+                    onclick="flockDumpPrev()">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span class="fcb-btn-label">Pull Prev</span>
+            </button>
+            <button id="dumpLiveBtn" class="fcb-btn fcb-pull-live"
+                    title="Pull the device's in-RAM detection table (CMD:DUMP_LIVE)"
+                    onclick="flockDumpLive()">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                <span class="fcb-btn-label">Pull Live</span>
+            </button>
+            <button id="flockStatusBtn" class="fcb-btn fcb-status"
+                    title="Query device status (CMD:STATUS)"
+                    onclick="flockStatusQuery()">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                <span class="fcb-btn-label">Status</span>
+            </button>
+        </div>
+        <div class="fcb-spacer"></div>
+        <div class="fcb-divider"></div>
+        <div class="fcb-section">
+            <button id="clearPrevBtn" class="fcb-btn fcb-danger"
+                    title="Delete /prev_session.json on the device (CMD:CLEAR_PREV)"
+                    onclick="flockClearPrev()">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                <span class="fcb-btn-label">Clear Prev</span>
+            </button>
+            <button id="clearLiveBtn" class="fcb-btn fcb-danger"
+                    title="Wipe the device's in-RAM detection table (CMD:CLEAR_LIVE)"
+                    onclick="flockClearLive()">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                <span class="fcb-btn-label">Clear Live</span>
+            </button>
         </div>
     </div>
 
@@ -1889,8 +2122,10 @@
         }
 
         function setFlockExtraControls(visible) {
-            const el = document.getElementById('flockExtraControls');
-            if (el) el.style.display = visible ? 'flex' : 'none';
+            const el = document.getElementById('flockCommandBar');
+            if (!el) return;
+            if (visible) el.classList.add('show');
+            else         el.classList.remove('show');
         }
 
         function setFlockCmdButtonsBusy(busy, exceptId = null) {
@@ -1902,26 +2137,64 @@
             });
         }
 
+        // Per-pull progress — bumped by every replay_detection socket event.
+        // The protocol serializes one CMD:* at a time, so at most one pull is
+        // in flight; a single global state is enough.
+        const pullProgress = { active: null, count: 0, btnId: null, label: null };
+
+        function pullProgressStart(source, btnId, label) {
+            pullProgress.active = source;
+            pullProgress.count = 0;
+            pullProgress.btnId = btnId;
+            pullProgress.label = label;
+            pullProgressRender();
+        }
+        function pullProgressBump() {
+            if (!pullProgress.active) return;
+            pullProgress.count += 1;
+            pullProgressRender();
+        }
+        function pullProgressEnd() {
+            pullProgress.active = null;
+            pullProgress.count = 0;
+            pullProgress.btnId = null;
+            pullProgress.label = null;
+        }
+        function pullProgressRender() {
+            const btn = document.getElementById(pullProgress.btnId);
+            if (!btn) return;
+            const labelEl = btn.querySelector('.fcb-btn-label');
+            if (!labelEl) return;
+            const countBadge = pullProgress.count > 0
+                ? `<span class="fcb-btn-count">${pullProgress.count}</span>`
+                : '';
+            labelEl.innerHTML = `Pulling${countBadge}`;
+        }
+
         function flockPullSession(source) {
             const isPrev = source === 'prev';
             const btnId = isPrev ? 'dumpPrevBtn' : 'dumpLiveBtn';
             const btn = document.getElementById(btnId);
             if (!btn) return;
-            const original = btn.textContent;
+            const labelEl = btn.querySelector('.fcb-btn-label');
+            const originalLabel = labelEl ? labelEl.textContent : (isPrev ? 'Pull Prev' : 'Pull Live');
+
             setFlockCmdButtonsBusy(true, btnId);
-            btn.textContent = isPrev ? 'Pulling Prev…' : 'Pulling Live…';
-            showFlockToast(`Pulling ${isPrev ? 'previous-session' : 'live'} table from device…`, 'info', 0);
+            pullProgressStart(source, btnId, originalLabel);
+            showFlockToast(`Pulling ${isPrev ? 'previous session' : 'live table'} from device…`, 'info', 0);
 
             fetch(`/api/flock/dump_${source}`, { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
                     setFlockCmdButtonsBusy(false);
-                    btn.textContent = original;
+                    if (labelEl) labelEl.textContent = originalLabel;
+                    const finalCount = data.count ?? pullProgress.count;
+                    pullProgressEnd();
                     if (data.status === 'success') {
                         const reason = data.reason ? ` (${data.reason})` : '';
                         showFlockToast(
-                            `Pulled ${data.count ?? 0} detection(s) from device ${isPrev ? 'flash' : 'RAM'}${reason}`,
-                            data.count > 0 ? 'success' : 'warning');
+                            `Pulled ${finalCount} detection${finalCount === 1 ? '' : 's'} from device ${isPrev ? 'flash' : 'RAM'}${reason}`,
+                            finalCount > 0 ? 'success' : 'warning');
                     } else {
                         const reason = data.reason || data.message || 'unknown error';
                         showFlockToast(`Pull failed: ${reason}`, 'error');
@@ -1929,7 +2202,8 @@
                 })
                 .catch(err => {
                     setFlockCmdButtonsBusy(false);
-                    btn.textContent = original;
+                    if (labelEl) labelEl.textContent = originalLabel;
+                    pullProgressEnd();
                     showFlockToast(`Pull failed: ${err.message}`, 'error');
                 });
         }
@@ -1937,23 +2211,29 @@
         function flockDumpPrev() { flockPullSession('prev'); }
         function flockDumpLive() { flockPullSession('live'); }
 
+        function fcbBtnLabel(btnId) {
+            const btn = document.getElementById(btnId);
+            return btn ? btn.querySelector('.fcb-btn-label') : null;
+        }
+
         function flockStatusQuery() {
+            const labelEl = fcbBtnLabel('flockStatusBtn');
             const btn = document.getElementById('flockStatusBtn');
-            const original = btn.textContent;
+            const original = labelEl ? labelEl.textContent : 'Status';
             btn.disabled = true;
-            btn.textContent = '…';
+            if (labelEl) labelEl.textContent = 'Querying…';
             fetch('/api/flock/status')
                 .then(r => r.json())
                 .then(data => {
                     btn.disabled = false;
-                    btn.textContent = original;
+                    if (labelEl) labelEl.textContent = original;
                     if (data.status === 'success' && data.firmware_status) {
                         const s = data.firmware_status;
                         const heapKB = s.free_heap ? Math.round(s.free_heap / 1024) : '?';
                         const uptimeSec = s.uptime_ms ? Math.round(s.uptime_ms / 1000) : 0;
                         showFlockToast(
-                            `det=${s.fy_det} ouis=${s.oui_count} prev=${s.prev_session ? 'yes' : 'no'} ` +
-                            `ch=${s.channel} heap=${heapKB}KB up=${uptimeSec}s`,
+                            `det=${s.fy_det} · ouis=${s.oui_count} · prev=${s.prev_session ? 'yes' : 'no'} · ` +
+                            `ch=${s.channel} · heap=${heapKB}KB · up=${uptimeSec}s`,
                             'success', 6000);
                     } else {
                         showFlockToast(`Status failed: ${data.message || 'no response'}`, 'error');
@@ -1961,7 +2241,7 @@
                 })
                 .catch(err => {
                     btn.disabled = false;
-                    btn.textContent = original;
+                    if (labelEl) labelEl.textContent = original;
                     showFlockToast(`Status failed: ${err.message}`, 'error');
                 });
         }
@@ -1971,14 +2251,15 @@
             if (!confirm(`Wipe the ${label}?`)) return;
             const btnId = target === 'prev' ? 'clearPrevBtn' : 'clearLiveBtn';
             const btn = document.getElementById(btnId);
-            const original = btn.textContent;
+            const labelEl = fcbBtnLabel(btnId);
+            const original = labelEl ? labelEl.textContent : (target === 'prev' ? 'Clear Prev' : 'Clear Live');
             btn.disabled = true;
-            btn.textContent = '…';
+            if (labelEl) labelEl.textContent = 'Clearing…';
             fetch(`/api/flock/clear_${target}`, { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
                     btn.disabled = false;
-                    btn.textContent = original;
+                    if (labelEl) labelEl.textContent = original;
                     if (data.status === 'success') {
                         showFlockToast(`Cleared device ${target === 'prev' ? '/prev_session.json' : 'in-RAM table'}`, 'success');
                     } else {
@@ -1987,7 +2268,7 @@
                 })
                 .catch(err => {
                     btn.disabled = false;
-                    btn.textContent = original;
+                    if (labelEl) labelEl.textContent = original;
                     showFlockToast(`Clear failed: ${err.message}`, 'error');
                 });
         }
@@ -2206,12 +2487,19 @@
 
                 const isReplay = detection.replay === true || detection.timestamp_source === 'device_replay';
                 const replaySource = detection.replay_source || (isReplay ? 'device' : null);
+                const isLiveSrc = replaySource === 'live';
+                // Inline icons: a small chip glyph for FLASH, a wave for RAM.
+                const replayIcon = isLiveSrc
+                    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h3l2 -6 4 12 2 -6h7"/></svg>'
+                    : '<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4.03 3 9 3s9 -1.34 9 -3v-6"/><path d="M3 11v6c0 1.66 4.03 3 9 3s9 -1.34 9 -3v-6"/></svg>';
                 const replayBadge = isReplay
-                    ? `<span class="replay-badge ${replaySource === 'live' ? 'live' : ''}" title="From device memory${replaySource ? ' (' + replaySource + ')' : ''}">${replaySource === 'live' ? 'RAM' : 'FLASH'}</span>`
+                    ? `<span class="replay-badge ${isLiveSrc ? 'live' : ''}" title="From device ${isLiveSrc ? 'in-RAM table (CMD:DUMP_LIVE)' : 'SPIFFS / prev_session.json (CMD:DUMP_PREV)'}">${replayIcon}<span>${isLiveSrc ? 'RAM' : 'FLASH'}</span></span>`
                     : '';
 
+                const replayClass = isReplay ? (isLiveSrc ? ' replay live-source' : ' replay') : '';
+
                 return `
-                    <div class="detection-item${isReplay ? ' replay' : ''}">
+                    <div class="detection-item${replayClass}">
                         <div class="detection-header">
                             <div class="detection-header-left">
                                 <div class="detection-type-badge">
@@ -2457,6 +2745,8 @@
                 detections.push(detection);
                 cumulativeDetections.push(detection);
             }
+            // Live progress counter on the in-flight Pull button
+            pullProgressBump();
             updateStats();
             renderDetections();
         });
