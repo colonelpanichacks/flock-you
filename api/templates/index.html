@@ -873,6 +873,82 @@
             letter-spacing: 0.3px;
         }
 
+        .replay-badge {
+            background: #6366f1;
+            color: white;
+            padding: 0.15rem 0.4rem;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        .replay-badge.live { background: #0ea5e9; }
+
+        .device-extra-controls {
+            display: flex;
+            gap: 0.4rem;
+            margin-top: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .flock-cmd-btn {
+            background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+            border-color: #4338ca;
+            font-size: 0.85rem;
+            padding: 0.4rem 0.7rem;
+        }
+        .flock-cmd-btn:hover {
+            background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+        }
+        .flock-cmd-btn:disabled {
+            background: #475569;
+            border-color: #334155;
+            cursor: not-allowed;
+            opacity: 0.65;
+            transform: none;
+            box-shadow: none;
+        }
+        .flock-cmd-btn.danger {
+            background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%);
+            border-color: #991b1b;
+        }
+        .flock-cmd-btn.danger:hover {
+            background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+        }
+
+        #flockToast {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            min-width: 280px;
+            max-width: 420px;
+            padding: 0.7rem 1rem;
+            border-radius: 6px;
+            background: #1e293b;
+            color: #e2e8f0;
+            border-left: 4px solid #6366f1;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            font-size: 0.9rem;
+            z-index: 9999;
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: opacity 0.2s, transform 0.2s;
+            pointer-events: none;
+        }
+        #flockToast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        #flockToast.success { border-left-color: #22c55e; }
+        #flockToast.warning { border-left-color: #f59e0b; }
+        #flockToast.error   { border-left-color: #ef4444; }
+        #flockToast.info    { border-left-color: #6366f1; }
+
+        .detection-item.replay {
+            border-left: 3px solid #6366f1;
+            background: rgba(99, 102, 241, 0.04);
+        }
+
         .detection-count {
             background: #059669;
             color: white;
@@ -1279,6 +1355,8 @@
 </head>
 <body>
 
+    <div id="flockToast" role="status" aria-live="polite"></div>
+
     <div class="header">
         <div class="header-content">
             <div class="header-title">
@@ -1298,6 +1376,13 @@
                         </div>
                         <button id="connectFlockBtn">Connect</button>
                         <button id="disconnectFlockBtn" class="danger" style="display: none;">Disconnect</button>
+                        <div class="device-extra-controls" id="flockExtraControls" style="display: none;">
+                            <button class="flock-cmd-btn" id="dumpPrevBtn" title="Pull /prev_session.json from device SPIFFS (CMD:DUMP_PREV)" onclick="flockDumpPrev()">Pull Prev</button>
+                            <button class="flock-cmd-btn" id="dumpLiveBtn" title="Pull the device's in-RAM detection table (CMD:DUMP_LIVE)" onclick="flockDumpLive()">Pull Live</button>
+                            <button class="flock-cmd-btn" id="flockStatusBtn" title="Query device status (CMD:STATUS)" onclick="flockStatusQuery()">Status</button>
+                            <button class="flock-cmd-btn danger" id="clearPrevBtn" title="Delete /prev_session.json on the device (CMD:CLEAR_PREV)" onclick="flockClearPrev()">Clear Prev</button>
+                            <button class="flock-cmd-btn danger" id="clearLiveBtn" title="Wipe the device's in-RAM detection table (CMD:CLEAR_LIVE)" onclick="flockClearLive()">Clear Live</button>
+                        </div>
                     </div>
                     
                     <div class="device-control-group">
@@ -1753,6 +1838,7 @@
                     updateFlockStatus(true);
                     document.getElementById('connectFlockBtn').style.display = 'none';
                     document.getElementById('disconnectFlockBtn').style.display = 'inline-block';
+                    setFlockExtraControls(true);
                 } else {
                     alert('Flock You connection failed: ' + data.message);
                 }
@@ -1765,7 +1851,7 @@
 
         function disconnectFlock() {
             console.log('Disconnecting Flock device');
-            
+
             fetch('/api/flock/disconnect', {
                 method: 'POST'
             })
@@ -1776,12 +1862,137 @@
                     updateFlockStatus(false);
                     document.getElementById('connectFlockBtn').style.display = 'inline-block';
                     document.getElementById('disconnectFlockBtn').style.display = 'none';
+                    setFlockExtraControls(false);
                 }
             })
             .catch(error => {
                 console.error('Flock disconnect error:', error);
             });
         }
+
+        // ============================================================
+        // Host command protocol UI (CMD:STATUS / CMD:DUMP_* / CMD:CLEAR_*)
+        // ============================================================
+
+        let flockToastTimer = null;
+        function showFlockToast(message, kind = 'info', timeout = 4000) {
+            const el = document.getElementById('flockToast');
+            if (!el) return;
+            el.textContent = message;
+            el.classList.remove('success', 'warning', 'error', 'info');
+            el.classList.add(kind);
+            el.classList.add('show');
+            if (flockToastTimer) clearTimeout(flockToastTimer);
+            if (timeout > 0) {
+                flockToastTimer = setTimeout(() => { el.classList.remove('show'); }, timeout);
+            }
+        }
+
+        function setFlockExtraControls(visible) {
+            const el = document.getElementById('flockExtraControls');
+            if (el) el.style.display = visible ? 'flex' : 'none';
+        }
+
+        function setFlockCmdButtonsBusy(busy, exceptId = null) {
+            ['dumpPrevBtn', 'dumpLiveBtn', 'flockStatusBtn', 'clearPrevBtn', 'clearLiveBtn'].forEach(id => {
+                const btn = document.getElementById(id);
+                if (!btn) return;
+                if (busy && id !== exceptId) btn.disabled = true;
+                else btn.disabled = false;
+            });
+        }
+
+        function flockPullSession(source) {
+            const isPrev = source === 'prev';
+            const btnId = isPrev ? 'dumpPrevBtn' : 'dumpLiveBtn';
+            const btn = document.getElementById(btnId);
+            if (!btn) return;
+            const original = btn.textContent;
+            setFlockCmdButtonsBusy(true, btnId);
+            btn.textContent = isPrev ? 'Pulling Prev…' : 'Pulling Live…';
+            showFlockToast(`Pulling ${isPrev ? 'previous-session' : 'live'} table from device…`, 'info', 0);
+
+            fetch(`/api/flock/dump_${source}`, { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    setFlockCmdButtonsBusy(false);
+                    btn.textContent = original;
+                    if (data.status === 'success') {
+                        const reason = data.reason ? ` (${data.reason})` : '';
+                        showFlockToast(
+                            `Pulled ${data.count ?? 0} detection(s) from device ${isPrev ? 'flash' : 'RAM'}${reason}`,
+                            data.count > 0 ? 'success' : 'warning');
+                    } else {
+                        const reason = data.reason || data.message || 'unknown error';
+                        showFlockToast(`Pull failed: ${reason}`, 'error');
+                    }
+                })
+                .catch(err => {
+                    setFlockCmdButtonsBusy(false);
+                    btn.textContent = original;
+                    showFlockToast(`Pull failed: ${err.message}`, 'error');
+                });
+        }
+
+        function flockDumpPrev() { flockPullSession('prev'); }
+        function flockDumpLive() { flockPullSession('live'); }
+
+        function flockStatusQuery() {
+            const btn = document.getElementById('flockStatusBtn');
+            const original = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '…';
+            fetch('/api/flock/status')
+                .then(r => r.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.textContent = original;
+                    if (data.status === 'success' && data.firmware_status) {
+                        const s = data.firmware_status;
+                        const heapKB = s.free_heap ? Math.round(s.free_heap / 1024) : '?';
+                        const uptimeSec = s.uptime_ms ? Math.round(s.uptime_ms / 1000) : 0;
+                        showFlockToast(
+                            `det=${s.fy_det} ouis=${s.oui_count} prev=${s.prev_session ? 'yes' : 'no'} ` +
+                            `ch=${s.channel} heap=${heapKB}KB up=${uptimeSec}s`,
+                            'success', 6000);
+                    } else {
+                        showFlockToast(`Status failed: ${data.message || 'no response'}`, 'error');
+                    }
+                })
+                .catch(err => {
+                    btn.disabled = false;
+                    btn.textContent = original;
+                    showFlockToast(`Status failed: ${err.message}`, 'error');
+                });
+        }
+
+        function flockClearSession(target) {
+            const label = target === 'prev' ? 'previous session on device flash' : 'live detection table on device';
+            if (!confirm(`Wipe the ${label}?`)) return;
+            const btnId = target === 'prev' ? 'clearPrevBtn' : 'clearLiveBtn';
+            const btn = document.getElementById(btnId);
+            const original = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '…';
+            fetch(`/api/flock/clear_${target}`, { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.textContent = original;
+                    if (data.status === 'success') {
+                        showFlockToast(`Cleared device ${target === 'prev' ? '/prev_session.json' : 'in-RAM table'}`, 'success');
+                    } else {
+                        showFlockToast(`Clear failed: ${(data.firmware && data.firmware.reason) || data.message || 'unknown'}`, 'error');
+                    }
+                })
+                .catch(err => {
+                    btn.disabled = false;
+                    btn.textContent = original;
+                    showFlockToast(`Clear failed: ${err.message}`, 'error');
+                });
+        }
+        function flockClearPrev() { flockClearSession('prev'); }
+        function flockClearLive() { flockClearSession('live'); }
 
         function connectGps() {
             const port = document.getElementById('gpsPortSelect').value;
@@ -1869,6 +2080,7 @@
                     if (data.flock_connected) {
                         document.getElementById('connectFlockBtn').style.display = 'none';
                         document.getElementById('disconnectFlockBtn').style.display = 'inline-block';
+                        setFlockExtraControls(true);
                     }
                     
                     if (data.gps_connected) {
@@ -1992,14 +2204,21 @@
                     gpsLink = `<a href="${osmUrl}" target="_blank" class="gps-link">${lat.toFixed(4)}, ${lon.toFixed(4)}</a>`;
                 }
 
+                const isReplay = detection.replay === true || detection.timestamp_source === 'device_replay';
+                const replaySource = detection.replay_source || (isReplay ? 'device' : null);
+                const replayBadge = isReplay
+                    ? `<span class="replay-badge ${replaySource === 'live' ? 'live' : ''}" title="From device memory${replaySource ? ' (' + replaySource + ')' : ''}">${replaySource === 'live' ? 'RAM' : 'FLASH'}</span>`
+                    : '';
+
                 return `
-                    <div class="detection-item">
+                    <div class="detection-item${isReplay ? ' replay' : ''}">
                         <div class="detection-header">
                             <div class="detection-header-left">
                                 <div class="detection-type-badge">
                                     <span class="detection-type">${detection.detection_method ? detection.detection_method.toUpperCase() : 'UNKNOWN'}</span>
                                     <span class="detection-count">${count}×</span>
                                     ${detection.gps && detection.gps.latitude !== undefined ? '<span class="gps-tag">GPS</span>' : ''}
+                                    ${replayBadge}
                                 </div>
                                 ${gpsLink}
                             </div>
@@ -2224,6 +2443,51 @@
             const disconnectBtn = document.getElementById('disconnectFlockBtn');
             if (connectBtn) connectBtn.style.display = 'inline-block';
             if (disconnectBtn) disconnectBtn.style.display = 'none';
+            setFlockExtraControls(false);
+        });
+
+        // ============================================================
+        // Server-side command protocol events (from add_replay_detection
+        // and handle_command_event in flockyou.py).
+        // ============================================================
+        socket.on('replay_detection', function(detection) {
+            // Treat replayed detections like new ones for the in-memory
+            // list, but flag them so renderDetections shows the badge.
+            if (!detections.find(d => d.id === detection.id)) {
+                detections.push(detection);
+                cumulativeDetections.push(detection);
+            }
+            updateStats();
+            renderDetections();
+        });
+
+        socket.on('flock_replay_complete', function(info) {
+            const reason = info && info.reason ? ` (${info.reason})` : '';
+            const src = info && info.source ? info.source : 'device';
+            const ok = info && info.ok;
+            if (ok) {
+                showFlockToast(`Replay complete: ${info.count || 0} entries from ${src}${reason}`,
+                               (info.count || 0) > 0 ? 'success' : 'warning');
+            } else {
+                showFlockToast(`Replay failed${reason}`, 'error');
+            }
+        });
+
+        socket.on('flock_status', function(info) {
+            // The /api/flock/status REST call also gets this payload via the
+            // synchronous response. The socket event is for any other client
+            // tabs that should reflect the same state — no popup needed.
+            console.log('Flock status broadcast:', info);
+        });
+
+        socket.on('flock_clear', function(info) {
+            console.log('Flock clear broadcast:', info);
+        });
+
+        socket.on('flock_error', function(info) {
+            const reason = (info && info.reason) || 'unknown';
+            const cmd = (info && info.cmd) ? ` (${info.cmd})` : '';
+            showFlockToast(`Device error: ${reason}${cmd}`, 'error');
         });
 
         socket.on('detections_cleared', function() {
