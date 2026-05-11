@@ -237,8 +237,11 @@ typedef struct __attribute__((packed)) {
 // HELPERS
 // ============================================================
 
-// Dual-output: prints to both Serial (USB) and Serial1 (GPIO43)
-static char _dualBuf[384];
+// Dual-output: prints to both Serial (USB) and Serial1 (GPIO43).
+// Sized to fit the longest line we emit: a replay-detection JSON record
+// with worst-case JSON-escaped SSID (32 chars → up to 192 bytes) plus the
+// envelope fields — ~600 B comfortably under 1024.
+static char _dualBuf[1024];
 
 static void dualPrintf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 static void dualPrintf(const char* fmt, ...) {
@@ -792,6 +795,318 @@ static void emitDetectionJSON(const char* mac, const char* method,
       (unsigned)ch, (unsigned)channelFreqMhz(ch), ssidEsc);
 }
 
+// Replay emission — used for both live-table dumps and SPIFFS-backed
+// historical dumps. Same Flask JSON shape as live detections, but flagged
+// with "replay":true and the source ("live"|"prev") plus the device's
+// monotonic millis() snapshots so the host can decide how to present them.
+static void emitReplayDetection(const char* mac, const char* method,
+                                int8_t rssi, uint8_t ch, const char* ssid,
+                                uint16_t count,
+                                uint32_t firstMs, uint32_t lastMs,
+                                const char* source) {
+  char ssidEsc[sizeof(((FYDetection*)0)->ssid) * 6 + 1];
+  jsonEscape(ssidEsc, sizeof(ssidEsc), ssid ? ssid : "");
+  char oui[9];
+  uint8_t mbytes[6] = {0};
+  sscanf(mac, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+         &mbytes[0], &mbytes[1], &mbytes[2], &mbytes[3], &mbytes[4], &mbytes[5]);
+  ouiFromMac(mbytes, oui, sizeof(oui));
+
+  dualPrintf(
+      "{\"event\":\"detection\","
+      "\"replay\":true,"
+      "\"replay_source\":\"%s\","
+      "\"detection_method\":\"wifi_%s\","
+      "\"protocol\":\"wifi_2_4ghz\","
+      "\"mac_address\":\"%s\","
+      "\"oui\":\"%s\","
+      "\"device_name\":\"\","
+      "\"rssi\":%d,"
+      "\"channel\":%u,"
+      "\"frequency\":%u,"
+      "\"ssid\":\"%s\","
+      "\"detection_count\":%u,"
+      "\"device_first_ms\":%lu,"
+      "\"device_last_ms\":%lu}\n",
+      source, method, mac, oui, rssi,
+      (unsigned)ch, (unsigned)channelFreqMhz(ch), ssidEsc,
+      (unsigned)count, (unsigned long)firstMs, (unsigned long)lastMs);
+}
+
+// ============================================================
+// HOST COMMAND INTERFACE  (Flask ↔ firmware over USB-CDC)
+// ============================================================
+//
+// Line-based protocol. The host writes one ASCII command per line
+// terminated by \n (or \r\n). The firmware replies with one or more JSON
+// objects, each on its own line, in the same `{"event":...}` schema the
+// Flask reader already understands.
+//
+// Commands:
+//   CMD:STATUS         → emits one {"event":"status",...} line
+//   CMD:DUMP_LIVE      → streams the current in-RAM detection table as
+//                         replay-detection lines, then a replay_complete
+//                         sentinel with source="live"
+//   CMD:DUMP_PREV      → same, but reads /prev_session.json from SPIFFS
+//                         (the previous boot's persisted session)
+//   CMD:CLEAR_LIVE     → wipes the in-RAM detection table
+//   CMD:CLEAR_PREV     → deletes /prev_session.json (and any /session.tmp)
+//   CMD:VERSION        → emits {"event":"version",...}
+//
+// Commands are case-sensitive. Unknown commands emit an "error" event.
+// Lines longer than CMD_BUF_SIZE-1 are silently truncated at the boundary.
+
+#define CMD_BUF_SIZE   80
+#define REPLAY_OBJ_CAP 384      // generous: longest serialized entry ~330 B
+
+static char cmdBuf[CMD_BUF_SIZE];
+static size_t cmdLen = 0;
+
+// Find the start of `"<key>":` inside a flat JSON object string.
+// Returns pointer to the byte after the closing `:` (i.e. start of the value),
+// or null. The caller must skip whitespace.
+static const char* jsonValueStart(const char* obj, const char* key) {
+  char pat[24];
+  int n = snprintf(pat, sizeof(pat), "\"%s\":", key);
+  if (n <= 0 || (size_t)n >= sizeof(pat)) return nullptr;
+  const char* p = strstr(obj, pat);
+  if (!p) return nullptr;
+  return p + n;
+}
+
+// Copy the contents of a JSON string field into dst (un-escaped).
+// Returns false if the field isn't a string or doesn't exist.
+static bool jsonGetString(const char* obj, const char* key, char* dst, size_t cap) {
+  const char* p = jsonValueStart(obj, key);
+  if (!p) return false;
+  while (*p == ' ' || *p == '\t') p++;
+  if (*p != '"') return false;
+  p++;
+  size_t out = 0;
+  bool esc = false;
+  while (*p && out < cap - 1) {
+    if (esc) {
+      dst[out++] = *p++;
+      esc = false;
+    } else if (*p == '\\') {
+      esc = true; p++;
+    } else if (*p == '"') {
+      break;
+    } else {
+      dst[out++] = *p++;
+    }
+  }
+  dst[out] = '\0';
+  return true;
+}
+
+static bool jsonGetInt(const char* obj, const char* key, long* out) {
+  const char* p = jsonValueStart(obj, key);
+  if (!p) return false;
+  while (*p == ' ' || *p == '\t') p++;
+  char* endp = nullptr;
+  long v = strtol(p, &endp, 10);
+  if (endp == p) return false;
+  *out = v;
+  return true;
+}
+
+// Stream-read one top-level `{...}` JSON object from `f` into `buf`.
+// Skips whitespace, commas, and the array `[`. Returns false on `]`, EOF,
+// or malformed input. String-aware brace counting handles `{`/`}` inside
+// SSID values (the writer doesn't escape those).
+static bool readNextJSONObject(File& f, char* buf, size_t cap) {
+  int c;
+  while ((c = f.read()) >= 0) {
+    if (c == '{') break;
+    if (c == ']') return false;
+  }
+  if (c != '{') return false;
+
+  size_t pos = 0;
+  buf[pos++] = '{';
+  int depth = 1;
+  bool in_str = false;
+  bool esc = false;
+  while ((c = f.read()) >= 0) {
+    if (pos >= cap - 1) return false;
+    buf[pos++] = (char)c;
+    if (esc) { esc = false; continue; }
+    if (in_str) {
+      if (c == '\\')      esc = true;
+      else if (c == '"')  in_str = false;
+    } else {
+      if      (c == '"')  in_str = true;
+      else if (c == '{')  depth++;
+      else if (c == '}') {
+        depth--;
+        if (depth == 0) { buf[pos] = '\0'; return true; }
+      }
+    }
+  }
+  return false;
+}
+
+static void cmdEmitStatus() {
+  size_t prevSize = 0;
+  bool prevExists = false;
+  if (fySpiffsReady && SPIFFS.exists(FY_PREV_FILE)) {
+    prevExists = true;
+    File v = SPIFFS.open(FY_PREV_FILE, "r");
+    if (v) { prevSize = v.size(); v.close(); }
+  }
+  dualPrintf(
+      "{\"event\":\"status\","
+      "\"fy_det\":%d,"
+      "\"oui_count\":%u,"
+      "\"spiffs\":%d,"
+      "\"prev_session\":%d,"
+      "\"prev_bytes\":%u,"
+      "\"uptime_ms\":%lu,"
+      "\"free_heap\":%u,"
+      "\"channel\":%u,"
+      "\"channel_mode\":\"%s\","
+      "\"rssi_min\":%d}\n",
+      fyDetCount, (unsigned)OUI_COUNT, fySpiffsReady ? 1 : 0,
+      prevExists ? 1 : 0, (unsigned)prevSize,
+      (unsigned long)millis(), (unsigned)ESP.getFreeHeap(),
+      (unsigned)currentChannel, channelModeName(), RSSI_MIN);
+}
+
+static void cmdEmitVersion() {
+  dualPrintf(
+      "{\"event\":\"version\","
+      "\"firmware\":\"flock-you-promiscious\","
+      "\"branch\":\"promiscious\","
+      "\"oui_count\":%u,"
+      "\"max_detections\":%d,"
+      "\"autosave_ms\":%lu}\n",
+      (unsigned)OUI_COUNT, MAX_DETECTIONS, (unsigned long)AUTOSAVE_INTERVAL_MS);
+}
+
+static int cmdDumpLive() {
+  int n = 0;
+  for (int i = 0; i < fyDetCount; i++) {
+    const FYDetection& d = fyDet[i];
+    emitReplayDetection(d.mac, d.method, d.rssi, d.channel,
+                        d.ssid, d.count, d.firstSeen, d.lastSeen, "live");
+    n++;
+  }
+  return n;
+}
+
+static int cmdDumpPrev() {
+  if (!fySpiffsReady)                       return -2;
+  if (!SPIFFS.exists(FY_PREV_FILE))         return -1;
+  if (!fyValidateSessionFile(FY_PREV_FILE)) return -3;
+
+  File f = SPIFFS.open(FY_PREV_FILE, "r");
+  if (!f) return -4;
+  // Discard envelope header line; the array starts on line 2.
+  f.readStringUntil('\n');
+
+  char obj[REPLAY_OBJ_CAP];
+  int n = 0;
+  while (readNextJSONObject(f, obj, sizeof(obj))) {
+    char mac[18]   = {0};
+    char method[16]= {0};
+    char ssid[33]  = {0};
+    long rssi = 0, channel = 0, count = 1, firstMs = 0, lastMs = 0;
+
+    if (!jsonGetString(obj, "mac", mac, sizeof(mac)))       continue;
+    if (!jsonGetString(obj, "method", method, sizeof(method))) continue;
+    jsonGetInt(obj, "rssi",    &rssi);
+    jsonGetInt(obj, "channel", &channel);
+    jsonGetInt(obj, "count",   &count);
+    jsonGetInt(obj, "first",   &firstMs);
+    jsonGetInt(obj, "last",    &lastMs);
+    jsonGetString(obj, "ssid", ssid, sizeof(ssid));
+
+    if (rssi < -128) rssi = -128; else if (rssi > 127) rssi = 127;
+    if (channel < 0) channel = 0; else if (channel > 255) channel = 255;
+    if (count   < 0) count   = 0; else if (count   > 0xFFFF) count = 0xFFFF;
+
+    emitReplayDetection(mac, method, (int8_t)rssi, (uint8_t)channel,
+                        ssid, (uint16_t)count,
+                        (uint32_t)firstMs, (uint32_t)lastMs, "prev");
+    n++;
+  }
+  f.close();
+  return n;
+}
+
+static void cmdClearLive() {
+  fyDetCount = 0;
+  fyDirty    = true;        // force the next autosave to overwrite the file
+  dualPrintf("{\"event\":\"clear\",\"target\":\"live\",\"ok\":true}\n");
+}
+
+static void cmdClearPrev() {
+  bool ok = false;
+  if (fySpiffsReady) {
+    if (SPIFFS.exists(FY_PREV_FILE)) ok = SPIFFS.remove(FY_PREV_FILE) || ok;
+    // Also sweep any stray /session.tmp left over from an aborted save.
+    if (SPIFFS.exists(FY_SESSION_TMP)) SPIFFS.remove(FY_SESSION_TMP);
+    if (!SPIFFS.exists(FY_PREV_FILE)) ok = true;
+  }
+  dualPrintf("{\"event\":\"clear\",\"target\":\"prev\",\"ok\":%s}\n",
+             ok ? "true" : "false");
+}
+
+static void handleCommand(const char* cmd) {
+  if (strcmp(cmd, "CMD:STATUS") == 0) {
+    cmdEmitStatus();
+  } else if (strcmp(cmd, "CMD:VERSION") == 0) {
+    cmdEmitVersion();
+  } else if (strcmp(cmd, "CMD:DUMP_LIVE") == 0) {
+    int n = cmdDumpLive();
+    dualPrintf("{\"event\":\"replay_complete\",\"source\":\"live\","
+               "\"count\":%d,\"ok\":true}\n", n);
+  } else if (strcmp(cmd, "CMD:DUMP_PREV") == 0) {
+    int n = cmdDumpPrev();
+    if (n >= 0) {
+      dualPrintf("{\"event\":\"replay_complete\",\"source\":\"prev\","
+                 "\"count\":%d,\"ok\":true}\n", n);
+    } else {
+      const char* reason =
+          (n == -1) ? "no_file"      :
+          (n == -2) ? "spiffs_down"  :
+          (n == -3) ? "crc_mismatch" :
+          (n == -4) ? "open_failed"  : "unknown";
+      dualPrintf("{\"event\":\"replay_complete\",\"source\":\"prev\","
+                 "\"count\":0,\"ok\":false,\"reason\":\"%s\"}\n", reason);
+    }
+  } else if (strcmp(cmd, "CMD:CLEAR_LIVE") == 0) {
+    cmdClearLive();
+  } else if (strcmp(cmd, "CMD:CLEAR_PREV") == 0) {
+    cmdClearPrev();
+  } else {
+    char escCmd[CMD_BUF_SIZE * 2];
+    jsonEscape(escCmd, sizeof(escCmd), cmd);
+    dualPrintf("{\"event\":\"error\",\"reason\":\"unknown_command\","
+               "\"cmd\":\"%s\"}\n", escCmd);
+  }
+}
+
+static void serialCmdTick() {
+  while (Serial.available() > 0) {
+    int b = Serial.read();
+    if (b < 0) break;
+    if (b == '\n' || b == '\r') {
+      if (cmdLen > 0) {
+        cmdBuf[cmdLen] = '\0';
+        handleCommand(cmdBuf);
+        cmdLen = 0;
+      }
+    } else if (cmdLen < CMD_BUF_SIZE - 1) {
+      cmdBuf[cmdLen++] = (char)b;
+    }
+    // Lines longer than CMD_BUF_SIZE-1 silently truncate; the closing
+    // newline still flushes whatever fits and handleCommand sees garbage,
+    // which gets rejected as "unknown_command".
+  }
+}
+
 // ============================================================
 // PROMISCUOUS CALLBACK  — keep it fast, no Serial, no malloc
 // ============================================================
@@ -1121,6 +1436,7 @@ void setup() {
 void loop() {
   updateChannelMode();
   drainAlertQueue();   // Serial.printf happens here, not in callback
+  serialCmdTick();     // CMD:STATUS / CMD:DUMP_* / CMD:CLEAR_* over USB-CDC
   autosaveTick();      // periodic SPIFFS write if dirty
   heartbeatTick();     // audible beep-pair while a target is still in range
   ledTick();           // turn off LED after LED_FLASH_MS

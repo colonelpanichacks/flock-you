@@ -147,7 +147,7 @@ Boot recovery:
 1. If `/session.json` validates, promote it to `/prev_session.json`
 2. Otherwise try `/session.tmp` (interrupted save)
 3. Delete both working files, start with an empty live table
-4. `/prev_session.json` stays around for inspection
+4. `/prev_session.json` stays around — host pulls it via `CMD:DUMP_PREV` (see "Host command protocol" below)
 
 CRC32 uses the standard `0xEDB88320` polynomial so the same file can be verified on a host with any off-the-shelf CRC tool.
 
@@ -168,6 +168,57 @@ The firmware emits one JSON line per detection in the same schema the BLE detect
 - `wifi_oui_addr1` — **receiver-side OUI match** (the @NitekryDPaul technique)
 - `wifi_oui_addr3` — BSSID OUI match (mgmt frames only; disabled by default)
 - `wifi_ssid` — SSID keyword match (disabled by default)
+
+### Host command protocol
+
+The firmware also accepts line-delimited ASCII commands on the same
+USB-CDC port so Flask (or any host) can pull stored detections, query
+device status, or wipe state without re-flashing. All commands are
+terminated with `\n`; every reply is a single JSON object on its own
+line, matching the existing `{"event":...}` schema.
+
+| Command | Reply event | Notes |
+|---|---|---|
+| `CMD:STATUS`     | `status`           | Live counters: `fy_det`, `oui_count`, `spiffs`, `prev_session`, `uptime_ms`, `free_heap`, `channel`, `rssi_min` |
+| `CMD:VERSION`    | `version`          | Firmware identifier + compile-time constants (`oui_count`, `max_detections`, `autosave_ms`) |
+| `CMD:DUMP_LIVE`  | N × `detection` then `replay_complete` | Streams the current in-RAM detection table; each line has `"replay":true,"replay_source":"live"` |
+| `CMD:DUMP_PREV`  | N × `detection` then `replay_complete` | Same shape but reads `/prev_session.json` from SPIFFS — i.e. what the device caught before the last reboot |
+| `CMD:CLEAR_LIVE` | `clear`            | Empties `fyDet[]`; the next autosave overwrites the persisted session |
+| `CMD:CLEAR_PREV` | `clear`            | Deletes `/prev_session.json` and any leftover `/session.tmp` |
+
+A replayed detection line:
+
+```json
+{"event":"detection","replay":true,"replay_source":"prev","detection_method":"wifi_oui_addr2","protocol":"wifi_2_4ghz","mac_address":"aa:bb:cc:dd:ee:ff","oui":"aa:bb:cc","device_name":"","rssi":-62,"channel":6,"frequency":2437,"ssid":"","detection_count":17,"device_first_ms":12345678,"device_last_ms":18900000}
+```
+
+`device_first_ms` / `device_last_ms` are the device's monotonic millis at
+the time of recording — useful for ordering, but not wall-clock. Flask
+treats replayed entries as historical (`timestamp_source: device_replay`),
+skips GPS temporal matching, and does not overwrite a fresher live entry
+for the same MAC.
+
+Flask exposes the protocol as REST endpoints:
+
+| Endpoint | Method | Sends | Returns when |
+|---|---|---|---|
+| `/api/flock/status`     | GET  | `CMD:STATUS`     | `status` event arrives |
+| `/api/flock/version`    | GET  | `CMD:VERSION`    | `version` event arrives |
+| `/api/flock/dump_prev`  | POST | `CMD:DUMP_PREV`  | `replay_complete` arrives (or 30 s timeout) |
+| `/api/flock/dump_live`  | POST | `CMD:DUMP_LIVE`  | `replay_complete` arrives (or 30 s timeout) |
+| `/api/flock/clear_prev` | POST | `CMD:CLEAR_PREV` | `clear` event arrives |
+| `/api/flock/clear_live` | POST | `CMD:CLEAR_LIVE` | `clear` event arrives |
+
+The typical "I just plugged the device back in after wardriving" workflow:
+
+```bash
+curl -X POST http://localhost:5000/api/flock/dump_prev
+curl -X POST http://localhost:5000/api/flock/clear_prev
+```
+
+The first call pulls everything the device caught since you last had it
+connected and adds it to the cumulative dataset; the second wipes the
+file from SPIFFS so the next run starts clean.
 
 ### GPS wardriving
 

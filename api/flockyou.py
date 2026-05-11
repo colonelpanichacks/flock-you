@@ -40,6 +40,19 @@ serial_queue = queue.Queue()
 next_detection_id = 1  # Unique ID counter
 settings = {'gps_port': '', 'flock_port': '', 'filter': 'all'}
 
+# Host ↔ firmware command coordination (matches the CMD:* protocol in
+# main.cpp). One serialized command at a time; replies arrive on the
+# normal serial reader thread and are dispatched by `event` type.
+command_lock = threading.Lock()
+_cmd_state = {
+    'status':           {'data': None, 'event': threading.Event()},
+    'version':          {'data': None, 'event': threading.Event()},
+    'replay_complete':  {'data': None, 'event': threading.Event()},
+    'clear':            {'data': None, 'event': threading.Event()},
+    'error':            {'data': None, 'event': threading.Event()},
+}
+replay_progress = {'in_progress': False, 'source': None, 'received': 0}
+
 # Data storage paths
 DATA_DIR = Path('data')
 CUMULATIVE_DATA_FILE = DATA_DIR / 'cumulative_detections.pkl'
@@ -269,7 +282,13 @@ def flock_reader():
                             # Try to parse as detection data
                             try:
                                 data = json.loads(line)
-                                if 'detection_method' in data:
+                                if data.get('event') in ('status', 'version', 'replay_complete', 'clear', 'error'):
+                                    # Command response — wake any blocked caller and emit to UI.
+                                    handle_command_event(data)
+                                elif data.get('replay') and 'detection_method' in data:
+                                    # Historical detection replayed from device memory.
+                                    add_replay_detection_from_serial(data)
+                                elif 'detection_method' in data:
                                     # Map ESP32 GPS from phone to Flask GPS format
                                     esp_gps = data.get('gps')
                                     if esp_gps:
@@ -495,6 +514,118 @@ def add_detection_from_serial(data):
         # Emit to connected clients
         safe_socket_emit('new_detection', data)
         print(f"New detection added: ID {data['id']}, Method: {data.get('detection_method')}, MAC: {mac_address}")
+
+
+def add_replay_detection_from_serial(data):
+    """Ingest a replayed historical detection from the device's SPIFFS or
+    live table. These don't get GPS temporal matching (no wall-clock at the
+    time the device recorded them) and don't overwrite a fresher live entry
+    if we've already seen the MAC in this Flask session."""
+    global detections, cumulative_detections, next_detection_id
+
+    mac_address = data.get('mac_address')
+    if not mac_address:
+        return
+
+    if 'mac_address' in data:
+        data['manufacturer'] = lookup_manufacturer(mac_address)
+
+    # Stamp the replay arrival time so the UI has SOMETHING to show, but
+    # flag the source as device-memory so it isn't confused with a live hit.
+    arrival = datetime.now().isoformat()
+    data.setdefault('server_timestamp', arrival)
+    data['timestamp_source'] = 'device_replay'
+
+    # The device wrote `device_first_ms` / `device_last_ms` as monotonic
+    # millis since its boot. They're meaningless as wall-clock, but useful
+    # for ordering — preserve them verbatim.
+
+    replay_progress['received'] = replay_progress.get('received', 0) + 1
+
+    existing = None
+    for det in detections:
+        if det.get('mac_address') == mac_address:
+            existing = det
+            break
+
+    if existing:
+        # Live data is fresher than memory dump — keep first_seen and the
+        # most recent live RSSI/channel. Only bump the counter so the user
+        # sees that the device had additional historical hits.
+        device_count = data.get('detection_count') or 0
+        if device_count > existing.get('detection_count', 0):
+            existing['detection_count'] = device_count
+        existing['replay_merged'] = True
+        existing['device_first_ms'] = data.get('device_first_ms')
+        existing['device_last_ms']  = data.get('device_last_ms')
+
+        for cum in cumulative_detections:
+            if cum.get('mac_address') == mac_address:
+                cum.update(existing)
+                break
+        save_cumulative_detections()
+        safe_socket_emit('detection_updated', existing)
+    else:
+        data['id'] = next_detection_id
+        next_detection_id += 1
+        data['alias'] = ''
+        data.setdefault('detection_count', 1)
+        # We don't know the real first/last_seen wall-clock — mark as N/A
+        # so the UI can show "from device memory" instead of misleading
+        # current time stamps.
+        data.setdefault('first_seen', None)
+        data.setdefault('last_seen',  None)
+
+        detections.append(data)
+        cumulative_detections.append(data.copy())
+        save_cumulative_detections()
+        safe_socket_emit('replay_detection', data)
+        print(f"Replay detection added: ID {data['id']}, MAC: {mac_address}, "
+              f"src: {data.get('replay_source')}, count: {data.get('detection_count')}")
+
+
+def handle_command_event(data):
+    """Dispatch a {"event":...} response from the firmware to whichever
+    caller is blocked waiting on it, and forward to the UI."""
+    ev = data.get('event')
+    if ev == 'replay_complete':
+        replay_progress['in_progress'] = False
+        replay_progress['source'] = data.get('source')
+    holder = _cmd_state.get(ev)
+    if holder:
+        holder['data'] = data
+        holder['event'].set()
+    safe_socket_emit(f'flock_{ev}', data)
+    print(f"Flock cmd event: {ev} → {data}")
+
+
+def send_command(cmd, response_event_name, timeout=10.0):
+    """Send a CMD:* line to the device and block until the firmware emits
+    the matching response event. Returns the response dict or None on
+    timeout / disconnect."""
+    global flock_serial_connection
+    with command_lock:
+        if not flock_serial_connection or not flock_serial_connection.is_open:
+            return None
+        holder = _cmd_state[response_event_name]
+        holder['data'] = None
+        holder['event'].clear()
+        if response_event_name == 'replay_complete':
+            replay_progress['in_progress'] = True
+            replay_progress['source'] = None
+            replay_progress['received'] = 0
+        try:
+            flock_serial_connection.write((cmd + '\n').encode('ascii'))
+            flock_serial_connection.flush()
+        except Exception as e:
+            print(f"send_command write failed: {e}")
+            replay_progress['in_progress'] = False
+            return None
+        if holder['event'].wait(timeout):
+            return holder['data']
+        replay_progress['in_progress'] = False
+        return None
+
 
 def connection_monitor():
     """Background thread for monitoring device connections"""
@@ -765,8 +896,111 @@ def disconnect_flock():
     if flock_serial_connection and flock_serial_connection.is_open:
         flock_serial_connection.close()
         flock_serial_connection = None
-    
+
     return jsonify({'status': 'success', 'message': 'Flock You device disconnected'})
+
+
+def _require_flock_connected():
+    if not flock_device_connected or not flock_serial_connection or not flock_serial_connection.is_open:
+        return jsonify({'status': 'error', 'message': 'Flock device not connected'}), 400
+    return None
+
+
+@app.route('/api/flock/status', methods=['GET'])
+def flock_status():
+    """Query the firmware for live status (det count, SPIFFS state, uptime).
+
+    Sends CMD:STATUS to the device and waits up to 2 seconds for the
+    `{"event":"status",...}` reply."""
+    err = _require_flock_connected()
+    if err is not None:
+        return err
+    reply = send_command('CMD:STATUS', 'status', timeout=2.0)
+    if reply is None:
+        return jsonify({'status': 'error', 'message': 'Device did not respond (timeout)'}), 504
+    return jsonify({'status': 'success', 'firmware_status': reply})
+
+
+@app.route('/api/flock/version', methods=['GET'])
+def flock_version():
+    """Query the firmware for its version / OUI count / max detections."""
+    err = _require_flock_connected()
+    if err is not None:
+        return err
+    reply = send_command('CMD:VERSION', 'version', timeout=2.0)
+    if reply is None:
+        return jsonify({'status': 'error', 'message': 'Device did not respond (timeout)'}), 504
+    return jsonify({'status': 'success', 'firmware_version': reply})
+
+
+@app.route('/api/flock/dump_prev', methods=['POST'])
+def flock_dump_prev():
+    """Pull the previous session's persisted detections from device SPIFFS.
+
+    Detection lines stream in via the serial reader and are added to the
+    live + cumulative detection lists. Returns when replay_complete arrives
+    (or after a 30-second timeout)."""
+    err = _require_flock_connected()
+    if err is not None:
+        return err
+    reply = send_command('CMD:DUMP_PREV', 'replay_complete', timeout=30.0)
+    if reply is None:
+        return jsonify({'status': 'error', 'message': 'Replay timed out',
+                        'received': replay_progress.get('received', 0)}), 504
+    return jsonify({
+        'status': 'success' if reply.get('ok') else 'error',
+        'count': reply.get('count', 0),
+        'received': replay_progress.get('received', 0),
+        'source': reply.get('source'),
+        'reason': reply.get('reason'),
+    })
+
+
+@app.route('/api/flock/dump_live', methods=['POST'])
+def flock_dump_live():
+    """Pull the device's current in-RAM detection table. Same flow as
+    dump_prev, but reads fyDet[] instead of /prev_session.json."""
+    err = _require_flock_connected()
+    if err is not None:
+        return err
+    reply = send_command('CMD:DUMP_LIVE', 'replay_complete', timeout=30.0)
+    if reply is None:
+        return jsonify({'status': 'error', 'message': 'Replay timed out',
+                        'received': replay_progress.get('received', 0)}), 504
+    return jsonify({
+        'status': 'success' if reply.get('ok') else 'error',
+        'count': reply.get('count', 0),
+        'received': replay_progress.get('received', 0),
+        'source': reply.get('source'),
+    })
+
+
+@app.route('/api/flock/clear_prev', methods=['POST'])
+def flock_clear_prev():
+    """Delete /prev_session.json on the device (and any leftover /session.tmp)."""
+    err = _require_flock_connected()
+    if err is not None:
+        return err
+    reply = send_command('CMD:CLEAR_PREV', 'clear', timeout=2.0)
+    if reply is None:
+        return jsonify({'status': 'error', 'message': 'Device did not respond (timeout)'}), 504
+    return jsonify({'status': 'success' if reply.get('ok') else 'error',
+                    'firmware': reply})
+
+
+@app.route('/api/flock/clear_live', methods=['POST'])
+def flock_clear_live():
+    """Wipe the device's in-RAM detection table. Forces the next autosave
+    to overwrite the persisted session."""
+    err = _require_flock_connected()
+    if err is not None:
+        return err
+    reply = send_command('CMD:CLEAR_LIVE', 'clear', timeout=2.0)
+    if reply is None:
+        return jsonify({'status': 'error', 'message': 'Device did not respond (timeout)'}), 504
+    return jsonify({'status': 'success' if reply.get('ok') else 'error',
+                    'firmware': reply})
+
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
