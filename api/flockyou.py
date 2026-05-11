@@ -1763,12 +1763,15 @@ if __name__ == '__main__':
     heartbeat_thread = threading.Thread(target=send_heartbeat, daemon=True)
     heartbeat_thread.start()
     
+    host = os.environ.get('FLOCKYOU_HOST', '0.0.0.0')
+    port = int(os.environ.get('FLOCKYOU_PORT', '5000'))
+
     print("Starting Flock You API server...")
-    print("Server will be available at: http://localhost:5000")
+    print(f"Server will be available at: http://localhost:{port}")
     print("Press Ctrl+C to stop the server")
-    
+
     try:
-        socketio.run(app, debug=False, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
+        socketio.run(app, debug=False, host=host, port=port, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         print("\nShutting down server...")
         # Clean up connections

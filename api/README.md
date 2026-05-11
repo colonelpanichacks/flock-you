@@ -21,6 +21,14 @@ python flockyou.py
 
 Open `http://localhost:5000`.
 
+Port and bind address are env-configurable:
+
+```bash
+FLOCKYOU_PORT=5101 FLOCKYOU_HOST=127.0.0.1 python flockyou.py
+```
+
+Append `?demo=1` to the dashboard URL (`http://localhost:5000/?demo=1`) to load a front-end-only mock with the device shown as connected and a handful of sample detections covering every visual state — live, replay/FLASH (purple), replay/RAM (cyan), with and without GPS — so the polished layout and the command toolbar are previewable without flashing real hardware. The command buttons still hit the real `/api/flock/*` endpoints in demo mode, so clicking them produces the actual "device not connected" error toast.
+
 1. Plug your Flock-You device in over USB.
 2. Pick its port from the **Sniffer** dropdown and click **Connect**.
 3. Five command buttons appear next to the connect controls — that's the host command protocol.

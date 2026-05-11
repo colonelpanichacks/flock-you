@@ -1858,7 +1858,117 @@
                     socket.connect();
                 }
             }, 30000);
+
+            initDemoMode();
         });
+
+        // ============================================================
+        // Demo mode  —  ?demo=1
+        //
+        // Seeds the dashboard with synthetic detections covering every
+        // visual state (live, replay/FLASH, replay/RAM, with and without
+        // GPS) and reveals the device command toolbar so the polished
+        // layout is browseable without flashing real hardware.
+        //
+        // Purely a front-end mock. The command buttons still hit the
+        // real /api/flock/* endpoints, so clicking them produces a
+        // realistic "Flock device not connected" error toast — that
+        // failure path is itself part of the UI worth previewing.
+        // ============================================================
+        function initDemoMode() {
+            const params = new URLSearchParams(window.location.search);
+            if (!params.has('demo')) return;
+
+            updateFlockStatus(true);
+            setFlockExtraControls(true);
+
+            const sampleManufacturer = 'Espressif / Flock Safety';
+            const now = new Date();
+            const tIso  = (deltaMs) => new Date(now.getTime() - deltaMs).toISOString();
+            const tFmt  = (deltaMs) => new Date(now.getTime() - deltaMs).toLocaleTimeString();
+
+            const samples = [
+                {
+                    detection_method: 'wifi_wildcard_probe', protocol: 'wifi',
+                    mac_address: '70:c9:4e:81:b3:24', oui: '70:c9:4e',
+                    rssi: -52, last_rssi: -49, channel: 6, last_channel: 6,
+                    detection_count: 23, ssid: '',
+                    gps: { latitude: 37.3349, longitude: -122.0090, fix_quality: 1, satellites: 8, match_quality: 'temporal', time_diff: 1.2 },
+                },
+                {
+                    detection_method: 'wifi_oui_addr2', protocol: 'wifi',
+                    mac_address: '3c:91:80:14:f2:8a', oui: '3c:91:80',
+                    rssi: -67, last_rssi: -71, channel: 1, last_channel: 1,
+                    detection_count: 12, ssid: '',
+                },
+                {
+                    detection_method: 'wifi_oui_addr1', protocol: 'wifi',
+                    mac_address: 'd8:f3:bc:09:c1:5e', oui: 'd8:f3:bc',
+                    rssi: -78, last_rssi: -75, channel: 11, last_channel: 11,
+                    detection_count: 4, ssid: '',
+                },
+                {
+                    detection_method: 'wifi_wildcard_probe', protocol: 'wifi',
+                    mac_address: '82:6b:f2:7a:11:88', oui: '82:6b:f2',
+                    rssi: -61, last_rssi: -58, channel: 6, last_channel: 6,
+                    detection_count: 1, ssid: '',
+                    alias: 'DeFlockJoplin 12th cam',
+                },
+                {
+                    detection_method: 'wifi_oui_addr2', protocol: 'wifi',
+                    mac_address: 'b8:35:32:c0:de:01', oui: 'b8:35:32',
+                    rssi: -82, channel: 1, detection_count: 47, ssid: '',
+                    replay: true, replay_source: 'prev',
+                    timestamp_source: 'device_replay',
+                    device_first_ms: 12345, device_last_ms: 873400,
+                },
+                {
+                    detection_method: 'wifi_oui_addr1', protocol: 'wifi',
+                    mac_address: '14:b5:cd:33:9f:21', oui: '14:b5:cd',
+                    rssi: -74, channel: 11, detection_count: 8, ssid: '',
+                    replay: true, replay_source: 'prev',
+                    timestamp_source: 'device_replay',
+                    device_first_ms: 91100, device_last_ms: 902340,
+                    gps: { latitude: 37.4419, longitude: -122.1430, fix_quality: 1, satellites: 7, match_quality: 'temporal', time_diff: 3.8 },
+                },
+                {
+                    detection_method: 'wifi_oui_addr2', protocol: 'wifi',
+                    mac_address: '94:2a:6f:0e:44:b2', oui: '94:2a:6f',
+                    rssi: -69, channel: 6, detection_count: 3, ssid: '',
+                    replay: true, replay_source: 'live',
+                    timestamp_source: 'device_replay',
+                    device_first_ms: 1003000, device_last_ms: 1004900,
+                },
+                {
+                    detection_method: 'wifi_wildcard_probe', protocol: 'wifi',
+                    mac_address: 'f4:e2:c6:55:71:0d', oui: 'f4:e2:c6',
+                    rssi: -64, channel: 11, detection_count: 16, ssid: '',
+                    replay: true, replay_source: 'live',
+                    timestamp_source: 'device_replay',
+                    device_first_ms: 1010500, device_last_ms: 1080000,
+                },
+            ];
+            samples.forEach((s, i) => {
+                s.id = 9000 + i;
+                s.manufacturer = sampleManufacturer;
+                s.alias = s.alias || '';
+                if (!s.replay) {
+                    s.first_seen = tIso((samples.length - i) * 23_000);
+                    s.last_seen  = tIso(i * 4_000);
+                    s.detection_time = tFmt(i * 4_000);
+                    s.timestamp = tIso(i * 4_000);
+                    s.timestamp_source = 'system';
+                }
+                detections.push(s);
+                cumulativeDetections.push(s);
+            });
+
+            updateStats();
+            renderDetections();
+            showFlockToast(
+                'Demo mode active. Sample detections seeded; command buttons will toast errors (no real device).',
+                'info', 7000);
+        }
 
         function setupEventListeners() {
             document.getElementById('filterSelect').addEventListener('change', function() {
