@@ -85,6 +85,9 @@ static const char* target_ouis[] = {
   // @NitekryDPaul / OrdoOuroborous — original promiscuous-mode set, 29 OUIs.
   // f8:a2:d6 has been demoted (Sony Media Player false positive — see
   // nite-oui-collection/groups/flockers/my_tested_flock.md).
+  // 08:3a:88 stays in the array but is flagged for a BLE Ring conflict;
+  // promiscuous WiFi detection is unaffected, BLE-side users should be
+  // aware of occasional Ring-doorbell false positives.
   "70:c9:4e", "3c:91:80", "d8:f3:bc", "80:30:49", "b8:35:32",
   "14:5a:fc", "74:4c:a1", "08:3a:88", "9c:2f:9d", "c0:35:32",
   "94:08:53", "e4:aa:ea", "f4:6a:dd", "24:b2:b9", "00:f4:8d",

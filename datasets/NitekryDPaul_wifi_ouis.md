@@ -112,6 +112,15 @@ e0:0a:f6
 | e0:0a:f6 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
 | 82:6b:f2 | Flock Safety infrastructure | WiFi 2.4 GHz (wildcard probe) | DeFlockJoplin |
 
+## Flagged but still tracked
+
+These prefixes remain in the active firmware OUI array but have a known
+caveat documented by @NitekryDPaul.
+
+| Prefix | Caveat | Source |
+|---|---|---|
+| `08:3a:88` | BLE Ring conflict — expect occasional Ring-doorbell false positives when this OUI is matched against BLE advertisements. WiFi-side detection is unaffected. Flagged per @NitekryDPaul's latest [my_tested_flock.md](https://github.com/nitekry/nite-oui-collection/blob/main/groups/flockers/my_tested_flock.md) update (2026-05-13). | @NitekryDPaul |
+
 ## Demoted / low confidence
 
 These prefixes were in earlier revisions of the list but have been removed
@@ -120,6 +129,8 @@ from the active firmware OUI array.
 | Prefix | Reason | Source |
 |---|---|---|
 | `f8:a2:d6` | Low confidence; observed hitting a Sony Media Player rather than a Flock device. Demoted per @NitekryDPaul's [my_tested_flock.md](https://github.com/nitekry/nite-oui-collection/blob/main/groups/flockers/my_tested_flock.md) field notes. | @NitekryDPaul |
+| `cc:cc:cc` | No observed hits across @NitekryDPaul's testing. Originally a placeholder/test prefix from the early GainSec list; never produced a real detection. | @NitekryDPaul |
+| `00:0c:e7` | MediaTek prefix that appeared in early field tests as a possible Flock-adjacent observation; later determined to be a likely false positive. | @NitekryDPaul / Crowdsource |
 
 ## Detection strategy
 
