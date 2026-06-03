@@ -187,9 +187,19 @@ Open `http://localhost:5000`, pick your serial port from the UI, detections star
 
 ---
 
-## Hardware
+## Supported Hardware
 
-**Board:** Seeed Studio XIAO ESP32-S3
+Five environments are included in `platformio.ini`. Pick the one that matches your board; everything else is automatic.
+
+| Environment | Board | Port type | Speaker / LED | Notes |
+|---|---|---|---|---|
+| `xiao_esp32s3` | Seeed XIAO ESP32-S3 | `/dev/tty.usbmodem*` | GPIO3 piezo + GPIO21 LED | **Original upstream board** |
+| `esp32dev` | Generic ESP32 DevKit | `/dev/tty.usbserial-*` | GPIO25 piezo + GPIO2 LED | Bare dev board |
+| `m5atom-echo` | M5Stack Atom Echo | `/dev/tty.usbserial-*` | NeoPixel (G27) + GPIO25 buzzer | Compact with speaker |
+| `m5atom-lite` | M5Stack Atom Lite | `/dev/tty.usbserial-*` | NeoPixel (G27), no speaker | Ultra-compact |
+| `m5atom-voices3r` | M5Stack Atom VoiceS3R | `/dev/tty.usbmodem*` | ES8311 I²S speaker via M5Unified | ESP32-S3, 8MB PSRAM |
+
+### Pin map — XIAO ESP32-S3 (original)
 
 | Pin | Function |
 |-----|----------|
@@ -197,21 +207,110 @@ Open `http://localhost:5000`, pick your serial port from the UI, detections star
 | GPIO 21 | Onboard user LED (active low) |
 | GPIO 43 | Serial1 TX mirror (115200 baud) |
 
-Boot sound: first 6 notes of Super Mario Bros. World 1-2 (underground).
+### Pin map — Atom VoiceS3R
+
+| Pin | Function |
+|-----|----------|
+| GPIO 41 | User button |
+| GPIO 18 | Speaker amp enable (NS4150_CTR, handled by M5Unified) |
+| I²S (G45/G0/G48/G4/G3/G17/G11) | ES8311 codec — M5Unified drives this automatically |
+
+Boot sound: **Super Mario Bros. World 1-1 overworld opening riff** (E E _E_ C E G) on VoiceS3R / Atom Echo; first 6 notes of World 1-2 underground on original buzzer boards.
 
 ---
 
 ## Build and flash
 
-Requires [PlatformIO](https://platformio.org/).
+Requires [PlatformIO](https://platformio.org/) (`pip install platformio` or install the VS Code extension).
+
+### Quick start — any board
 
 ```bash
-pio run                     # build
-pio run -t upload           # flash
-pio device monitor          # serial output
+# Build for your board (replace <env> with one of the environment names above)
+pio run -e <env>
+
+# Build + flash
+pio run -e <env> -t upload
+
+# Serial monitor
+pio device monitor -e <env>
 ```
 
-`platformio.ini` and `partitions.csv` are at the root (1.9 MB SPIFFS partition, 6 MB app). No extra libraries needed beyond the Arduino-ESP32 core that ships with the espressif32 platform.
+### Board-specific commands
+
+#### Seeed XIAO ESP32-S3 (original upstream board)
+```bash
+pio run -e xiao_esp32s3 -t upload
+pio device monitor -e xiao_esp32s3
+
+# Serial monitor (direct):
+screen $(ls /dev/tty.usbmodem* | head -1) 115200
+```
+
+#### Generic ESP32 DevKit
+```bash
+pio run -e esp32dev -t upload
+pio device monitor -e esp32dev
+
+# Serial monitor (direct):
+screen $(ls /dev/tty.usbserial-* | head -1) 115200
+```
+
+#### M5Stack Atom Echo
+```bash
+pio run -e m5atom-echo -t upload
+pio device monitor -e m5atom-echo
+
+# Serial monitor (direct):
+screen $(ls /dev/tty.usbserial-* | head -1) 115200
+```
+
+#### M5Stack Atom Lite
+```bash
+pio run -e m5atom-lite -t upload
+pio device monitor -e m5atom-lite
+
+# Serial monitor (direct):
+screen $(ls /dev/tty.usbserial-* | head -1) 115200
+```
+
+#### M5Stack Atom VoiceS3R (ESP32-S3, native USB-CDC)
+The VoiceS3R uses native USB — `pio run -t upload` works when the port is free.
+If the port is busy (e.g. a serial monitor is open), kill it first:
+
+```bash
+# Kill anything holding the CDC port, then flash:
+lsof -t /dev/tty.usbmodem* | xargs kill 2>/dev/null; sleep 0.5
+pio run -e m5atom-voices3r -t upload
+
+# Or use brew esptool directly (most reliable for ESP32-S3 native USB):
+esptool --chip esp32s3 --port /dev/tty.usbmodem101 \
+    --before usb-reset --after hard-reset write-flash \
+    0x0    .pio/build/m5atom-voices3r/bootloader.bin \
+    0x8000 .pio/build/m5atom-voices3r/partitions.bin \
+    0xe000 ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
+    0x10000 .pio/build/m5atom-voices3r/firmware.bin
+
+# Serial monitor:
+screen /dev/tty.usbmodem101 115200
+# (replace 101 with whatever number the port shows — run: ls /dev/tty.usbmodem*)
+```
+
+> **Tip:** After flashing the VoiceS3R, unplug and replug the USB cable once to let the firmware re-enumerate the CDC port.
+
+### Testing mode
+
+To alert on **all** WiFi frames (useful for range/hardware testing before deployment), add `-DTESTING_MODE=1` to any env's `build_flags`:
+
+```ini
+build_flags =
+    ...
+    -DTESTING_MODE=1
+```
+
+Remove it to return to normal Flock OUI–only detection.
+
+`platformio.ini` and `partitions_4mb.csv` are at the root. The XIAO env uses `partitions.csv` (original upstream layout); all other envs use `partitions_4mb.csv`.
 
 ---
 

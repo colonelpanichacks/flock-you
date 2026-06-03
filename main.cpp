@@ -4,23 +4,72 @@
 #include <ctype.h>
 #include <string.h>
 #include <SPIFFS.h>
+// NeoPixel only needed for Echo/Lite variants
+#if defined(USE_M5ATOM_ECHO) || defined(USE_M5ATOM_LITE)
+#include <Adafruit_NeoPixel.h>
+#endif
+
+// M5Atom support - using NeoPixel for LED only (NO M5Atom library - it's buggy!)
+#if defined(USE_M5ATOM_ECHO) || defined(USE_M5ATOM_LITE)
+  #define USE_M5ATOM 1
+  #define LED_PIN 27
+  #define NUM_LEDS 1  // Atom Lite has 1 LED (Matrix has 25)
+  #define BUTTON_PIN 39  // M5Atom button on GPIO39
+  Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+#endif
+
+// Atom VoiceS3R (ESP32-S3-PICO-1-N8R8): native USB-CDC, no user RGB LED.
+// Speaker: ES8311 codec + NS4150B amp, driven via M5Unified over I2S.
+// Button: GPIO41.  Amp enable: GPIO18 (NS4150_CTR — M5Unified handles it).
+#if defined(USE_M5ATOM_VOICES3R)
+  #include <M5Unified.h>
+  #define BUTTON_PIN 41
+#endif
 
 // ============================================================
 // CONFIG
 // ============================================================
 
-#define BUZZER_PIN 3
-#define USE_BUZZER 1
+// TESTING MODE: Set to 1 to blink/alert on ANY WiFi traffic (for testing)
+// Set to 0 for normal operation (Flock OUI detection only)
+// Can be overridden at build time via -DTESTING_MODE=1 in platformio.ini
+#ifndef TESTING_MODE
+  #define TESTING_MODE 0
+#endif
 
-// Onboard user LED on Seeed XIAO ESP32-S3 is GPIO21 and is ACTIVE LOW
-// (driving the pin LOW lights the LED).
-#define LED_PIN          21
-#define USE_LED          1
-#define LED_ACTIVE_HIGH  0
-#define LED_FLASH_MS     120
+#if defined(USE_M5ATOM_ECHO)
+  // M5Atom Echo: Built-in speaker + 5x5 LED matrix
+  #define BUZZER_PIN 25
+  #define USE_BUZZER 1
+  #define USE_M5_SPEAKER 1
+  #define USE_LED 1
+  #define USE_LED_MATRIX 1
+  #define LED_FLASH_MS 120
+#elif defined(USE_M5ATOM_LITE)
+  // M5Atom Lite: 5x5 LED matrix only (no speaker)
+  #define BUZZER_PIN 25
+  #define USE_BUZZER 0
+  #define USE_LED 1
+  #define USE_LED_MATRIX 1
+  #define LED_FLASH_MS 120
+#elif defined(USE_M5ATOM_VOICES3R)
+  // Atom VoiceS3R: ES8311 I2S speaker via M5Unified. No RGB LED.
+  #define USE_BUZZER 0
+  #define USE_M5_SPEAKER 1   // M5.Speaker.tone() — requires M5Unified
+  #define USE_LED 0
+  #define LED_FLASH_MS 0
+#else
+  // Standard ESP32 DevKit
+  #define BUZZER_PIN 25
+  #define USE_BUZZER 1
+  #define LED_PIN 2
+  #define USE_LED 1
+  #define LED_ACTIVE_HIGH 1
+  #define LED_FLASH_MS 120
+#endif
 
 #define MIRROR_SERIAL    1
-#define MIRROR_TX_PIN    43
+#define MIRROR_TX_PIN    17
 #define MIRROR_BAUD      115200
 
 #define CHANNEL_MODE_FULL_HOP   0
@@ -241,7 +290,7 @@ static void dualPrintf(const char* fmt, ...) {
   va_end(args);
   if (n > 0) {
     Serial.write(_dualBuf, n);
-#if MIRROR_SERIAL
+#if MIRROR_SERIAL && !defined(USE_M5ATOM_VOICES3R)
     Serial1.write(_dualBuf, n);
 #endif
   }
@@ -249,14 +298,22 @@ static void dualPrintf(const char* fmt, ...) {
 
 static void dualPrintln(const char* str) {
   Serial.println(str);
-#if MIRROR_SERIAL
+#if MIRROR_SERIAL && !defined(USE_M5ATOM_VOICES3R)
   Serial1.println(str);
 #endif
 }
 
 static inline void ledSet(bool on) {
 #if USE_LED
-#if LED_ACTIVE_HIGH
+#if defined(USE_LED_MATRIX)
+  // M5Atom: Use NeoPixel library for LED control
+  if (on) {
+    strip.setPixelColor(0, strip.Color(0, 0, 255));  // Blue
+  } else {
+    strip.setPixelColor(0, strip.Color(0, 0, 0));    // Off
+  }
+  strip.show();
+#elif LED_ACTIVE_HIGH
   digitalWrite(LED_PIN, on ? HIGH : LOW);
 #else
   digitalWrite(LED_PIN, on ? LOW  : HIGH);
@@ -293,6 +350,10 @@ static void newDetectChirp() {
   tone(BUZZER_PIN, NEW_CHIRP_LO_HZ); delay(NEW_CHIRP_NOTE_MS); noTone(BUZZER_PIN);
   delay(NEW_CHIRP_GAP_MS);
   tone(BUZZER_PIN, NEW_CHIRP_HI_HZ); delay(NEW_CHIRP_NOTE_MS); noTone(BUZZER_PIN);
+#elif defined(USE_M5_SPEAKER) && USE_M5_SPEAKER
+  M5.Speaker.tone(NEW_CHIRP_LO_HZ, NEW_CHIRP_NOTE_MS); delay(NEW_CHIRP_NOTE_MS + NEW_CHIRP_GAP_MS);
+  M5.Speaker.tone(NEW_CHIRP_HI_HZ, NEW_CHIRP_NOTE_MS); delay(NEW_CHIRP_NOTE_MS);
+  M5.Speaker.stop();
 #endif
 }
 
@@ -303,6 +364,10 @@ static void heartbeatBeep() {
   tone(BUZZER_PIN, HB_BEEP_HZ); delay(HB_BEEP_NOTE_MS); noTone(BUZZER_PIN);
   delay(HB_BEEP_GAP_MS);
   tone(BUZZER_PIN, HB_BEEP_HZ); delay(HB_BEEP_NOTE_MS); noTone(BUZZER_PIN);
+#elif defined(USE_M5_SPEAKER) && USE_M5_SPEAKER
+  M5.Speaker.tone(HB_BEEP_HZ, HB_BEEP_NOTE_MS); delay(HB_BEEP_NOTE_MS + HB_BEEP_GAP_MS);
+  M5.Speaker.tone(HB_BEEP_HZ, HB_BEEP_NOTE_MS); delay(HB_BEEP_NOTE_MS);
+  M5.Speaker.stop();
 #endif
 }
 static void startupBeep() {
@@ -316,6 +381,18 @@ static void startupBeep() {
     noTone(BUZZER_PIN);
     if (i < 5) delay(22);
   }
+#elif defined(USE_M5_SPEAKER) && USE_M5_SPEAKER
+  // SMB World 1-1 overworld opening riff: E E _E_ C E G (low G)
+  // Frequencies: E5=659 C5=523 G5=784 G4=392
+  static const uint16_t notes[] = { 659, 659, 659, 523, 659, 784, 392 };
+  static const uint16_t durs[]  = { 100, 100, 100, 100, 100, 300, 300 };
+  static const uint8_t  gaps[]  = {  80,  80,  80,   0,   0,  80,   0 };
+  for (size_t i = 0; i < sizeof(notes)/sizeof(notes[0]); i++) {
+    M5.Speaker.tone(notes[i], durs[i]);
+    delay(durs[i]);
+    if (gaps[i]) { M5.Speaker.stop(); delay(gaps[i]); }
+  }
+  M5.Speaker.stop();
 #endif
 }
 
@@ -846,6 +923,12 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
 
   uint8_t ch = (uint8_t)pkt->rx_ctrl.channel;  // actual rx channel from driver
 
+#if TESTING_MODE
+  // TESTING MODE: Alert on ANY WiFi traffic for verification
+  enqueueAlert(ALERT_OUI_ADDR2, hdr->addr2, rssi, ch, nullptr, "test");
+  return;  // Skip normal OUI checking in test mode
+#endif
+
   // --- OUI check: addr2 (transmitter/source) ---
   //
   // For mgmt Probe Requests (type=0 subtype=4) from a matched OUI, tighten
@@ -1044,21 +1127,35 @@ static void heartbeatTick() {
 
 void setup() {
   Serial.begin(115200);
-  // Crucial for USB-optional operation: without this, Serial.write() will
-  // block indefinitely on an ESP32-S3 USB-CDC port when no host is attached.
-  Serial.setTxTimeoutMs(0);
   delay(300);
 
-#if MIRROR_SERIAL
-  Serial1.begin(MIRROR_BAUD, SERIAL_8N1, -1, MIRROR_TX_PIN);  // TX-only on GPIO43
+#if defined(USE_M5ATOM)
+  // Initialize NeoPixel LED (NO M5Atom library!)
+  strip.begin();
+  strip.show(); // Initialize all pixels to 'off'
+  // Initialize button (GPIO39 on Echo/Lite)
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
 #endif
 
-#if USE_BUZZER
+#if defined(USE_M5ATOM_VOICES3R)
+  // M5Unified init: configures ES8311 codec, NS4150B amp (GPIO18), and button.
+  auto m5cfg = M5.config();
+  M5.begin(m5cfg);
+  M5.Speaker.setVolume(200);  // 0–255; ~78% is loud but not distorted
+#endif
+
+// Serial1 UART mirror — skip on M5Atom (NeoPixel owns that UART) and on
+// VoiceS3R (USB-CDC is the main port; no spare UART mapped to GPIO17).
+#if MIRROR_SERIAL && !defined(USE_M5ATOM) && !defined(USE_M5ATOM_VOICES3R)
+  Serial1.begin(MIRROR_BAUD, SERIAL_8N1, -1, MIRROR_TX_PIN);
+#endif
+
+#if USE_BUZZER && !defined(USE_M5ATOM)
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
 #endif
 
-#if USE_LED
+#if USE_LED && !defined(USE_LED_MATRIX)
   pinMode(LED_PIN, OUTPUT);
   ledSet(false);
 #endif
