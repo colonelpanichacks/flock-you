@@ -5,22 +5,19 @@
 **Passive 2.4 GHz promiscuous-mode detector for Flock Safety surveillance infrastructure. Runs standalone or feeds the Flask dashboard over USB for live GPS-tagged wardriving.**
 
 > **Dev note:** This is the `promiscious-dev` branch — adds the
-> DeFlockJoplin wildcard-probe tightening and a 31st OUI on top of the
+> DeFlockJoplin Information Element research + wildcard probe on top of the
 > `promiscious` baseline. See "Further research" below.
 
 ---
 
 ## Credit
-
-All WiFi promiscuous detection research — the **30-OUI target list**, the **promiscuous-mode strategy**, and the **addr1-receiver detection technique** — is the work of **ØяĐöØцяöЪöяцฐ / @NitekryDPaul**. The firmware here is a mod of his original firmware with added SPIFFS persistence and Flask-dashboard integration. Full research writeup: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
-
-Additional research credit to **DeFlockJoplin** for the **wildcard-probe-request signature** and the 31st OUI (`82:6b:f2`). Field-tested to 11/12 cameras caught with only 2 false positives in Joplin. Source: [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
+Full credit to @NitekryDPaul for the initial research that sparked my research.  His OUI list helps make a strong method rock solid. None of this would be here without his original submission.  
 
 ---
 
 ## What this branch does
 
-Turns a Seeed XIAO ESP32-S3 into a passive WiFi receiver that watches 2.4 GHz management and data frames for Flock Safety MAC OUIs. No AP, no transmit — the radio stays dedicated to sniffing while the device hops channels 1 / 6 / 11 at 350 ms dwell.
+Turns a Seeed XIAO ESP32-S3 into a passive WiFi receiver that watches 2.4 GHz management and data frames for Flock Safety MAC OUIs. No AP, no transmit — the radio stays dedicated to sniffing while the device hops channels 11 / 6 / 1 (descending) at 350 ms dwell.
 
 Every detection is:
 
@@ -32,38 +29,37 @@ The device works standalone (no USB host needed) and plugged in (live dashboard)
 
 ---
 
-## Why promiscuous mode, and why `addr1`
+## DeFlock Joplin Research Continues - Behavior and IE Fingerprint
 
-Most WiFi sniffers only check the transmitter address (`addr2`). Flock infrastructure spends most of its duty cycle **asleep** — it wakes briefly in bursts, uploads, then sleeps again. During the silence it may never transmit a single frame in your capture window.
+Earlier descriptions of Flock behavior are different than what I have observed.  This firmware is based on my observations. I do not make claims that others are incorrect or that this behavior has always existed.
 
-But it may still appear on the air as the **destination** (`addr1`) of probe responses or data frames from nearby APs.
+**Past Flock Camera Behavior**
+In the past, Flock cameras were detectable by the AP they were broadcasting for management.  Some time around December 2025, this AP was deactivated.  The community began using other detection methods like BLE.  Those stopped working some time in the spring.
 
-Checking `addr1` in addition to `addr2` picks those silent stations up. It requires two guards to avoid false positives:
+**Current Camera Behavior**
+These observations are not meant to cast doubt on anyone else's.  These cameras are not managed well and are updated OTA.  
 
-- `addr1` is broadcast (`ff:ff:ff:ff:ff:ff`) in beacons and broadcasts — **multicast filter**
-- Modern devices use randomised (locally-administered) MACs that can't be fingerprinted by OUI — **randomised-MAC filter** on byte 0 bit 1
+Observations:
+Flock cameras transmit wildcard probe requests on wi-fi channels in ascending order.  These probes are emitted at around .125 second intervals.  These probes are essentially a WiFi client asking any AP to respond with the SSID of the AP.  Hidden SSIDs generally require you send the exact SSID in the probe to generate a response.  See [here](https://goodwi.fi/posts/2023/12/hunt-for-hidden-probe/).  Flock cameras are also known to use cellular LTE modems to upload to the Flock cloud.
 
-Both are applied before the OUI match. This whole approach, including the 30-OUI list, is **@NitekryDPaul's research**.
+Given this, I have disabled all other detection methods in this branch.  While they are associated with Flock cameras, they are essentially all echoes of the camera itself, which is only gated by OUI match.  The other methods can fire when any OUI matched device is sending wildcard probes because nearby APs can respond and generate a false positive match on addr1 or addr3 methods.
 
----
+The new method relies on IE fingerprinting research done by others in the past such [here](https://www.researchgate.net/publication/367065691_Analysis_of_Wi-Fi_Probe_Requests_Towards_Information_Element_Fingerprinting).  According to the linked paper, IE field detection can already be a high confidence identifier, but we combine it with the OUI list collected by @NitekryDPaul for an extremely certain signature.  To the point that I have not experience a false postive after hundreds of miles of driving. Other detection methods have trended towards more active methods, but this is entirely passive. 
 
-## Further research — the wildcard-probe signature (DeFlockJoplin)
+I have also enabled descending channel hopping and reduced dwell time to 250 ms (2x observed hop time) to assist with faster intercept with a Flock signal.
 
-DeFlockJoplin used the OUI + addr1/addr2/addr3 work above as a starting point and characterised what Flock cameras actually do on the air. His finding:
-
-> The cameras are hopping channels and sending out a wildcard WiFi probe request on every channel. This specific type of request combined with OUI matching has created what seems to be a fairly unique signature.
-
-His drive-test in Joplin caught **11 of 12 cameras** with only **2 false positives**. The 12th camera was doing the same wildcard-probe behaviour but with an OUI (`82:6b:f2`) that wasn't in @NitekryDPaul's original 30 — it's now the 31st entry in our list, credited to him.
+Hypothesis on probe behavior:
+When the wifi management AP was disabled around December, the devices moved from AP mode to STA mode.  The probes likely began at this time. The devices now appear to enumerating networks, perhaps as a default behavior and not something Flock has explicitly set.
 
 The tightened signature that's active on this branch:
 
 1. Frame is 802.11 Management, type=0 subtype=4 (**Probe Request**)
 2. SSID Information Element (tag 0) is present with **length 0** (wildcard)
 3. `addr2` (transmitter) matches the known-OUI list
+4. IE fields match signature collected by DeFlockJoplin
 
-When all three hit, we emit `detection_method: wifi_wildcard_probe` — the high-precision class. Non-probe frames from the same OUIs still emit `wifi_oui_addr2`, and the `addr1` receiver-side sleeper-catch still runs independently.
+When we get a hit, we emit `detection_method: wifi_wildcard_probe_ie_sig`. Broad OUI paths (`wifi_wildcard_probe`, `wifi_oui_addr2`, `wifi_oui_addr1`, `wifi_oui_addr3`) are disabled in firmware — IE fingerprint on uplink probe requests is the active detection path.
 
-His proof-of-concept firmware (different enough we're not just pulling it in wholesale, but the core idea carried over cleanly): [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you). The wildcard-probe analysis is his; we ported the detection into this firmware and kept our SPIFFS persistence, Flask JSON emission, and audio/LED feedback on top.
 
 ---
 
@@ -160,10 +156,10 @@ The firmware emits one JSON line per detection in the same schema the BLE detect
 
 `detection_method` values:
 
-- `wifi_wildcard_probe` — **Probe Request + wildcard SSID from a known OUI** (the DeFlockJoplin high-precision signature). When this fires, the `addr2` broad alert is suppressed for the same frame to avoid double-counting.
-- `wifi_oui_addr2` — transmitter-side OUI match on any non-probe frame
-- `wifi_oui_addr1` — **receiver-side OUI match** (the @NitekryDPaul technique)
-- `wifi_oui_addr3` — BSSID OUI match (mgmt frames only; disabled by default)
+- `wifi_wildcard_probe_ie_sig` — **Probe Request + wildcard SSID + primary Flock IE signature** from a known OUI (PACK method 2 PoC; no rolling-window gates). Supersedes the removed `wifi_wildcard_probe` tier (same wildcard/OUI gates plus IE-field verification).
+- `wifi_oui_addr2` — *(disabled in firmware)* transmitter-side OUI match on any frame
+- `wifi_oui_addr1` — *(disabled in firmware)* receiver-side OUI match (the @NitekryDPaul technique)
+- `wifi_oui_addr3` — *(disabled in firmware)* BSSID OUI on mgmt frames; broad OUI-only filter, false-positive prone
 - `wifi_ssid` — SSID keyword match (disabled by default)
 
 ### GPS wardriving
@@ -189,7 +185,7 @@ Open `http://localhost:5000`, pick your serial port from the UI, detections star
 
 ## Hardware
 
-**Board:** Seeed Studio XIAO ESP32-S3
+### Seeed XIAO ESP32-S3 (default: `xiao_esp32s3`)
 
 | Pin | Function |
 |-----|----------|
@@ -197,7 +193,19 @@ Open `http://localhost:5000`, pick your serial port from the UI, detections star
 | GPIO 21 | Onboard user LED (active low) |
 | GPIO 43 | Serial1 TX mirror (115200 baud) |
 
-Boot sound: first 6 notes of Super Mario Bros. World 1-2 (underground).
+### LilyGO T-Dongle S3 (`lilygo_t_dongle_s3`). Added because testing hardware got misplaced.
+
+| Pin | Function |
+|-----|----------|
+| GPIO 1–5, 38 | ST7735 display (RST, DC, MOSI, CS, SCLK, backlight) |
+| GPIO 39 / 40 | APA102 RGB LED (clock / data) — red flash on detection |
+| USB CDC | Serial JSON for Flask dashboard |
+
+**Display:** idle screen shows `SCANNING`, current WiFi channel, and unique hit count. On each emitted detection, shows `DETECT`, method, MAC, RSSI, and channel for **5 s**, then returns to idle. Backlight is driven on init (GPIO 38 active-low).
+
+No buzzer on this env.
+
+Boot sound (XIAO only): first 6 notes of Super Mario Bros. World 1-2 (underground).
 
 ---
 
@@ -206,12 +214,15 @@ Boot sound: first 6 notes of Super Mario Bros. World 1-2 (underground).
 Requires [PlatformIO](https://platformio.org/).
 
 ```bash
-pio run                     # build
-pio run -t upload           # flash
-pio device monitor          # serial output
+pio run -e xiao_esp32s3              # Seeed XIAO (default)
+pio run -e lilygo_t_dongle_s3        # LilyGO T-Dongle S3
+
+pio run -e xiao_esp32s3 -t upload    # flash XIAO
+pio run -e lilygo_t_dongle_s3 -t upload   # flash T-Dongle (hold BOOT if port missing)
+pio device monitor
 ```
 
-`platformio.ini` and `partitions.csv` are at the root (1.9 MB SPIFFS partition, 6 MB app). No extra libraries needed beyond the Arduino-ESP32 core that ships with the espressif32 platform.
+`platformio.ini` and `partitions.csv` are at the root (1.9 MB SPIFFS partition, 6 MB app). The T-Dongle env adds **TFT_eSPI** for the onboard display; XIAO needs no extra libraries.
 
 ---
 
@@ -219,12 +230,12 @@ pio device monitor          # serial output
 
 | Define | Default | Notes |
 |---|---|---|
-| `CHANNEL_MODE` | `CHANNEL_MODE_CUSTOM` | `CUSTOM` (1/6/11), `FULL_HOP` (1-11), or `SINGLE` |
+| `CHANNEL_MODE` | `CHANNEL_MODE_CUSTOM` | `CUSTOM` (11/6/1 desc), `FULL_HOP` (11-1 desc), or `SINGLE` |
 | `CHANNEL_DWELL_MS` | 350 | Time on each channel before hop |
 | `RSSI_MIN` | -95 | Drop frames weaker than this |
 | `ALERT_COOLDOWN_MS` | 5000 | Per-MAC serial-emit rate limit |
-| `CHECK_ADDR1` | 1 | The @NitekryDPaul receiver-side technique |
-| `CHECK_ADDR3` | 0 | BSSID fallback (mgmt frames only) |
+| `CHECK_ADDR1` | 0 | Receiver-side OUI (disabled — see main.cpp) |
+| `CHECK_ADDR3` | 0 | BSSID OUI fallback (disabled — see main.cpp) |
 | `ENABLE_SSID_MATCH` | 0 | Substring match against `target_ssid_keywords[]` |
 | `PROCESS_MGMT_FRAMES` | 1 | Beacons, probe req/resp, etc. |
 | `PROCESS_DATA_FRAMES` | 1 | Data frames (where addr1 catch shines) |

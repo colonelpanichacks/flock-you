@@ -4,37 +4,49 @@
 #include <ctype.h>
 #include <string.h>
 #include <SPIFFS.h>
+#include "display_dongle.h"
 
 // ============================================================
-// CONFIG
+// CONFIG  (board defaults; override via platformio build_flags)
 // ============================================================
 
-#define BUZZER_PIN 3
-#define USE_BUZZER 1
+#ifdef BOARD_LILYGO_T_DONGLE_S3
+// LilyGO T-Dongle S3: ST7735 display + APA102 RGB (no buzzer).
+#define USE_BUZZER         0
+#define USE_LED            1
+#define USE_APA102_LED     1
+#define APA102_DATA_PIN    40
+#define APA102_CLK_PIN     39
+#define APA102_FLASH_R     255
+#define APA102_FLASH_G     0
+#define APA102_FLASH_B     0
+#define MIRROR_SERIAL      0   // GPIO43 is UART TX on this board
+#else
+// Seeed XIAO ESP32-S3
+#define BUZZER_PIN         3
+#define USE_BUZZER         1
+#define LED_PIN            21
+#define USE_LED            1
+#define LED_ACTIVE_HIGH    0
+#define MIRROR_SERIAL      1
+#define MIRROR_TX_PIN      43
+#endif
 
-// Onboard user LED on Seeed XIAO ESP32-S3 is GPIO21 and is ACTIVE LOW
-// (driving the pin LOW lights the LED).
-#define LED_PIN          21
-#define USE_LED          1
-#define LED_ACTIVE_HIGH  0
-#define LED_FLASH_MS     120
-
-#define MIRROR_SERIAL    1
-#define MIRROR_TX_PIN    43
-#define MIRROR_BAUD      115200
+#define LED_FLASH_MS       120
+#define MIRROR_BAUD        115200
 
 #define CHANNEL_MODE_FULL_HOP   0
 #define CHANNEL_MODE_CUSTOM     1
 #define CHANNEL_MODE_SINGLE     2
 
 #define CHANNEL_MODE CHANNEL_MODE_CUSTOM
-#define CHANNEL_DWELL_MS 350
+#define CHANNEL_DWELL_MS 250
 #define SINGLE_CHANNEL 1
 
-static const uint8_t customChannels[]  = {1, 6, 11};
+static const uint8_t customChannels[]  = {11, 6, 1};
 static const size_t  customChannelCount = sizeof(customChannels) / sizeof(customChannels[0]);
 
-static const uint8_t fullHopChannels[] = {1,2,3,4,5,6,7,8,9,10,11};
+static const uint8_t fullHopChannels[] = {11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
 static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(fullHopChannels[0]);
 
 #define HEARTBEAT_MS    30000
@@ -60,8 +72,8 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 #define HB_BEEP_GAP_MS         70
 
 #define ENABLE_SSID_MATCH 0
-#define CHECK_ADDR1 1   // dst/rx — catches Flock STAs receiving probe responses
-#define CHECK_ADDR3 0   // bssid fallback for randomised addr2
+#define CHECK_ADDR1 0   // disabled — see wifiSniffer() comment block
+#define CHECK_ADDR3 0   // disabled — see wifiSniffer() comment block
 static const char* target_ssid_keywords[] = { "flock" };
 static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(target_ssid_keywords[0]);
 
@@ -87,11 +99,8 @@ static const char* target_ouis[] = {
   "94:08:53", "e4:aa:ea", "f4:6a:dd", "f8:a2:d6", "24:b2:b9",
   "00:f4:8d", "d0:39:57", "e8:d0:fc", "e0:4f:43", "b8:1e:a4",
   "70:08:94", "58:8e:81", "ec:1b:bd", "3c:71:bf", "58:00:e3",
-  "90:35:ea", "5c:93:a2", "64:6e:69", "48:27:ea", "a4:cf:12",
-  // Contributed by DeFlockJoplin — discovered via wildcard-probe
-  // + OUI signature during field testing. The 12th camera in his drive-test
-  // used this prefix and wasn't in @NitekryDPaul's original 30.
-  "82:6b:f2"
+  "90:35:ea", "5c:93:a2", "64:6e:69", "48:27:ea", "a4:cf:12"
+
 
 };
 static const size_t OUI_COUNT = sizeof(target_ouis) / sizeof(target_ouis[0]);
@@ -111,10 +120,10 @@ typedef enum : uint8_t {
   ALERT_OUI_ADDR1       = 1,
   ALERT_OUI_ADDR3       = 2,
   ALERT_SSID            = 3,
-  // Probe Request + wildcard SSID (tag 0, length 0) from a known-OUI addr2.
-  // Tight signature from DeFlockJoplin field research:
-  //   https://github.com/DeflockJoplin/flock-you
-  ALERT_WILDCARD_PROBE  = 4,
+  // Wildcard probe + OUI + primary IE signature (wifi_wildcard_probe_ie_sig).
+  // wifi_wildcard_probe (OUI + wildcard only) was removed — superseded by this
+  // path: same wildcard/OUI gates plus IE-field verification.
+  ALERT_WILDCARD_PROBE_IE_SIG = 4,
 } AlertType;
 
 typedef struct {
@@ -166,7 +175,7 @@ static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rs
 
 typedef struct {
   char     mac[18];
-  char     method[16];     // "oui_addr2" / "oui_addr1" / "oui_addr3" / "ssid"
+  char     method[24];     // alertTypeToMethod strings (incl. wildcard_probe_ie_sig)
   int8_t   rssi;
   uint8_t  channel;
   uint32_t firstSeen;      // millis() at first hit
@@ -206,6 +215,33 @@ static size_t dedupeIdx = 0;
 
 // LED one-shot pulse timer
 static volatile unsigned long ledOffAt = 0;
+
+#if USE_LED && defined(USE_APA102_LED)
+static void apa102WriteByte(uint8_t b) {
+  for (int bit = 7; bit >= 0; bit--) {
+    digitalWrite(APA102_DATA_PIN, (b >> bit) & 1);
+    digitalWrite(APA102_CLK_PIN, HIGH);
+    digitalWrite(APA102_CLK_PIN, LOW);
+  }
+}
+
+static void apa102SetColor(uint8_t r, uint8_t g, uint8_t b) {
+  for (int i = 0; i < 4; i++) apa102WriteByte(0x00);
+  apa102WriteByte(0xFF);  // global brightness
+  apa102WriteByte(b);
+  apa102WriteByte(g);
+  apa102WriteByte(r);
+  for (int i = 0; i < 4; i++) apa102WriteByte(0xFF);
+}
+
+static void apa102Init() {
+  pinMode(APA102_DATA_PIN, OUTPUT);
+  pinMode(APA102_CLK_PIN, OUTPUT);
+  digitalWrite(APA102_CLK_PIN, LOW);
+  digitalWrite(APA102_DATA_PIN, LOW);
+  apa102SetColor(0, 0, 0);
+}
+#endif
 
 // Heartbeat audio state: last time any target was seen, last time the
 // heartbeat beep-pair was played. When nothing has been seen for
@@ -256,10 +292,15 @@ static void dualPrintln(const char* str) {
 
 static inline void ledSet(bool on) {
 #if USE_LED
+#if defined(USE_APA102_LED)
+  if (on) apa102SetColor(APA102_FLASH_R, APA102_FLASH_G, APA102_FLASH_B);
+  else apa102SetColor(0, 0, 0);
+#else
 #if LED_ACTIVE_HIGH
   digitalWrite(LED_PIN, on ? HIGH : LOW);
 #else
   digitalWrite(LED_PIN, on ? LOW  : HIGH);
+#endif
 #endif
 #endif
 }
@@ -308,8 +349,9 @@ static void heartbeatBeep() {
 static void startupBeep() {
 #if USE_BUZZER
   // First 6 notes of SMB World 1-2 (underground). Koji Kondo's descending
-  // pattern: C5 → C4 → A4 → A3 → G#4 → G#3 (alternating-octave pairs).
-  static const uint16_t notes[6] = { 523, 262, 440, 220, 415, 208 };
+  // pattern: C4, C5, A3, A4, B♭3, B♭4). (alternating-octave pairs).
+  static const uint16_t notes[6] = { 262, 523, 220, 440, 233, 466 };
+
   for (int i = 0; i < 6; i++) {
     tone(BUZZER_PIN, notes[i]);
     delay((i == 5) ? 160 : 95);
@@ -445,6 +487,9 @@ static void printHeartbeat() {
     dualPrintf("[flockyou] scanning (ch=%u mode=%s det=%d)\n",
                   currentChannel, channelModeName(), fyDetCount);
     lastHeartbeat = millis();
+    if (!dongleDisplayInAlert(millis())) {
+      dongleDisplayShowIdle(currentChannel, fyDetCount);
+    }
   }
 }
 
@@ -457,9 +502,9 @@ static const char* alertTypeToMethod(AlertType t) {
     case ALERT_OUI_ADDR2:      return "oui_addr2";
     case ALERT_OUI_ADDR1:      return "oui_addr1";
     case ALERT_OUI_ADDR3:      return "oui_addr3";
-    case ALERT_SSID:           return "ssid";
-    case ALERT_WILDCARD_PROBE: return "wildcard_probe";
-    default:                   return "unknown";
+    case ALERT_SSID:                   return "ssid";
+    case ALERT_WILDCARD_PROBE_IE_SIG:  return "wildcard_probe_ie_sig";
+    default:                           return "unknown";
   }
 }
 
@@ -824,6 +869,206 @@ static int IRAM_ATTR isWildcardProbeIE(const uint8_t* body, int len) {
   return -1;
 }
 
+// --- PACK method 2 PoC: Flock probe IE signature (primary allowlist only) ---
+
+static const char FLOCK_PROBE_IE_SIG_PRIMARY[] =
+    "2,12,127,221:506f9a16030103,45,191,221:0050f208000000";
+static const char FLOCK_LITEON_IE_SIG_PREFIX[] = "221:506f9a16030103";
+
+#define FY_IE_SSID    0
+#define FY_IE_VENDOR  221
+#define FY_PHANTOM_SKIP_CAP 16
+#define FY_TLV_RESYNC_MAX   64
+
+static void IRAM_ATTR fyHexNibbles(char* dst, const uint8_t* b, int n) {
+  static const char hd[] = "0123456789abcdef";
+  for (int i = 0; i < n; i++) {
+    dst[i * 2]     = hd[b[i] >> 4];
+    dst[i * 2 + 1] = hd[b[i] & 0x0f];
+  }
+}
+
+static bool IRAM_ATTR fyLiteonVendorAt(const uint8_t* ies, int len, int pos) {
+  return pos + 9 <= len && ies[pos] == FY_IE_VENDOR && ies[pos + 1] == 7
+      && ies[pos + 2] == 0x50 && ies[pos + 3] == 0x6f && ies[pos + 4] == 0x9a;
+}
+
+static bool IRAM_ATTR fyPhantomLiteonAhead(const uint8_t* ies, int len, int pos) {
+  int end = pos + 2 + 32;
+  if (end > len - 1) end = len - 1;
+  for (int j = pos + 2; j < end; j++) {
+    if (fyLiteonVendorAt(ies, len, j)) return true;
+  }
+  return false;
+}
+
+static bool IRAM_ATTR fyIsPhantomOverflow(const uint8_t* ies, int len,
+                                          uint8_t id, int elen, int i) {
+  if (i + 2 + elen <= len) return false;
+  if (elen > 200) return true;
+  return id == 64 && elen == 128 && fyPhantomLiteonAhead(ies, len, i);
+}
+
+static int IRAM_ATTR fyTlvResync(const uint8_t* ies, int len, int start) {
+  int end = start + FY_TLV_RESYNC_MAX;
+  if (end > len - 1) end = len - 1;
+  for (int j = start; j < end; j++) {
+    int elen = (int)ies[j + 1];
+    if (elen <= 200 && j + 2 + elen <= len) return j;
+  }
+  return -1;
+}
+
+static bool IRAM_ATTR fySigAppend(char* out, size_t cap, size_t* pos, const char* part) {
+  size_t plen = strlen(part);
+  if (*pos != 0) {
+    if (*pos + 1 >= cap) return false;
+    out[(*pos)++] = ',';
+  }
+  if (*pos + plen >= cap) return false;
+  memcpy(out + *pos, part, plen);
+  *pos += plen;
+  out[*pos] = '\0';
+  return true;
+}
+
+static bool IRAM_ATTR fySigAppendTag(char* out, size_t cap, size_t* pos, uint8_t id) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%u", (unsigned)id);
+  return fySigAppend(out, cap, pos, buf);
+}
+
+static bool IRAM_ATTR fySigAppendVendor(char* out, size_t cap, size_t* pos,
+                                        const uint8_t* body, int elen) {
+  char buf[24];
+  int take = elen < 8 ? elen : 8;
+  buf[0] = '2'; buf[1] = '2'; buf[2] = '1'; buf[3] = ':';
+  fyHexNibbles(buf + 4, body, take);
+  buf[4 + take * 2] = '\0';
+  return fySigAppend(out, cap, pos, buf);
+}
+
+// Returns false if parsing fails irrecoverably.
+static bool IRAM_ATTR fyBuildFlockIeSigFromIes(const uint8_t* ies, int len,
+                                               char* out, size_t cap, bool* complete) {
+  if (!ies || len < 2 || !out || cap < 2) return false;
+  size_t pos = 0;
+  out[0] = '\0';
+  int i = 0;
+  uint8_t phantomSkips = 0;
+  while (i + 2 <= len) {
+    uint8_t id = ies[i];
+    int elen = (int)ies[i + 1];
+    if (i + 2 + elen > len) {
+      if (phantomSkips < FY_PHANTOM_SKIP_CAP
+          && fyIsPhantomOverflow(ies, len, id, elen, i)) {
+        phantomSkips++;
+        i += 2;
+        continue;
+      }
+      int j = fyTlvResync(ies, len, i);
+      if (j > i) {
+        i = j;
+        continue;
+      }
+      return false;
+    }
+    i += 2;
+    if (id == FY_IE_SSID) {
+      if (elen == 0) {
+        while (i + 2 <= len && ies[i] == 0 && ies[i + 1] == 0) i += 2;
+      } else {
+        i += elen;
+      }
+      continue;
+    }
+    if (id == FY_IE_VENDOR && elen >= 4) {
+      if (!fySigAppendVendor(out, cap, &pos, ies + i, elen)) return false;
+    } else {
+      if (!fySigAppendTag(out, cap, &pos, id)) return false;
+    }
+    i += elen;
+  }
+  if (complete) *complete = (i == len);
+  return pos > 0;
+}
+
+static void IRAM_ATTR fyCanonicalizeFlockIeSig(char* sig, size_t cap) {
+  if (!sig || cap < 8) return;
+  if (strncmp(sig, "2,12,127,", 9) == 0
+      && strstr(sig, FLOCK_LITEON_IE_SIG_PREFIX) != nullptr) {
+    return;
+  }
+  const char* anchor = strstr(sig, FLOCK_LITEON_IE_SIG_PREFIX);
+  if (!anchor) return;
+  char tmp[128];
+  int n = snprintf(tmp, sizeof(tmp), "2,12,127,%s", anchor);
+  if (n > 0 && (size_t)n < cap) memcpy(sig, tmp, (size_t)n + 1);
+}
+
+static bool IRAM_ATTR fyPickBetterSig(const char* a, bool aComplete,
+                                      const char* b, bool bComplete,
+                                      char* out, size_t cap) {
+  if (!a[0] && !b[0]) return false;
+  if (a[0] && !b[0]) {
+    strncpy(out, a, cap - 1);
+    out[cap - 1] = '\0';
+    return true;
+  }
+  if (!a[0] && b[0]) {
+    strncpy(out, b, cap - 1);
+    out[cap - 1] = '\0';
+    return true;
+  }
+  const char* pick = a;
+  if (aComplete && !bComplete) pick = a;
+  else if (!aComplete && bComplete) pick = b;
+  else if (strlen(b) > strlen(a)) pick = b;
+  strncpy(out, pick, cap - 1);
+  out[cap - 1] = '\0';
+  return true;
+}
+
+static bool IRAM_ATTR fyBuildFlockIeSigFromProbeBody(const uint8_t* body, int bodyLen,
+                                                     char* out, size_t cap) {
+  if (!body || bodyLen < 2 || !out || cap < 16) return false;
+  char sigA[128] = {0};
+  char sigB[128] = {0};
+  bool completeA = false, completeB = false;
+  bool okA = fyBuildFlockIeSigFromIes(body, bodyLen, sigA, sizeof(sigA), &completeA);
+  bool okB = false;
+  if (bodyLen >= 2 && body[0] == 0 && body[1] == 0) {
+    okB = fyBuildFlockIeSigFromIes(body + 2, bodyLen - 2, sigB, sizeof(sigB), &completeB);
+  }
+  char merged[128] = {0};
+  if (!fyPickBetterSig(okA ? sigA : "", completeA, okB ? sigB : "", completeB,
+                       merged, sizeof(merged))) {
+    return false;
+  }
+  fyCanonicalizeFlockIeSig(merged, sizeof(merged));
+  strncpy(out, merged, cap - 1);
+  out[cap - 1] = '\0';
+  return out[0] != '\0';
+}
+
+static bool IRAM_ATTR fyFlockIeSigIsPrimary(const char* sig) {
+  return sig && strcmp(sig, FLOCK_PROBE_IE_SIG_PRIMARY) == 0;
+}
+
+static bool IRAM_ATTR fyProbeBodyFlockIeSigPrimary(const uint8_t* body, int bodyLen) {
+  char ieSig[128];
+  int len = bodyLen;
+  if (fyBuildFlockIeSigFromProbeBody(body, len, ieSig, sizeof(ieSig))
+      && fyFlockIeSigIsPrimary(ieSig)) {
+    return true;
+  }
+  if (len > 4 && fyBuildFlockIeSigFromProbeBody(body, len - 4, ieSig, sizeof(ieSig))
+      && fyFlockIeSigIsPrimary(ieSig)) {
+    return true;
+  }
+  return false;
+}
+
 static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   if (!buf || sniffingStopped) return;
 
@@ -848,15 +1093,13 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
 
   // --- OUI check: addr2 (transmitter/source) ---
   //
-  // For mgmt Probe Requests (type=0 subtype=4) from a matched OUI, tighten
-  // to the DeFlockJoplin wildcard-probe signature: SSID IE (tag 0) length
-  // must be zero. This reduces false positives dramatically (DeFlockJoplin's field
-  // test: 11/12 true-positive with only 2 false-positives in Joplin).
+  // Probe requests (type=0 subtype=4) from a matched OUI: wildcard SSID IE
+  // (tag 0, length 0) plus primary Flock IE signature → wifi_wildcard_probe_ie_sig.
   //
-  // Non-probe frames from the same OUI still emit the broad ADDR2 alert.
-  // See: https://github.com/DeflockJoplin/flock-you
+  // wifi_wildcard_probe (OUI + wildcard only, no IE check) was removed here.
+  // Suggest superseded by the IE fingerprint path: it uses the same wildcard
+  // and OUI gates and adds verification on probe IE fields.
   if (matchOuiRaw(hdr->addr2)) {
-    bool emitted = false;
     if (type == WIFI_PKT_MGMT) {
       uint8_t fc0     = hdr->frame_ctrl & 0xFF;
       uint8_t ftype   = (fc0 >> 2) & 0x03;
@@ -870,34 +1113,50 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         // ALL (-1). A found-but-nonzero (0) means legit directed probe; do
         // not retry — it would mis-classify.
         if (r == -1 && bodyLen > 4) r = isWildcardProbeIE(body, bodyLen - 4);
-        if (r == 1) {
-          enqueueAlert(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, ch,
+        if (r == 1 && fyProbeBodyFlockIeSigPrimary(body, bodyLen)) {
+          enqueueAlert(ALERT_WILDCARD_PROBE_IE_SIG, hdr->addr2, rssi, ch,
                        nullptr, "probe_req");
-          emitted = true;
         }
       }
     }
-    if (!emitted) {
-      enqueueAlert(ALERT_OUI_ADDR2, hdr->addr2, rssi, ch, nullptr, "addr2");
-    }
+    // wifi_oui_addr2 — broad transmitter OUI on any non-fingerprint frame:
+    // if (!emitted) {
+    //   enqueueAlert(ALERT_OUI_ADDR2, hdr->addr2, rssi, ch, nullptr, "addr2");
+    // }
   }
 
+  // --- Disabled: wifi_oui_addr1 (receiver / addr1) ---
+  //
+  // Suggest leaving this disabled. Flock cameras are known to channel-hop and
+  // send wildcard probe requests (addr2 = camera). Nearby APs that hear those
+  // probes reply with probe responses where addr1 = camera MAC and addr2 = AP.
+  // This path is the same OUI list again, but matching addr1 (destination) —
+  // i.e. "is anyone sending *to* a Flock OUI?" — not the camera transmitting.
+  //
+  // 802.11 MAC header roles (infrastructure / mgmt):
+  //   addr1 = receiver (DA)   addr2 = transmitter (SA)   addr3 = BSSID
+  // On a camera probe request:  addr2=camera, addr1 often broadcast.
+  // On an AP probe response:    addr1=camera, addr2=AP, addr3=AP BSSID.
+  //
+  // addr1 hits are therefore mostly second-hand fallout from the same probe
+  // behavior (AP replies), redundant with wildcard+IE detection on the uplink
+  // probe request itself.
 #if CHECK_ADDR1
-  // addr1 (receiver/destination): catches Flock STAs that appear only as the
-  // dst of probe responses and data frames — never transmitting in the capture
-  // window due to their burst-sleep duty cycle. Multicast guard is mandatory
-  // here since addr1 is broadcast (ff:ff:ff:ff:ff:ff) in beacons/broadcasts.
-  if (!isMulticast(hdr->addr1) && matchOuiRaw(hdr->addr1)) {
-    enqueueAlert(ALERT_OUI_ADDR1, hdr->addr1, rssi, ch, nullptr, "addr1");
-  }
+  // if (!isMulticast(hdr->addr1) && matchOuiRaw(hdr->addr1)) {
+  //   enqueueAlert(ALERT_OUI_ADDR1, hdr->addr1, rssi, ch, nullptr, "addr1");
+  // }
 #endif
 
+  // --- Disabled: wifi_oui_addr3 (BSSID / addr3) ---
+  //
+  // Suggest leaving this disabled. Another broad OUI filter on addr3 (BSSID)
+  // on management frames — intended for randomised addr2 with real OUI in
+  // addr3, but still OUI-only with no probe/IE behavioral check, so it can
+  // generate false positives on unrelated mgmt traffic.
 #if CHECK_ADDR3
-  // addr3 fallback: catches cases where addr2 is randomised but addr3
-  // carries the real BSSID OUI (management frames only).
-  if (type == WIFI_PKT_MGMT && matchOuiRaw(hdr->addr3)) {
-    enqueueAlert(ALERT_OUI_ADDR3, hdr->addr3, rssi, ch, nullptr, "addr3");
-  }
+  // if (type == WIFI_PKT_MGMT && matchOuiRaw(hdr->addr3)) {
+  //   enqueueAlert(ALERT_OUI_ADDR3, hdr->addr3, rssi, ch, nullptr, "addr3");
+  // }
 #endif
 
 #if ENABLE_SSID_MATCH
@@ -1008,6 +1267,10 @@ static void drainAlertQueue() {
     }
     ledFlash(LED_FLASH_MS);
 
+    char methodLine[40];
+    snprintf(methodLine, sizeof(methodLine), "wifi_%s", method);
+    dongleDisplayShowAlert(methodLine, macStr, e.rssi, e.channel, ALERT_COOLDOWN_MS);
+
 #if STOP_ON_OUI_HIT
     if (e.type != ALERT_SSID) stopSniffing("OUI hit");
 #endif
@@ -1049,6 +1312,10 @@ void setup() {
   Serial.setTxTimeoutMs(0);
   delay(300);
 
+#ifdef BOARD_LILYGO_T_DONGLE_S3
+  dongleDisplayInit();
+#endif
+
 #if MIRROR_SERIAL
   Serial1.begin(MIRROR_BAUD, SERIAL_8N1, -1, MIRROR_TX_PIN);  // TX-only on GPIO43
 #endif
@@ -1059,8 +1326,12 @@ void setup() {
 #endif
 
 #if USE_LED
+#if defined(USE_APA102_LED)
+  apa102Init();
+#else
   pinMode(LED_PIN, OUTPUT);
   ledSet(false);
+#endif
 #endif
 
   startupBeep();
@@ -1109,6 +1380,10 @@ void setup() {
 
   lastHeartbeat = millis();
   fyLastSaveAt  = millis();
+
+#ifdef BOARD_LILYGO_T_DONGLE_S3
+  dongleDisplayShowIdle(currentChannel, fyDetCount);
+#endif
 }
 
 void loop() {
@@ -1117,6 +1392,7 @@ void loop() {
   autosaveTick();      // periodic SPIFFS write if dirty
   heartbeatTick();     // audible beep-pair while a target is still in range
   ledTick();           // turn off LED after LED_FLASH_MS
+  dongleDisplayTick(millis(), currentChannel, fyDetCount);
   printHeartbeat();
   delay(1);
 }
