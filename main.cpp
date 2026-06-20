@@ -880,6 +880,7 @@ static const char FLOCK_LITEON_IE_SIG_PREFIX[] = "221:506f9a16030103";
 #define FY_PHANTOM_SKIP_CAP 16
 #define FY_TLV_RESYNC_MAX   64
 
+// Encode n raw bytes as lowercase hex pairs (no separator) for vendor IE tokens.
 static void IRAM_ATTR fyHexNibbles(char* dst, const uint8_t* b, int n) {
   static const char hd[] = "0123456789abcdef";
   for (int i = 0; i < n; i++) {
@@ -887,12 +888,14 @@ static void IRAM_ATTR fyHexNibbles(char* dst, const uint8_t* b, int n) {
     dst[i * 2 + 1] = hd[b[i] & 0x0f];
   }
 }
-
+// True when ies[pos] starts vendor IE 221 with OUI 50:6f:9a (LiteON / Flock stack).
+// Used to spot real IE boundaries inside corrupted/overflow TLV runs.
 static bool IRAM_ATTR fyLiteonVendorAt(const uint8_t* ies, int len, int pos) {
   return pos + 9 <= len && ies[pos] == FY_IE_VENDOR && ies[pos + 1] == 7
       && ies[pos + 2] == 0x50 && ies[pos + 3] == 0x6f && ies[pos + 4] == 0x9a;
 }
-
+// Scan up to 32 bytes past a bogus TLV header for a real LiteON vendor IE —
+// signals a phantom overflow (driver length/FCS skew) rather than end of frame.
 static bool IRAM_ATTR fyPhantomLiteonAhead(const uint8_t* ies, int len, int pos) {
   int end = pos + 2 + 32;
   if (end > len - 1) end = len - 1;
@@ -901,14 +904,16 @@ static bool IRAM_ATTR fyPhantomLiteonAhead(const uint8_t* ies, int len, int pos)
   }
   return false;
 }
-
+// True when declared IE length extends past the buffer but looks like a phantom
+// tag-64/len-128 overflow with LiteON payload still present ahead in the buffer.
 static bool IRAM_ATTR fyIsPhantomOverflow(const uint8_t* ies, int len,
                                           uint8_t id, int elen, int i) {
   if (i + 2 + elen <= len) return false;
   if (elen > 200) return true;
   return id == 64 && elen == 128 && fyPhantomLiteonAhead(ies, len, i);
 }
-
+// After a TLV parse failure, slide forward up to FY_TLV_RESYNC_MAX bytes to find
+// the next plausible IE header (id + len that fits in the buffer).
 static int IRAM_ATTR fyTlvResync(const uint8_t* ies, int len, int start) {
   int end = start + FY_TLV_RESYNC_MAX;
   if (end > len - 1) end = len - 1;
@@ -918,7 +923,7 @@ static int IRAM_ATTR fyTlvResync(const uint8_t* ies, int len, int start) {
   }
   return -1;
 }
-
+// Append a comma-separated fragment to the growing IE signature string; fails if cap exceeded.
 static bool IRAM_ATTR fySigAppend(char* out, size_t cap, size_t* pos, const char* part) {
   size_t plen = strlen(part);
   if (*pos != 0) {
@@ -931,13 +936,13 @@ static bool IRAM_ATTR fySigAppend(char* out, size_t cap, size_t* pos, const char
   out[*pos] = '\0';
   return true;
 }
-
+// Append a non-vendor IE as its decimal tag id (e.g. "12", "127", "45").
 static bool IRAM_ATTR fySigAppendTag(char* out, size_t cap, size_t* pos, uint8_t id) {
   char buf[8];
   snprintf(buf, sizeof(buf), "%u", (unsigned)id);
   return fySigAppend(out, cap, pos, buf);
 }
-
+// Append vendor IE as "221:" + up to 8 payload bytes hex (matches PACK sig format).
 static bool IRAM_ATTR fySigAppendVendor(char* out, size_t cap, size_t* pos,
                                         const uint8_t* body, int elen) {
   char buf[24];
@@ -948,7 +953,9 @@ static bool IRAM_ATTR fySigAppendVendor(char* out, size_t cap, size_t* pos,
   return fySigAppend(out, cap, pos, buf);
 }
 
-// Returns false if parsing fails irrecoverably.
+// Walk 802.11 IE TLVs and build comma-separated fingerprint: skip SSID (tag 0),
+// encode vendor 221 payloads, otherwise record tag numbers. Handles phantom
+// overflows and resync. Sets *complete when every byte was consumed.
 static bool IRAM_ATTR fyBuildFlockIeSigFromIes(const uint8_t* ies, int len,
                                                char* out, size_t cap, bool* complete) {
   if (!ies || len < 2 || !out || cap < 2) return false;
@@ -992,7 +999,8 @@ static bool IRAM_ATTR fyBuildFlockIeSigFromIes(const uint8_t* ies, int len,
   if (complete) *complete = (i == len);
   return pos > 0;
 }
-
+// Normalize signature to "2,12,127,<rest from LiteON anchor>" when the LiteON
+// vendor prefix is present but leading tags were truncated by parse skew.
 static void IRAM_ATTR fyCanonicalizeFlockIeSig(char* sig, size_t cap) {
   if (!sig || cap < 8) return;
   if (strncmp(sig, "2,12,127,", 9) == 0
@@ -1005,7 +1013,8 @@ static void IRAM_ATTR fyCanonicalizeFlockIeSig(char* sig, size_t cap) {
   int n = snprintf(tmp, sizeof(tmp), "2,12,127,%s", anchor);
   if (n > 0 && (size_t)n < cap) memcpy(sig, tmp, (size_t)n + 1);
 }
-
+// Normalize signature to "2,12,127,<rest from LiteON anchor>" when the LiteON
+// vendor prefix is present but leading tags were truncated by parse skew.
 static bool IRAM_ATTR fyPickBetterSig(const char* a, bool aComplete,
                                       const char* b, bool bComplete,
                                       char* out, size_t cap) {
@@ -1028,7 +1037,8 @@ static bool IRAM_ATTR fyPickBetterSig(const char* a, bool aComplete,
   out[cap - 1] = '\0';
   return true;
 }
-
+// Build fingerprint from full body and from body+2 (skip leading empty SSID IE pair);
+// merge, canonicalize, write to out.
 static bool IRAM_ATTR fyBuildFlockIeSigFromProbeBody(const uint8_t* body, int bodyLen,
                                                      char* out, size_t cap) {
   if (!body || bodyLen < 2 || !out || cap < 16) return false;
@@ -1050,7 +1060,7 @@ static bool IRAM_ATTR fyBuildFlockIeSigFromProbeBody(const uint8_t* body, int bo
   out[cap - 1] = '\0';
   return out[0] != '\0';
 }
-
+// True when sig exactly matches FLOCK_PROBE_IE_SIG_PRIMARY (drive-tested allowlist entry).
 static bool IRAM_ATTR fyFlockIeSigIsPrimary(const char* sig) {
   return sig && strcmp(sig, FLOCK_PROBE_IE_SIG_PRIMARY) == 0;
 }
