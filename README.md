@@ -40,7 +40,7 @@ In the past, Flock cameras were detectable by the AP they were broadcasting for 
 These observations are not meant to cast doubt on anyone else's.  These cameras are not managed well and are updated OTA.  
 
 Observations:
-Flock cameras transmit wildcard probe requests on wi-fi channels in ascending order.  These probes are emitted at around .125 second intervals.  These probes are essentially a WiFi client asking any AP to respond with the SSID of the AP.  Hidden SSIDs generally require you send the exact SSID in the probe to generate a response.  See [here](https://goodwi.fi/posts/2023/12/hunt-for-hidden-probe/).  Flock cameras are also known to use cellular LTE modems to upload to the Flock cloud.
+Flock cameras transmit wildcard probe requests on wi-fi channels in ascending order.  These probes are emitted at around .125 second intervals (credit to nsm_barii for orginal observations of both of these).  These probes are essentially a WiFi client asking any AP to respond with the SSID of the AP.  Hidden SSIDs generally require you send the exact SSID in the probe to generate a response.  See [here](https://goodwi.fi/posts/2023/12/hunt-for-hidden-probe/).  Flock cameras are also known to use cellular LTE modems to upload to the Flock cloud.
 
 Given this, I have disabled all other detection methods in this branch.  While they are associated with Flock cameras, they are essentially all echoes of the camera itself, which is only gated by OUI match.  The other methods can fire when any OUI matched device is sending wildcard probes because nearby APs can respond and generate a false positive match on addr1 or addr3 methods.
 

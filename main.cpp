@@ -40,9 +40,9 @@
 #define CHANNEL_MODE_SINGLE     2
 
 #define CHANNEL_MODE CHANNEL_MODE_CUSTOM
-#define CHANNEL_DWELL_MS 250
+#define CHANNEL_DWELL_MS 250  // Changed to 2 x 125ms to aid in faster detection.  125ms is the observed hop time of the cameras (credit to nsm_barri for the observation).
 #define SINGLE_CHANNEL 1
-
+// Channel order reversed to aid in faster detection.  Credit to nsm_barri for the observation on the ascending hop order of the cameras.
 static const uint8_t customChannels[]  = {11, 6, 1};
 static const size_t  customChannelCount = sizeof(customChannels) / sizeof(customChannels[0]);
 
