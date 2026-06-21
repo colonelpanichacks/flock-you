@@ -85,7 +85,6 @@ a4:cf:12
 | 64:6e:69 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | 48:27:ea | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | a4:cf:12 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
-| 82:6b:f2 | Flock Safety infrastructure | WiFi 2.4 GHz (wildcard probe) | DeFlockJoplin |
 
 ## Detection strategy
 
