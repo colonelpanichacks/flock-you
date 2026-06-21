@@ -10,12 +10,9 @@ Flock stations spend most of their duty cycle asleep, waking briefly to upload a
 
 This addr1 technique is @NitekryDPaul's discovery and is the basis of the `promiscuis-flock-you` firmware.
 
-## OUI list (31 prefixes, lowercase, colon-separated)
+## OUI list (30 prefixes, lowercase, colon-separated)
 
-@NitekryDPaul contributed the first 30. The 31st (`82:6b:f2`) was contributed
-by **DeFlockJoplin** during follow-up drive-testing in Joplin — it's
-the OUI of the 12th camera in his field test, which the original list didn't
-catch. See [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
+@NitekryDPaul contributed all 30.
 
 ```
 70:c9:4e
