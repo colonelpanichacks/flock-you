@@ -8,7 +8,7 @@
 
 ## Credit
 
-All WiFi promiscuous detection research — the **41-OUI Flock Safety target list**, the **promiscuous-mode strategy**, and the **addr1-receiver detection technique** — is the work of **OrdoOuroborous / @NitekryDPaul** (GitHub [@nitekry](https://github.com/nitekry)). The firmware here is a mod of his original work with added SPIFFS persistence and Flask-dashboard integration. Upstream OUI source: [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection). Full research writeup: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
+All WiFi promiscuous detection research — the **39-OUI Flock Safety target list**, the **promiscuous-mode strategy**, and the **addr1-receiver detection technique** — is the work of **OrdoOuroborous / @NitekryDPaul** (GitHub [@nitekry](https://github.com/nitekry)). The firmware here is a mod of his original work with added SPIFFS persistence and Flask-dashboard integration. Upstream OUI source: [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection). Full research writeup: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
 
 Additional research credit to **DeFlockJoplin** for the **wildcard-probe-request signature** and OUI `82:6b:f2`. Field-tested to 11/12 cameras caught with only 2 false positives in Joplin. Source: [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
 
@@ -39,7 +39,7 @@ Checking `addr1` in addition to `addr2` picks those silent stations up. It requi
 - `addr1` is broadcast (`ff:ff:ff:ff:ff:ff`) in beacons and broadcasts — **multicast filter**
 - Modern devices use randomised (locally-administered) MACs that can't be fingerprinted by OUI — **randomised-MAC filter** on byte 0 bit 1
 
-Both are applied before the OUI match. This whole approach, including the 41-OUI list, is **@NitekryDPaul's research**.
+Both are applied before the OUI match. This whole approach, including the 39-OUI baseline list (the 40th is DeFlockJoplin's), is **@NitekryDPaul's research**.
 
 ---
 
@@ -100,10 +100,12 @@ The split between callback and loop is deliberate: the WiFi task has hard real-t
 
 ## OUI target list (@NitekryDPaul research)
 
-All lowercase, colon-separated. 42 Flock Safety infrastructure prefixes —
-29 from @NitekryDPaul's original set, 12 from his April 2026 additions, plus
+All lowercase, colon-separated. 40 Flock Safety infrastructure prefixes —
+29 from @NitekryDPaul's original set, 10 from his April 2026 additions, plus
 1 from DeFlockJoplin. `f8:a2:d6` from the original set has been
-demoted as a Sony Media Player false positive (see
+demoted as a Sony Media Player false positive, and `94:2a:6f` / `f4:e2:c6`
+from the April 2026 additions have been demoted as Ubiquiti false positives
+per @NitekryDPaul's June 2026 update (see
 [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md)).
 
 ```
@@ -114,7 +116,7 @@ d0:39:57   e8:d0:fc   e0:4f:43   b8:1e:a4   70:08:94
 58:8e:81   ec:1b:bd   3c:71:bf   58:00:e3   90:35:ea
 5c:93:a2   64:6e:69   48:27:ea   a4:cf:12
 04:0d:84   f0:82:c0   1c:34:f1   38:5b:44   94:34:69   ← Apr 2026 adds
-b4:e3:f9   b4:1e:52   14:b5:cd   94:2a:6f   f4:e2:c6
+b4:e3:f9   b4:1e:52   14:b5:cd
 d4:11:d6   e0:0a:f6
 82:6b:f2   ← contributed by DeFlockJoplin
 ```
@@ -323,7 +325,7 @@ The BLE-only sibling of this firmware lives on the [`main` branch](https://githu
 
 ## Acknowledgments
 
-- **OrdoOuroborous (@NitekryDPaul, GitHub [@nitekry](https://github.com/nitekry))** — **WiFi promiscuous detection research**: the 41-OUI Flock Safety target list and the addr1-receiver detection technique that are the baseline of this firmware. The code here is a mod of his original work. Upstream OUI tracking: [nite-oui-collection](https://github.com/nitekry/nite-oui-collection).
+- **OrdoOuroborous (@NitekryDPaul, GitHub [@nitekry](https://github.com/nitekry))** — **WiFi promiscuous detection research**: the 39-OUI Flock Safety target list and the addr1-receiver detection technique that are the baseline of this firmware. The code here is a mod of his original work. Upstream OUI tracking: [nite-oui-collection](https://github.com/nitekry/nite-oui-collection).
 - **DeFlockJoplin** ([DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you), [deflockjoplin.today](https://deflockjoplin.today)) — **wildcard-probe-request signature** + OUI `82:6b:f2`. Drive-tested in Joplin to 11/12 cameras caught with only 2 false positives.
 - **Will Greenberg** ([@wgreenberg](https://github.com/wgreenberg)) — BLE manufacturer company ID detection (`0x09C8` XUNTONG) sourced from his [flock-you](https://github.com/wgreenberg/flock-you) fork (used by the BLE companion on `main`)
 - **[DeFlock](https://deflock.me)** ([FoggedLens/deflock](https://github.com/FoggedLens/deflock)) — crowdsourced ALPR location data and detection methodologies. Datasets included in `datasets/`

@@ -88,15 +88,19 @@ static const char* target_ouis[] = {
   // 08:3a:88 stays in the array but is flagged for a BLE Ring conflict;
   // promiscuous WiFi detection is unaffected, BLE-side users should be
   // aware of occasional Ring-doorbell false positives.
+  // 48:27:ea and a4:cf:12 are low-confidence WiGLE crowdsource entries
+  // (Espressif plausible Flock variants); kept per upstream main.cpp.
   "70:c9:4e", "3c:91:80", "d8:f3:bc", "80:30:49", "b8:35:32",
   "14:5a:fc", "74:4c:a1", "08:3a:88", "9c:2f:9d", "c0:35:32",
   "94:08:53", "e4:aa:ea", "f4:6a:dd", "24:b2:b9", "00:f4:8d",
   "d0:39:57", "e8:d0:fc", "e0:4f:43", "b8:1e:a4", "70:08:94",
   "58:8e:81", "ec:1b:bd", "3c:71:bf", "58:00:e3", "90:35:ea",
   "5c:93:a2", "64:6e:69", "48:27:ea", "a4:cf:12",
-  // @NitekryDPaul April 2026 additions (nite-oui-collection).
+  // @NitekryDPaul April 2026 additions (nite-oui-collection), 10 OUIs.
+  // 94:2a:6f and f4:e2:c6 have been removed — @NitekryDPaul's
+  // my_tested_flock.md marks both as "Nope - Ubiquiti" (Jun 2026 update).
   "04:0d:84", "f0:82:c0", "1c:34:f1", "38:5b:44", "94:34:69",
-  "b4:e3:f9", "b4:1e:52", "14:b5:cd", "94:2a:6f", "f4:e2:c6",
+  "b4:e3:f9", "b4:1e:52", "14:b5:cd",
   "d4:11:d6", "e0:0a:f6",
   // Contributed by DeFlockJoplin — discovered via wildcard-probe
   // + OUI signature during field testing. The 12th camera in his drive-test

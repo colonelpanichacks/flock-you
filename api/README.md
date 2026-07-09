@@ -195,8 +195,8 @@ Replay detection (extra fields on top of the live format):
 Command reply events:
 
 ```json
-{"event":"status","fy_det":42,"oui_count":42,"spiffs":1,"prev_session":1,"prev_bytes":4280,"uptime_ms":900000,"free_heap":221408,"channel":6,"channel_mode":"CUSTOM","rssi_min":-95}
-{"event":"version","firmware":"flock-you-promiscious","branch":"promiscious","oui_count":42,"max_detections":200,"autosave_ms":60000}
+{"event":"status","fy_det":42,"oui_count":40,"spiffs":1,"prev_session":1,"prev_bytes":4280,"uptime_ms":900000,"free_heap":221408,"channel":6,"channel_mode":"CUSTOM","rssi_min":-95}
+{"event":"version","firmware":"flock-you-promiscious","branch":"promiscious","oui_count":40,"max_detections":200,"autosave_ms":60000}
 {"event":"replay_complete","source":"prev","count":47,"ok":true}
 {"event":"clear","target":"prev","ok":true}
 {"event":"error","reason":"unknown_command","cmd":"CMD:GARBAGE"}

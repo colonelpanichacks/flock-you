@@ -2,7 +2,7 @@
 
 **Researcher:** OrdoOuroborous (**@NitekryDPaul**, GitHub [@nitekry](https://github.com/nitekry))
 
-This dataset documents Flock Safety and related surveillance-infrastructure WiFi MAC-address OUIs (first three octets) discovered through 2.4 GHz promiscuous-mode analysis. The 42 active prefixes below come from @NitekryDPaul's promiscuous-mode research on Flock camera air traffic (41) and DeFlockJoplin's wildcard-probe drive-testing (1). Upstream OUI source: [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection). One prefix from the original set (`f8:a2:d6`) has been demoted — see the [Demoted](#demoted--low-confidence) section.
+This dataset documents Flock Safety and related surveillance-infrastructure WiFi MAC-address OUIs (first three octets) discovered through 2.4 GHz promiscuous-mode analysis. The 40 active prefixes below come from @NitekryDPaul's promiscuous-mode research on Flock camera air traffic (39) and DeFlockJoplin's wildcard-probe drive-testing (1). Upstream OUI source: [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection). Three prefixes from earlier revisions (`f8:a2:d6`, `94:2a:6f`, `f4:e2:c6`) have been demoted — see the [Demoted](#demoted--low-confidence) section.
 
 ## Why promiscuous mode
 
@@ -10,14 +10,17 @@ Flock stations spend most of their duty cycle asleep, waking briefly to upload a
 
 This addr1 technique is @NitekryDPaul's discovery and is the basis of the `promiscuis-flock-you` firmware.
 
-## OUI list (42 prefixes, lowercase, colon-separated)
+## OUI list (40 prefixes, lowercase, colon-separated)
 
-@NitekryDPaul contributed 41 active prefixes — 29 from his original
-promiscuous-mode set plus 12 from his April 2026 additions in
-[nite-oui-collection](https://github.com/nitekry/nite-oui-collection).
-The 42nd (`82:6b:f2`) was contributed by **DeFlockJoplin** during
-follow-up drive-testing in Joplin — it's the OUI of the 12th camera in his
-field test, which the original list didn't catch. See
+@NitekryDPaul contributed 39 active prefixes — 29 from his original
+promiscuous-mode set plus 10 from his April 2026 additions in
+[nite-oui-collection](https://github.com/nitekry/nite-oui-collection)
+(two of the original 12 April adds — `94:2a:6f` and `f4:e2:c6` — were
+subsequently marked as Ubiquiti false positives in his June 2026 update
+and have been demoted). The 40th (`82:6b:f2`) was contributed by
+**DeFlockJoplin** during follow-up drive-testing in Joplin —
+it's the OUI of the 12th camera in his field test, which the original
+list didn't catch. See
 [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
 
 ```
@@ -58,8 +61,6 @@ f0:82:c0
 b4:e3:f9
 b4:1e:52
 14:b5:cd
-94:2a:6f
-f4:e2:c6
 d4:11:d6
 e0:0a:f6
 82:6b:f2
@@ -96,8 +97,8 @@ e0:0a:f6
 | 90:35:ea | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | 5c:93:a2 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | 64:6e:69 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
-| 48:27:ea | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
-| a4:cf:12 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
+| 48:27:ea | Flock Safety infrastructure (low confidence — Espressif plausible Flock variant, WiGLE crowdsource) | WiFi 2.4 GHz | @NitekryDPaul |
+| a4:cf:12 | Flock Safety infrastructure (low confidence — Espressif plausible Flock variant, WiGLE crowdsource) | WiFi 2.4 GHz | @NitekryDPaul |
 | 04:0d:84 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
 | f0:82:c0 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
 | 1c:34:f1 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
@@ -105,9 +106,7 @@ e0:0a:f6
 | 94:34:69 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
 | b4:e3:f9 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
 | b4:1e:52 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
-| 14:b5:cd | Flock Safety infrastructure (high confidence) | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
-| 94:2a:6f | Flock Safety infrastructure (high confidence) | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
-| f4:e2:c6 | Flock Safety infrastructure (high confidence) | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
+| 14:b5:cd | Flock Safety infrastructure (new finding, testing) | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
 | d4:11:d6 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
 | e0:0a:f6 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul (Apr 2026) |
 | 82:6b:f2 | Flock Safety infrastructure | WiFi 2.4 GHz (wildcard probe) | DeFlockJoplin |
@@ -119,7 +118,9 @@ caveat documented by @NitekryDPaul.
 
 | Prefix | Caveat | Source |
 |---|---|---|
-| `08:3a:88` | BLE Ring conflict — expect occasional Ring-doorbell false positives when this OUI is matched against BLE advertisements. WiFi-side detection is unaffected. Flagged per @NitekryDPaul's latest [my_tested_flock.md](https://github.com/nitekry/nite-oui-collection/blob/main/groups/flockers/my_tested_flock.md) update (2026-05-13). | @NitekryDPaul |
+| `08:3a:88` | BLE Ring conflict — expect occasional Ring-doorbell false positives when this OUI is matched against BLE advertisements. WiFi-side detection is unaffected. Flagged per @NitekryDPaul's [my_tested_flock.md](https://github.com/nitekry/nite-oui-collection/blob/main/groups/flockers/my_tested_flock.md). | @NitekryDPaul |
+| `48:27:ea` | Low confidence — Espressif plausible Flock variant. Sourced from WiGLE crowdsource per @NitekryDPaul's Crowdsource section in [my_tested_flock.md](https://github.com/nitekry/nite-oui-collection/blob/main/groups/flockers/my_tested_flock.md). Kept in the active OUI array per upstream `main.cpp`. | @NitekryDPaul / Crowdsource |
+| `a4:cf:12` | Low confidence — Espressif plausible Flock variant. Same source and status as `48:27:ea`. | @NitekryDPaul / Crowdsource |
 
 ## Demoted / low confidence
 
@@ -129,8 +130,11 @@ from the active firmware OUI array.
 | Prefix | Reason | Source |
 |---|---|---|
 | `f8:a2:d6` | Low confidence; observed hitting a Sony Media Player rather than a Flock device. Demoted per @NitekryDPaul's [my_tested_flock.md](https://github.com/nitekry/nite-oui-collection/blob/main/groups/flockers/my_tested_flock.md) field notes. | @NitekryDPaul |
+| `94:2a:6f` | Marked "Nope - Ubiquiti" in @NitekryDPaul's June 2026 [my_tested_flock.md](https://github.com/nitekry/nite-oui-collection/blob/main/groups/flockers/my_tested_flock.md) update. Was previously carried as a high-confidence April 2026 addition; hits on Ubiquiti radios rather than Flock. | @NitekryDPaul |
+| `f4:e2:c6` | Marked "Nope - Ubiquiti" in @NitekryDPaul's June 2026 [my_tested_flock.md](https://github.com/nitekry/nite-oui-collection/blob/main/groups/flockers/my_tested_flock.md) update. Was previously carried as a high-confidence April 2026 addition; hits on Ubiquiti radios rather than Flock. | @NitekryDPaul |
 | `cc:cc:cc` | No observed hits across @NitekryDPaul's testing. Originally a placeholder/test prefix from the early GainSec list; never produced a real detection. | @NitekryDPaul |
 | `00:0c:e7` | MediaTek prefix that appeared in early field tests as a possible Flock-adjacent observation; later determined to be a likely false positive. | @NitekryDPaul / Crowdsource |
+| `6c:cd:d6` | Marked "Nope - Netgear" in @NitekryDPaul's April 2026 additions section — never entered our active list; recorded here for completeness. | @NitekryDPaul |
 
 ## Detection strategy
 
@@ -163,3 +167,7 @@ The `promiscuis-flock-you` firmware implementing this research is a mod of @Nite
 ## Credit
 
 All OUI research and the promiscuous-mode detection strategy are the work of **@NitekryDPaul**. Please cite him when using or redistributing this list.
+
+---
+
+Last synced with [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection): 2026-07-04.
