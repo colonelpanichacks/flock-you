@@ -63,8 +63,8 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 // Flock's burst-sleep gap would mean false chirps; longer means you'd miss
 // a drive-away/return. 30 s is a good middle ground.
 #define REDISCOVER_MS          30000
-#define NEW_CHIRP_LO_HZ        2000
-#define NEW_CHIRP_HI_HZ        2800
+#define NEW_CHIRP_LO_HZ        1200
+#define NEW_CHIRP_HI_HZ        2000
 #define NEW_CHIRP_NOTE_MS      55
 #define NEW_CHIRP_GAP_MS       25
 #define HB_BEEP_HZ             1500
