@@ -5,12 +5,19 @@
 #include <string.h>
 #include <SPIFFS.h>
 #include "display_dongle.h"
+#include <Adafruit_NeoPixel.h>
 
 // ============================================================
 // CONFIG  (board defaults; override via platformio build_flags)
 // ============================================================
 
-#ifdef BOARD_LILYGO_T_DONGLE_S3
+#ifdef BOARD_ESP32_C3_DEVKIT_RUST_1
+#define USE_BUZZER         0
+#define USE_LED            1
+#define USE_WS2812_LED     1
+#define WS2812_PIN         2
+#define MIRROR_SERIAL      0
+#elif defined(BOARD_LILYGO_T_DONGLE_S3)
 // LilyGO T-Dongle S3: ST7735 display + APA102 RGB (no buzzer).
 #define USE_BUZZER         0
 #define USE_LED            1
@@ -213,6 +220,10 @@ static struct {
 } dedupeTable[DEDUPE_SLOTS];
 static size_t dedupeIdx = 0;
 
+#if USE_LED && defined(USE_WS2812_LED)
+Adafruit_NeoPixel pixels(1, WS2812_PIN, NEO_GRB + NEO_KHZ800);
+#endif
+
 // LED one-shot pulse timer
 static volatile unsigned long ledOffAt = 0;
 
@@ -283,18 +294,16 @@ static void dualPrintf(const char* fmt, ...) {
   }
 }
 
-static void dualPrintln(const char* str) {
-  Serial.println(str);
-#if MIRROR_SERIAL
-  Serial1.println(str);
-#endif
-}
-
 static inline void ledSet(bool on) {
 #if USE_LED
 #if defined(USE_APA102_LED)
   if (on) apa102SetColor(APA102_FLASH_R, APA102_FLASH_G, APA102_FLASH_B);
   else apa102SetColor(0, 0, 0);
+#elif defined(USE_WS2812_LED)
+  // Set to Red (or any color you prefer) on detection
+  if (on) pixels.setPixelColor(0, pixels.Color(255, 0, 0)); 
+  else pixels.setPixelColor(0, pixels.Color(0, 0, 0));
+  pixels.show();
 #else
 #if LED_ACTIVE_HIGH
   digitalWrite(LED_PIN, on ? HIGH : LOW);
@@ -487,9 +496,11 @@ static void printHeartbeat() {
     dualPrintf("[flockyou] scanning (ch=%u mode=%s det=%d)\n",
                   currentChannel, channelModeName(), fyDetCount);
     lastHeartbeat = millis();
+#ifdef BOARD_LILYGO_T_DONGLE_S3
     if (!dongleDisplayInAlert(millis())) {
       dongleDisplayShowIdle(currentChannel, fyDetCount);
     }
+#endif
   }
 }
 
@@ -1279,7 +1290,9 @@ static void drainAlertQueue() {
 
     char methodLine[40];
     snprintf(methodLine, sizeof(methodLine), "wifi_%s", method);
+#ifdef BOARD_LILYGO_T_DONGLE_S3
     dongleDisplayShowAlert(methodLine, macStr, e.rssi, e.channel, ALERT_COOLDOWN_MS);
+#endif
 
 #if STOP_ON_OUI_HIT
     if (e.type != ALERT_SSID) stopSniffing("OUI hit");
@@ -1338,6 +1351,10 @@ void setup() {
 #if USE_LED
 #if defined(USE_APA102_LED)
   apa102Init();
+#elif defined(USE_WS2812_LED)
+  pixels.begin();
+  pixels.clear();
+  pixels.show();
 #else
   pinMode(LED_PIN, OUTPUT);
   ledSet(false);
@@ -1402,7 +1419,9 @@ void loop() {
   autosaveTick();      // periodic SPIFFS write if dirty
   heartbeatTick();     // audible beep-pair while a target is still in range
   ledTick();           // turn off LED after LED_FLASH_MS
+#ifdef BOARD_LILYGO_T_DONGLE_S3
   dongleDisplayTick(millis(), currentChannel, fyDetCount);
+#endif
   printHeartbeat();
   delay(1);
 }
