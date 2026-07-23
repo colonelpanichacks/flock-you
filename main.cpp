@@ -24,8 +24,8 @@
 #define USE_APA102_LED     1
 #define APA102_DATA_PIN    40
 #define APA102_CLK_PIN     39
-#define APA102_FLASH_R     255
-#define APA102_FLASH_G     0
+#define APA102_FLASH_R     0
+#define APA102_FLASH_G     255
 #define APA102_FLASH_B     0
 #define MIRROR_SERIAL      0   // GPIO43 is UART TX on this board
 #else
@@ -294,6 +294,13 @@ static void dualPrintf(const char* fmt, ...) {
   }
 }
 
+static void dualPrintln(const char* str) {
+  Serial.println(str);
+#if MIRROR_SERIAL
+  Serial1.println(str);
+#endif
+}
+
 static inline void ledSet(bool on) {
 #if USE_LED
 #if defined(USE_APA102_LED)
@@ -301,7 +308,7 @@ static inline void ledSet(bool on) {
   else apa102SetColor(0, 0, 0);
 #elif defined(USE_WS2812_LED)
   // Set to Red (or any color you prefer) on detection
-  if (on) pixels.setPixelColor(0, pixels.Color(255, 0, 0)); 
+  if (on) pixels.setPixelColor(0, pixels.Color(0, 255, 0)); 
   else pixels.setPixelColor(0, pixels.Color(0, 0, 0));
   pixels.show();
 #else
