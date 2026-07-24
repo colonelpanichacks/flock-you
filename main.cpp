@@ -40,7 +40,7 @@
 #endif
 
 // #define LED_FLASH_MS       120
-#define LED_HOLD_MS        5000
+#define LED_HOLD_MS        30000
 #define MIRROR_BAUD        115200
 
 #define CHANNEL_MODE_FULL_HOP   0
@@ -303,50 +303,135 @@ static void dualPrintln(const char* str) {
 #endif
 }
 
-static inline void ledSet(bool on, AlertType type = ALERT_WILDCARD_PROBE_IE_SIG) {
+// static inline void ledSet(bool on, AlertType type = ALERT_WILDCARD_PROBE_IE_SIG) {
+// #if USE_LED
+// #if defined(USE_APA102_LED)
+//   if (on) {
+//     if (type == ALERT_OUI_ADDR2) apa102SetColor(0, 0, 255); // Blue
+//     else if (type == ALERT_OUI_ADDR1) apa102SetColor(128, 0, 128); // Purple
+//     else apa102SetColor(APA102_FLASH_R, APA102_FLASH_G, APA102_FLASH_B);
+//   }
+//   else apa102SetColor(5, 0, 0);
+// #elif defined(USE_WS2812_LED)
+//   if (on) {
+//     if (type == ALERT_OUI_ADDR2) {
+//       pixels.setPixelColor(0, pixels.Color(0, 0, 255)); // Blue for Broad OUI
+//     } else if (type == ALERT_OUI_ADDR1) {
+//       pixels.setPixelColor(0, pixels.Color(128, 0, 128)); // Purple for Router Echo
+//     } else {
+//       pixels.setPixelColor(0, pixels.Color(0, 255, 0)); // Green for Strict Match
+//     }
+//   } 
+//   else pixels.setPixelColor(0, pixels.Color(5, 0, 0));
+//   pixels.show();
+// #else
+// #if LED_ACTIVE_HIGH
+//   digitalWrite(LED_PIN, on ? HIGH : LOW);
+// #else
+//   digitalWrite(LED_PIN, on ? LOW  : HIGH);
+// #endif
+// #endif
+// #endif
+// }
+
+// static void ledFlash(unsigned ms, AlertType type = ALERT_WILDCARD_PROBE_IE_SIG) {
+// #if USE_LED
+//   ledSet(true, type);
+//   ledOffAt = millis() + ms;
+//   if (ledOffAt == 0) ledOffAt = 1;  // avoid the "off" sentinel
+// #endif
+// }
+
+// static void ledTick() {
+// #if USE_LED
+//   if (ledOffAt && (long)(millis() - ledOffAt) >= 0) {
+//     ledSet(false);
+//     ledOffAt = 0;
+//   }
+// #endif
+// }
+
+// ============================================================
+// LED STATE MACHINE & PRIORITY LOGIC
+// ============================================================
+
+typedef enum {
+  LED_COLOR_IDLE   = 0, // Faint Red
+  LED_COLOR_BROAD  = 1, // Blue (OUI_ADDR2)
+  LED_COLOR_ROUTER = 2, // Purple (OUI_ADDR1)
+  LED_COLOR_STRICT = 3  // Green (IE_SIG or SSID)
+} LedColorState;
+
+static LedColorState currentLedColor = LED_COLOR_IDLE;
+static bool ledForceUpdate = true; // Force hardware update on boot
+static unsigned long expireStrict = 0;
+static unsigned long expireRouter = 0;
+static unsigned long expireBroad  = 0;
+
+static void applyLedColor(LedColorState state) {
 #if USE_LED
 #if defined(USE_APA102_LED)
-  if (on) {
-    if (type == ALERT_OUI_ADDR2) apa102SetColor(0, 0, 255); // Blue
-    else if (type == ALERT_OUI_ADDR1) apa102SetColor(128, 0, 128); // Purple
-    else apa102SetColor(APA102_FLASH_R, APA102_FLASH_G, APA102_FLASH_B);
-  }
-  else apa102SetColor(5, 0, 0);
+  if (state == LED_COLOR_STRICT) apa102SetColor(APA102_FLASH_R, APA102_FLASH_G, APA102_FLASH_B);
+  else if (state == LED_COLOR_ROUTER) apa102SetColor(128, 0, 128); // Purple
+  else if (state == LED_COLOR_BROAD) apa102SetColor(0, 0, 255); // Blue
+  else apa102SetColor(5, 0, 0); // Faint Red
 #elif defined(USE_WS2812_LED)
-  if (on) {
-    if (type == ALERT_OUI_ADDR2) {
-      pixels.setPixelColor(0, pixels.Color(0, 0, 255)); // Blue for Broad OUI
-    } else if (type == ALERT_OUI_ADDR1) {
-      pixels.setPixelColor(0, pixels.Color(255, 0, 255)); // Purple for Router Echo
-    } else {
-      pixels.setPixelColor(0, pixels.Color(0, 255, 0)); // Green for Strict Match
-    }
-  } 
-  else pixels.setPixelColor(0, pixels.Color(5, 0, 0));
+  if (state == LED_COLOR_STRICT) pixels.setPixelColor(0, pixels.Color(0, 255, 0));
+  else if (state == LED_COLOR_ROUTER) pixels.setPixelColor(0, pixels.Color(128, 0, 128));
+  else if (state == LED_COLOR_BROAD) pixels.setPixelColor(0, pixels.Color(0, 0, 255));
+  else pixels.setPixelColor(0, pixels.Color(5, 0, 0)); // Faint Red
   pixels.show();
 #else
 #if LED_ACTIVE_HIGH
-  digitalWrite(LED_PIN, on ? HIGH : LOW);
+  digitalWrite(LED_PIN, (state != LED_COLOR_IDLE) ? HIGH : LOW);
 #else
-  digitalWrite(LED_PIN, on ? LOW  : HIGH);
+  digitalWrite(LED_PIN, (state != LED_COLOR_IDLE) ? LOW : HIGH);
 #endif
 #endif
 #endif
 }
 
-static void ledFlash(unsigned ms, AlertType type = ALERT_WILDCARD_PROBE_IE_SIG) {
+// Just updates the expiration timers in memory (super fast, no hardware blocking)
+static void ledRegisterHit(AlertType type) {
 #if USE_LED
-  ledSet(true, type);
-  ledOffAt = millis() + ms;
-  if (ledOffAt == 0) ledOffAt = 1;  // avoid the "off" sentinel
+  unsigned long now = millis();
+  unsigned long expire = now + LED_HOLD_MS;
+  if (expire == 0) expire = 1;
+
+  if (type == ALERT_WILDCARD_PROBE_IE_SIG || type == ALERT_SSID) {
+    expireStrict = expire;
+  } else if (type == ALERT_OUI_ADDR1) {
+    expireRouter = expire;
+  } else if (type == ALERT_OUI_ADDR2) {
+    expireBroad = expire;
+  }
 #endif
 }
 
 static void ledTick() {
 #if USE_LED
-  if (ledOffAt && (long)(millis() - ledOffAt) >= 0) {
-    ledSet(false);
-    ledOffAt = 0;
+  unsigned long now = millis();
+  LedColorState desired = LED_COLOR_IDLE;
+
+  // 1. Determine highest priority active state (Green > Blue > Purple)
+  if (expireStrict && (long)(now - expireStrict) < 0) {
+    desired = LED_COLOR_STRICT;     // GREEN: Guaranteed Flock Camera
+  } else if (expireBroad && (long)(now - expireBroad) < 0) {
+    desired = LED_COLOR_BROAD;      // BLUE: LiteON chip actively transmitting
+  } else if (expireRouter && (long)(now - expireRouter) < 0) {
+    desired = LED_COLOR_ROUTER;     // PURPLE: Router talking to LiteON chip
+  }
+
+  // 2. Clear timers if they have expired (prevents long-uptime bugs)
+  if (expireStrict && (long)(now - expireStrict) >= 0) expireStrict = 0;
+  if (expireBroad  && (long)(now - expireBroad) >= 0)  expireBroad = 0;
+  if (expireRouter && (long)(now - expireRouter) >= 0) expireRouter = 0;
+
+  // 3. ONLY update physical LED if the color changed (saves massive CPU time)
+  if (desired != currentLedColor || ledForceUpdate) {
+    currentLedColor = desired;
+    applyLedColor(desired);
+    ledForceUpdate = false;
   }
 #endif
 }
@@ -1279,9 +1364,8 @@ static void drainAlertQueue() {
     // rate-limited (still audible via heartbeat, just quieter on the wire).
     fyLastTargetSeen = millis();
 
-    // KEEP THE LED ON: Refresh the 5-second timer every single time 
-    // a packet is processed, regardless of deduplication.
-    ledFlash(LED_HOLD_MS, e.type);
+    // KEEP THE LED ON: Push the respective color timer 5 seconds into the future
+    ledRegisterHit(e.type);
 
     // Serial-rate-limit: suppress emit/beep/flash within ALERT_COOLDOWN_MS.
     if (shouldSuppressDuplicate(macStr)) continue;
@@ -1378,20 +1462,22 @@ void setup() {
 
 #if USE_LED
 #if defined(USE_APA102_LED)
-  apa102Init();
+  apa102Init(); // You already set 5,0,0 inside this function, which is great
 #elif defined(USE_WS2812_LED)
   pixels.begin();
-  pixels.clear();
+  pixels.setPixelColor(0, pixels.Color(5, 0, 0)); // Initialize faint red
   pixels.show();
 #else
   pinMode(LED_PIN, OUTPUT);
-  ledSet(false);
+  applyLedColor(LED_COLOR_IDLE); // Use the new state machine function
 #endif
 #endif
 
   startupBeep();
 #if USE_LED
-  ledFlash(200);
+  // Force a brief Green flash on startup; ledTick will automatically fade it to Red
+  expireStrict = millis() + 200;
+  ledForceUpdate = true;
 #endif
 
   precompileOuis();
