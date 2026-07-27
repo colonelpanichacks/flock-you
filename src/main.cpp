@@ -69,7 +69,19 @@ static const char* flock_mac_prefixes[] = {
     "70:c9:4e", "3c:91:80", "d8:f3:bc", "80:30:49", "14:5a:fc",
     "74:4c:a1", "08:3a:88", "9c:2f:9d", "94:08:53", "e4:aa:ea",
     // Flock Safety (direct IEEE registration)
-    "b4:1e:52"
+    "b4:1e:52",
+    // Field-observed via the DeFlock community. Same confidence tier as the
+    // entries above: seen on Flock deployments rather than inferred from a
+    // registry.
+    "b8:35:32", "c0:35:32", "24:b2:b9", "e0:4f:43", "b8:1e:a4",
+    "70:08:94", "3c:71:bf", "58:00:e3", "5c:93:a2", "64:6e:69",
+    "48:27:ea", "a4:cf:12",
+    // Contributed by Michael / DeFlockJoplin, attributed to a Raven acoustic
+    // sensor. Locally administered (bit 1 of the first byte is set), so it is
+    // not IEEE-registered and will not appear in oui.txt. Kept here rather
+    // than under soundthinking_mac_prefixes: Raven is Flock hardware, not
+    // ShotSpotter/SoundThinking.
+    "82:6b:f2"
 };
 
 // Flock Safety contract manufacturers — lower confidence alone.
