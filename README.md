@@ -1,12 +1,10 @@
-# Flock-You: Promiscuous WiFi Edition (`promiscious-dev` branch)
+# Flock-You: Promiscuous WiFi Edition
 
 <img src="flock.png" alt="Flock You" width="300px">
 
 **Passive 2.4 GHz promiscuous-mode detector for Flock Safety surveillance infrastructure. Runs standalone or feeds the Flask dashboard over USB for live GPS-tagged wardriving.**
 
-> **Dev note:** This is the `promiscious-dev` branch — adds the
-> DeFlockJoplin Information Element research + wildcard probe on top of the
-> `promiscious` baseline. See "Further research" below.
+This is the `main` branch — stable line. Development happens on `promiscious-dev`, which adds the DeFlockJoplin Information Element research and wildcard-probe signature on top of this baseline. See "Further research" below.
 
 ---
 
