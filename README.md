@@ -4,6 +4,8 @@
 
 **Passive 2.4 GHz promiscuous-mode detector for Flock Safety surveillance infrastructure. Runs standalone or feeds the Flask dashboard over USB for live GPS-tagged wardriving.**
 
+> **Region:** Flock Safety hardware is deployed primarily in the United States (and to a lesser extent Canada). If you're outside North America the OUI list and probe-request signatures here won't match anything — the tool is still useful for research, but it's not going to find infrastructure that isn't there.
+
 ---
 
 ## Credit
@@ -355,6 +357,12 @@ Flock-You is part of the OUI-SPY firmware family:
 **colonelpanichacks**
 
 **Oui-Spy devices available at [colonelpanic.tech](https://colonelpanic.tech)**
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). Free to fork, modify, and redistribute; upstream research credits above should be preserved.
 
 ---
 
