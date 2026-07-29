@@ -1576,11 +1576,19 @@
                     <div class="device-control-group">
                         <div class="status-indicator" id="gpsStatus"></div>
                         <label>GPS:</label>
-                        <div class="port-controls">
+                        <select id="gpsSourceSelect" title="GPS source">
+                            <option value="serial">Serial NMEA</option>
+                            <option value="gpsd">gpsd</option>
+                        </select>
+                        <div class="port-controls" id="gpsSerialControls">
                             <select id="gpsPortSelect">
                                 <option value="">Select Port</option>
                             </select>
                             <button id="refreshGpsPortsBtn" class="refresh-btn" title="Refresh ports" onclick="loadGpsPorts()">↻</button>
+                        </div>
+                        <div class="port-controls" id="gpsdControls" style="display: none;">
+                            <input type="text" id="gpsdHostInput" placeholder="host" value="localhost" style="width: 8em;">
+                            <input type="number" id="gpsdPortInput" placeholder="port" value="2947" min="1" max="65535" style="width: 5em;">
                         </div>
                         <button id="connectGpsBtn">Connect</button>
                         <button id="disconnectGpsBtn" class="danger" style="display: none;">Disconnect</button>
@@ -1984,6 +1992,15 @@
                 saveSettings();
             });
 
+            document.getElementById('gpsSourceSelect').addEventListener('change', function() {
+                applyGpsSource(this.value);
+                saveSettings();
+            });
+            document.getElementById('gpsdHostInput').addEventListener('change', saveSettings);
+            document.getElementById('gpsdPortInput').addEventListener('change', saveSettings);
+            // Initial visibility pass — reflect whatever the dropdown starts at.
+            applyGpsSource(document.getElementById('gpsSourceSelect').value);
+
             document.getElementById('connectFlockBtn').addEventListener('click', connectFlock);
             document.getElementById('disconnectFlockBtn').addEventListener('click', disconnectFlock);
             document.getElementById('connectGpsBtn').addEventListener('click', connectGps);
@@ -2020,15 +2037,31 @@
                 });
         }
 
+        function applyGpsSource(source) {
+            const isGpsd = (source === 'gpsd');
+            document.getElementById('gpsSerialControls').style.display = isGpsd ? 'none' : '';
+            document.getElementById('gpsdControls').style.display = isGpsd ? '' : 'none';
+        }
+
         function loadSettings() {
             fetch('/api/settings')
                 .then(response => response.json())
                 .then(settings => {
                     console.log('Loaded settings:', settings);
-                    
+
                     // Apply settings to UI
+                    if (settings.gps_source) {
+                        document.getElementById('gpsSourceSelect').value = settings.gps_source;
+                        applyGpsSource(settings.gps_source);
+                    }
                     if (settings.gps_port) {
                         document.getElementById('gpsPortSelect').value = settings.gps_port;
+                    }
+                    if (settings.gpsd_host) {
+                        document.getElementById('gpsdHostInput').value = settings.gpsd_host;
+                    }
+                    if (settings.gpsd_port) {
+                        document.getElementById('gpsdPortInput').value = settings.gpsd_port;
                     }
                     if (settings.flock_port) {
                         document.getElementById('flockDeviceSelect').value = settings.flock_port;
@@ -2045,7 +2078,10 @@
 
         function saveSettings() {
             const settings = {
+                gps_source: document.getElementById('gpsSourceSelect').value,
                 gps_port: document.getElementById('gpsPortSelect').value,
+                gpsd_host: document.getElementById('gpsdHostInput').value,
+                gpsd_port: parseInt(document.getElementById('gpsdPortInput').value, 10) || 2947,
                 flock_port: document.getElementById('flockDeviceSelect').value,
                 filter: document.getElementById('filterSelect').value
             };
@@ -2386,20 +2422,35 @@
         function flockClearLive() { flockClearSession('live'); }
 
         function connectGps() {
-            const port = document.getElementById('gpsPortSelect').value;
-            if (!port) {
-                alert('Please select a GPS port');
+            const source = document.getElementById('gpsSourceSelect').value || 'serial';
+            const body = { source: source };
+            let label;
+
+            if (source === 'serial') {
+                const port = document.getElementById('gpsPortSelect').value;
+                if (!port) {
+                    alert('Please select a GPS serial port');
+                    return;
+                }
+                body.port = port;
+                label = `serial ${port}`;
+            } else if (source === 'gpsd') {
+                const host = (document.getElementById('gpsdHostInput').value || 'localhost').trim();
+                const port = parseInt(document.getElementById('gpsdPortInput').value, 10) || 2947;
+                body.host = host;
+                body.port = port;
+                label = `gpsd ${host}:${port}`;
+            } else {
+                alert('Unknown GPS source: ' + source);
                 return;
             }
 
-            console.log('Connecting to GPS device on port:', port);
-            
+            console.log('Connecting GPS:', label);
+
             fetch('/api/gps/connect', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ port: port })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
             })
             .then(response => response.json())
             .then(data => {

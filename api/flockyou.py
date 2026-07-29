@@ -8,6 +8,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 import threading
 import serial
 import serial.tools.list_ports
+import socket
 import queue
 import uuid
 import pickle
@@ -38,7 +39,20 @@ reconnect_delay = 3  # seconds
 connection_lock = threading.Lock()
 serial_queue = queue.Queue()
 next_detection_id = 1  # Unique ID counter
-settings = {'gps_port': '', 'flock_port': '', 'filter': 'all'}
+settings = {
+    'gps_source': 'serial',        # 'serial' | 'gpsd'
+    'gps_port': '',                # serial device path
+    'gpsd_host': 'localhost',      # gpsd hostname or IP
+    'gpsd_port': 2947,             # gpsd TCP port
+    'flock_port': '',
+    'filter': 'all',
+}
+
+# gpsd (source='gpsd') state — parallel to the serial GPS globals. Both
+# feed into the same `gps_data` / `gps_history` structure so the rest of
+# the pipeline is source-agnostic.
+gpsd_socket = None
+gps_source = None              # 'serial' | 'gpsd' | None
 
 # Host ↔ firmware command coordination (matches the CMD:* protocol in
 # main.cpp). One serialized command at a time; replies arrive on the
@@ -257,6 +271,104 @@ def gps_reader():
                 safe_socket_emit('gps_disconnected', {})
                 break
         time.sleep(0.1)
+
+def parse_gpsd_tpv(msg, sat_count=0):
+    """Convert a gpsd TPV JSON object into the same dict shape as
+    parse_nmea_sentence(). Returns None if the fix isn't usable."""
+    if msg.get('class') != 'TPV':
+        return None
+    mode = msg.get('mode', 0)  # 0=unknown, 1=no-fix, 2=2D, 3=3D
+    if mode < 2:
+        return None
+    lat = msg.get('lat')
+    lon = msg.get('lon')
+    if lat is None or lon is None:
+        return None
+    alt = msg.get('altHAE')
+    if alt is None:
+        alt = msg.get('alt', 0) or 0
+    return {
+        'latitude': round(float(lat), 8),
+        'longitude': round(float(lon), 8),
+        'altitude': round(float(alt), 3),
+        # gpsd mode 2 (2D) ≈ NMEA quality 1, mode 3 (3D) ≈ quality 2.
+        'fix_quality': mode - 1,
+        'satellites': int(sat_count) if sat_count else 0,
+        'hdop': float(msg.get('hdop', 0) or 0),
+        'timestamp': msg.get('time', ''),
+    }
+
+def gpsd_reader():
+    """Background thread that reads from a running gpsd instance and
+    feeds gps_data / gps_history in the same shape as the serial NMEA
+    reader. Speaks gpsd's line-delimited JSON protocol directly — no
+    third-party gps client library needed."""
+    global gps_data, gpsd_socket, gps_enabled
+
+    sat_count = 0
+    buf = ''
+
+    while gps_enabled:
+        sock = gpsd_socket
+        if not sock:
+            time.sleep(0.1)
+            continue
+        try:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise ConnectionError('gpsd closed the socket')
+            buf += chunk.decode('utf-8', errors='ignore')
+            while '\n' in buf:
+                line, buf = buf.split('\n', 1)
+                line = line.strip()
+                if not line:
+                    continue
+                safe_socket_emit('serial_data', f"gpsd: {line}", room='serial_terminal')
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                cls = msg.get('class')
+                if cls == 'SKY':
+                    sats = msg.get('satellites') or []
+                    sat_count = sum(1 for s in sats if s.get('used'))
+                    continue
+                if cls != 'TPV':
+                    continue
+
+                parsed = parse_gpsd_tpv(msg, sat_count=sat_count)
+                if not parsed:
+                    continue
+
+                gps_data = parsed
+                if parsed.get('fix_quality', 0) > 0:
+                    gps_entry = parsed.copy()
+                    gps_entry['system_timestamp'] = time.time()
+                    gps_history.append(gps_entry)
+                    if len(gps_history) > MAX_GPS_HISTORY:
+                        gps_history.pop(0)
+
+                safe_socket_emit('gps_update', parsed)
+                if parsed.get('fix_quality', 0) > 0:
+                    gps_info = (f"gpsd Fix: {parsed.get('latitude', 'N/A')}, "
+                                f"{parsed.get('longitude', 'N/A')} - "
+                                f"{parsed.get('satellites', 0)} satellites")
+                    safe_socket_emit('serial_data', gps_info, room='serial_terminal')
+        except socket.timeout:
+            continue
+        except Exception as e:
+            print(f"gpsd read error: {e}")
+            with connection_lock:
+                gps_enabled = False
+            try:
+                if gpsd_socket:
+                    gpsd_socket.close()
+            except Exception:
+                pass
+            gpsd_socket = None
+            safe_socket_emit('gps_disconnected', {})
+            break
 
 def flock_reader():
     """Background thread for reading Flock device data"""
@@ -730,43 +842,73 @@ def attempt_reconnect_flock():
     thread.start()
 
 def attempt_reconnect_gps():
-    """Attempt to reconnect to GPS device"""
-    global gps_enabled, reconnect_attempts
-    
+    """Attempt to reconnect whichever GPS source was in use. Only fires
+    if the reader thread died — for a user-initiated disconnect the
+    source is cleared and this exits immediately."""
+    global gps_enabled, gpsd_socket, serial_connection, reconnect_attempts
+
+    prior_source = gps_source
+    # Snapshot the endpoint from whichever source was live so we can
+    # retry without depending on the (now-torn-down) object.
+    prior_serial_port = serial_connection.port if serial_connection else None
+    prior_gpsd_endpoint = None
+    if gpsd_socket:
+        try:
+            prior_gpsd_endpoint = gpsd_socket.getpeername()[:2]
+        except Exception:
+            prior_gpsd_endpoint = None
+
+    if prior_source is None:
+        return
+
     def reconnect_thread():
-        global gps_enabled, reconnect_attempts
+        global gps_enabled, gpsd_socket, serial_connection, gps_source, reconnect_attempts
 
         with app.app_context():
             while not gps_enabled and reconnect_attempts['gps'] < max_reconnect_attempts:
                 try:
-                    print(f"Attempting to reconnect to GPS device (attempt {reconnect_attempts['gps'] + 1}/{max_reconnect_attempts})")
-                    
-                    # Try to reconnect
-                    test_ser = serial.Serial(serial_connection.port, GPS_BAUDRATE, timeout=1)
-                    test_ser.close()
-                    
-                    # If successful, update status
-                    with connection_lock:
-                        gps_enabled = True
+                    print(f"Attempting to reconnect GPS ({prior_source}) "
+                          f"attempt {reconnect_attempts['gps'] + 1}/{max_reconnect_attempts}")
+
+                    if prior_source == 'serial' and prior_serial_port:
+                        serial_connection = serial.Serial(prior_serial_port, GPS_BAUDRATE,
+                                                          timeout=GPS_TIMEOUT)
+                        with connection_lock:
+                            gps_enabled = True
+                            gps_source = 'serial'
+                        threading.Thread(target=gps_reader, daemon=True).start()
+                        safe_socket_emit('gps_reconnected',
+                                         {'source': 'serial', 'port': prior_serial_port})
+                    elif prior_source == 'gpsd' and prior_gpsd_endpoint:
+                        host, port = prior_gpsd_endpoint
+                        sock = socket.create_connection((host, port), timeout=5)
+                        sock.settimeout(2.0)
+                        sock.sendall(b'?WATCH={"enable":true,"json":true}\n')
+                        gpsd_socket = sock
+                        with connection_lock:
+                            gps_enabled = True
+                            gps_source = 'gpsd'
+                        threading.Thread(target=gpsd_reader, daemon=True).start()
+                        safe_socket_emit('gps_reconnected',
+                                         {'source': 'gpsd', 'endpoint': f'{host}:{port}'})
+                    else:
+                        print(f"Cannot reconnect: no endpoint recorded for {prior_source}")
+                        break
+
                     reconnect_attempts['gps'] = 0
-                    print(f"Successfully reconnected to GPS device on {serial_connection.port}")
-                    safe_socket_emit('gps_reconnected', {'port': serial_connection.port})
-                    
-                    # Restart the reading thread
-                    gps_thread = threading.Thread(target=gps_reader, daemon=True)
-                    gps_thread.start()
+                    print(f"Successfully reconnected GPS ({prior_source})")
                     return
-                    
+
                 except Exception as e:
                     print(f"GPS reconnection attempt failed: {e}")
                     reconnect_attempts['gps'] += 1
                     time.sleep(reconnect_delay)
-            
+
             if reconnect_attempts['gps'] >= max_reconnect_attempts:
                 print("Max reconnection attempts reached for GPS device")
                 safe_socket_emit('reconnect_failed', {'device': 'gps'})
-                reconnect_attempts['gps'] = 0  # Reset for future attempts
-    
+                reconnect_attempts['gps'] = 0
+
     thread = threading.Thread(target=reconnect_thread, daemon=True)
     thread.start()
 
@@ -826,39 +968,95 @@ def add_detection():
 
 @app.route('/api/gps/connect', methods=['POST'])
 def connect_gps():
-    """Connect to GPS dongle"""
-    global serial_connection, gps_enabled
-    
-    data = request.json
-    port = data.get('port')
-    
-    try:
-        if serial_connection:
+    """Connect a GPS source.
+
+    Request body:
+      {"source": "serial", "port": "/dev/tty.usbserial-XXX"}
+      {"source": "gpsd",   "host": "localhost", "port": 2947}
+
+    Legacy body {"port": "..."} still works and is treated as serial.
+    """
+    global serial_connection, gpsd_socket, gps_enabled, gps_source
+
+    data = request.json or {}
+    source = (data.get('source') or 'serial').lower()
+
+    if source == 'serial':
+        port = data.get('port')
+        if not port:
+            return jsonify({'status': 'error', 'message': 'Serial port is required'}), 400
+        try:
+            _teardown_gps()
+            serial_connection = serial.Serial(port, GPS_BAUDRATE, timeout=GPS_TIMEOUT)
+            with connection_lock:
+                gps_enabled = True
+                gps_source = 'serial'
+            threading.Thread(target=gps_reader, daemon=True).start()
+            return jsonify({'status': 'success', 'source': 'serial',
+                            'message': f'Connected to {port}'})
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': str(e)}), 400
+
+    if source == 'gpsd':
+        host = data.get('host') or 'localhost'
+        # Accept either "port" or "gpsd_port" — the frontend uses the
+        # same field name for both sources but the settings key is
+        # gpsd_port, so let both work.
+        port = data.get('port') or data.get('gpsd_port') or 2947
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            return jsonify({'status': 'error', 'message': f'Bad gpsd port: {port}'}), 400
+        try:
+            _teardown_gps()
+            sock = socket.create_connection((host, port), timeout=5)
+            sock.settimeout(2.0)
+            # Ask gpsd to start streaming JSON reports.
+            sock.sendall(b'?WATCH={"enable":true,"json":true}\n')
+            gpsd_socket = sock
+            with connection_lock:
+                gps_enabled = True
+                gps_source = 'gpsd'
+            threading.Thread(target=gpsd_reader, daemon=True).start()
+            return jsonify({'status': 'success', 'source': 'gpsd',
+                            'message': f'Connected to gpsd at {host}:{port}'})
+        except Exception as e:
+            return jsonify({'status': 'error',
+                            'message': f'gpsd connect failed ({host}:{port}): {e}'}), 400
+
+    return jsonify({'status': 'error', 'message': f'Unknown GPS source: {source}'}), 400
+
+
+def _teardown_gps():
+    """Close whichever GPS source is currently active. Called on
+    reconnect and disconnect so the reader threads see gps_enabled go
+    False and exit cleanly."""
+    global serial_connection, gpsd_socket, gps_enabled, gps_source
+    with connection_lock:
+        gps_enabled = False
+        gps_source = None
+    if serial_connection:
+        try:
             serial_connection.close()
-        
-        serial_connection = serial.Serial(port, GPS_BAUDRATE, timeout=GPS_TIMEOUT)
-        with connection_lock:
-            gps_enabled = True
-        
-        # Start GPS reading thread
-        gps_thread = threading.Thread(target=gps_reader, daemon=True)
-        gps_thread.start()
-        
-        return jsonify({'status': 'success', 'message': f'Connected to {port}'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 400
+        except Exception:
+            pass
+        serial_connection = None
+    if gpsd_socket:
+        try:
+            gpsd_socket.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            gpsd_socket.close()
+        except Exception:
+            pass
+        gpsd_socket = None
+
 
 @app.route('/api/gps/disconnect', methods=['POST'])
 def disconnect_gps():
-    """Disconnect GPS dongle"""
-    global serial_connection, gps_enabled
-    
-    with connection_lock:
-        gps_enabled = False
-    if serial_connection:
-        serial_connection.close()
-        serial_connection = None
-    
+    """Disconnect whichever GPS source is currently active."""
+    _teardown_gps()
     return jsonify({'status': 'success', 'message': 'GPS disconnected'})
 
 @app.route('/api/flock/connect', methods=['POST'])
@@ -1005,9 +1203,18 @@ def flock_clear_live():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """Get connection status of both devices"""
+    gpsd_endpoint = None
+    if gpsd_socket:
+        try:
+            host, port = gpsd_socket.getpeername()[:2]
+            gpsd_endpoint = f'{host}:{port}'
+        except Exception:
+            gpsd_endpoint = None
     return jsonify({
         'gps_connected': gps_enabled,
+        'gps_source': gps_source,
         'gps_port': serial_connection.port if serial_connection else None,
+        'gpsd_endpoint': gpsd_endpoint,
         'flock_connected': flock_device_connected,
         'flock_port': flock_device_port
     })

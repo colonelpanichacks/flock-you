@@ -224,10 +224,11 @@ file from SPIFFS so the next run starts clean.
 
 ### GPS wardriving
 
-GPS is handled Flask-side, since the ESP32 radio is dedicated to sniffing and there's no on-device AP. Two options:
+GPS is handled Flask-side, since the ESP32 radio is dedicated to sniffing and there's no on-device AP. Three options, all selectable from the dashboard's GPS **source** dropdown:
 
-- **USB NMEA puck** plugged into the host running Flask — Flask reads NMEA and timestamps a GPS timeline
-- **Flask dashboard open in a phone browser** — browser Geolocation API posts updates to Flask
+- **Serial NMEA** — a USB NMEA puck plugged into the host running Flask; Flask reads NMEA at 9600 baud and timestamps a GPS timeline
+- **gpsd** — connect to a running `gpsd` daemon over TCP (default `localhost:2947`, host and port are configurable in the dashboard). Uses gpsd's line-delimited JSON protocol directly; no extra Python client library needed. Handy when several tools already share the same GPS via gpsd.
+- **Browser Geolocation** — the Flask dashboard open in a phone browser; the browser Geolocation API posts updates to Flask
 
 Flask does a temporal match between detection timestamp and GPS timeline, then exports JSON / CSV / KML for Google Earth.
 

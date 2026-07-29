@@ -4,7 +4,7 @@ Flask + Socket.IO dashboard for the `promiscious` branch of the Flock-You firmwa
 
 - Live ingestion of WiFi-promiscuous-mode detections streaming over USB-CDC
 - A host command protocol over the same USB port (`CMD:STATUS` / `CMD:DUMP_PREV` / `CMD:DUMP_LIVE` / `CMD:CLEAR_PREV` / `CMD:CLEAR_LIVE` / `CMD:VERSION`) exposed as REST endpoints and dashboard buttons
-- GPS wardriving via a USB NMEA puck or the browser Geolocation API, with temporal matching between detection time and GPS timeline
+- GPS wardriving via a USB NMEA puck, a local `gpsd` daemon, or the browser Geolocation API, with temporal matching between detection time and GPS timeline
 - Cumulative detection persistence (`data/cumulative_detections.pkl`) across server restarts
 - Export to CSV / KML / JSON, import from any of those, and an OUI lookup tool against the local IEEE registry
 
@@ -117,8 +117,8 @@ Every command response surfaces as a coloured top-right toast that auto-dismisse
 | Method | Path | Description |
 |---|---|---|
 | `GET`  | `/api/gps/ports`      | List available serial ports |
-| `POST` | `/api/gps/connect`    | Body: `{"port": "..."}`. Opens NMEA reader @9600 baud |
-| `POST` | `/api/gps/disconnect` | Closes the GPS port |
+| `POST` | `/api/gps/connect`    | Body: `{"source": "serial", "port": "..."}` — opens an NMEA reader @9600 baud. Body: `{"source": "gpsd", "host": "localhost", "port": 2947}` — connects to a running `gpsd` daemon over TCP and consumes its JSON stream. Legacy `{"port": "..."}` still works and is treated as serial. |
+| `POST` | `/api/gps/disconnect` | Closes whichever GPS source is currently active |
 
 ### Detection management
 
@@ -206,9 +206,10 @@ Command reply events:
 
 ## GPS wardriving setup
 
-GPS is handled server-side because the ESP32's radio is dedicated to sniffing and there's no on-device AP. Two options:
+GPS is handled server-side because the ESP32's radio is dedicated to sniffing and there's no on-device AP. Three options, all selectable from the dashboard's GPS **source** dropdown:
 
-- **USB NMEA puck** plugged into the host running Flask — pick its port from the **GPS** dropdown
+- **Serial NMEA** — a USB NMEA puck plugged into the host running Flask; pick its port from the **GPS** dropdown
+- **gpsd** — a running `gpsd` daemon reachable over TCP; enter its host and port (default `localhost:2947`). Useful when a system-wide GPS is already shared through gpsd (e.g. laptop puck plus `gpsd -N /dev/ttyUSB0`, an Android device running `Blueterm` bridging Bluetooth GPS, or a Raspberry Pi feeding several tools). The dashboard speaks gpsd's line-delimited JSON protocol directly — no extra Python client library required.
 - **Phone browser** at `http://<host>:5000` — the dashboard's Geolocation API hook posts updates to Flask
 
 Either way, Flask does a temporal match between the detection's arrival timestamp and the GPS timeline (default ±30 s window, prefers the closest reading; "precise" matches are flagged as such in CSV/KML exports).
