@@ -6,8 +6,11 @@
 #include <string.h>
 
 // LilyGO T-Dongle S3 ST7735 80x160 IPS — backlight active-low on GPIO38.
-#define DONGLE_TFT_BL_PIN 38
-#define DONGLE_TFT_RST_PIN 1
+#define DONGLE_TFT_BL_PIN   38
+#define DONGLE_TFT_RST_PIN  1
+#define DONGLE_TFT_MOSI_PIN 3
+#define DONGLE_TFT_SCLK_PIN 5
+#define DONGLE_TFT_CS_PIN   4
 
 // 160x80 landscape — matches LilyGO examples/TFT_eSPI/TFT_eSPI.ino
 #define DONGLE_TFT_ROTATION 1
@@ -59,6 +62,14 @@ static void drawMethodLines(const char* method, int y) {
 
 void dongleDisplayInit() {
   tftHardwareReset();
+
+  tft.getSPIinstance().begin(
+      DONGLE_TFT_SCLK_PIN,
+      -1,
+      DONGLE_TFT_MOSI_PIN,
+      DONGLE_TFT_CS_PIN
+  );
+
   tft.init();
   tft.setRotation(DONGLE_TFT_ROTATION);
   tft.fillScreen(TFT_BLACK);
