@@ -62,7 +62,7 @@ FLASHED_MACS=()   # indexed array — works on macOS default bash 3.2
 # reset that happens each time /dev/cu.* is opened freshly with cat or < $port.
 show_boot_output() {
     local port="$1"
-    local timeout_s="${2:-15}"
+    local timeout_s="${2:-35}"   # 35 s — covers 30 s heartbeat interval if startup lines missed
 
     # For usbmodem ports that might still be reappearing after the flash hard-reset,
     # wait up to 5 s for the node to exist before giving up.
@@ -107,8 +107,11 @@ show_boot_output() {
             [[ -n "$line" ]] && printf "   \033[2m%s\033[0m\n" "$line"
             # Track that we've heard from this firmware
             [[ "$line" == *"[flockyou]"* ]] && seen_flockyou=1
-            # Stop once the scanning heartbeat arrives — confirms firmware is running
-            if [[ $seen_flockyou -eq 1 && "$line" == *"scanning"* ]]; then
+            # "[flockyou] OUIs:" is the last startup banner line — firmware fully
+            # initialized and about to start scanning.  Also accepted: the
+            # "[flockyou] scanning" heartbeat (every 30 s, HEARTBEAT_MS=30000).
+            if [[ "$line" == *"[flockyou] OUIs:"* ]] || \
+               [[ $seen_flockyou -eq 1 && "$line" == *"scanning"* ]]; then
                 echo "────────────────────────────────────────────────────────────────"
                 echo "✅ Firmware confirmed running — device is scanning."
                 exec 3>&- 2>/dev/null
@@ -120,7 +123,7 @@ show_boot_output() {
     exec 3>&- 2>/dev/null
     echo "────────────────────────────────────────────────────────────────"
     if [[ $seen_flockyou -eq 1 ]]; then
-        echo "✅ Firmware started (heartbeat not yet received — still booting)."
+        echo "✅ Firmware running."
     else
         echo "⚠️  No firmware output seen in ${timeout_s}s — check baud rate or reboot manually."
     fi
