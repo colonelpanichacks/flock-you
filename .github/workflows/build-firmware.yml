@@ -48,6 +48,21 @@ jobs:
       - name: Build m5atom-voices3r-ble
         run: pio run -e m5atom-voices3r-ble
 
+      # ── Verify build artifacts ───────────────────────────────────────────────
+      - name: Verify build artifacts
+        run: |
+          echo "=== Build directory contents ==="
+          find .pio/build -name "firmware.bin" 2>/dev/null && echo "--listing--" && ls -la .pio/build/ || echo "WARNING: .pio/build missing or empty"
+          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble; do
+            if [ -f ".pio/build/$env/firmware.bin" ]; then
+              echo "✅ $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
+            else
+              echo "❌ $env: firmware.bin MISSING"
+              ls -la ".pio/build/$env/" 2>/dev/null || echo "  (build dir does not exist)"
+              exit 1
+            fi
+          done
+
       # ── Assemble site ────────────────────────────────────────────────────────
       - name: Prepare firmware directories
         run: |
