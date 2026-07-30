@@ -17,6 +17,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOOP=true
 [[ "${1}" == "--once" ]] && LOOP=false
 
+BOOT_PORT=""   # set by flash_device; read by show_boot_output after each flash
+
 # ── PlatformIO esptool paths (for ESP32-S3 native USB flashing) ──────────────
 PYESPTOOL="/opt/homebrew/Cellar/platformio/6.1.19_2/libexec/bin/python"
 # If the versioned path doesn't exist, find it dynamically
@@ -51,6 +53,78 @@ fi
 cd "$SCRIPT_DIR"
 
 FLASHED_MACS=()   # indexed array — works on macOS default bash 3.2
+
+# ── Post-flash boot monitor ───────────────────────────────────────────────────
+# Streams serial output from the freshly-flashed device until:
+#   • We see a "[flockyou] scanning" heartbeat  (firmware confirmed running), OR
+#   • TIMEOUT_S seconds elapse with no recognizable firmware output
+# Uses exec 3<>$port (O_RDWR) so DTR stays asserted — avoids the DTR-pulse
+# reset that happens each time /dev/cu.* is opened freshly with cat or < $port.
+show_boot_output() {
+    local port="$1"
+    local timeout_s="${2:-15}"
+
+    # For usbmodem ports that might still be reappearing after the flash hard-reset,
+    # wait up to 5 s for the node to exist before giving up.
+    local deadline=$(( $(date +%s) + 5 ))
+    while [[ ! -c "$port" ]] && (( $(date +%s) < deadline )); do
+        # If port path changed (usbmodem can renumber), find the new one
+        if [[ "$port" == *usbmodem* ]]; then
+            local newp
+            newp=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)
+            [[ -n "$newp" ]] && port="$newp" && break
+        fi
+        sleep 0.2
+    done
+
+    if [[ ! -c "$port" ]]; then
+        echo "   ⚠️  Boot monitor: port $port not available — skipping"
+        return
+    fi
+
+    echo ""
+    echo "📡 Boot output from $(basename "$port") (waiting for firmware, Ctrl-C skips):"
+    echo "────────────────────────────────────────────────────────────────"
+
+    # O_RDWR open — keeps DTR steady, prevents ESP32 auto-reset on open
+    exec 3<>"$port" 2>/dev/null || {
+        echo "   ⚠️  Could not open $port for boot monitor"
+        return
+    }
+    # -hupcl  : don't drop DTR when last fd closes (no unintentional resets)
+    # clocal  : ignore DCD/modem-control lines
+    # raw     : pass all bytes through; bash read splits on \n
+    stty -f "$port" 115200 raw cs8 -cstopb -parenb clocal -hupcl 2>/dev/null
+
+    local start_ts
+    start_ts=$(date +%s)
+    local seen_flockyou=0
+
+    while (( $(date +%s) - start_ts < timeout_s )); do
+        # read -t 2: block up to 2 s waiting for a newline from the device
+        if IFS= read -r -t 2 line <&3 2>/dev/null; then
+            line="${line%$'\r'}"     # strip ESP32 Serial.println() trailing \r
+            [[ -n "$line" ]] && printf "   \033[2m%s\033[0m\n" "$line"
+            # Track that we've heard from this firmware
+            [[ "$line" == *"[flockyou]"* ]] && seen_flockyou=1
+            # Stop once the scanning heartbeat arrives — confirms firmware is running
+            if [[ $seen_flockyou -eq 1 && "$line" == *"scanning"* ]]; then
+                echo "────────────────────────────────────────────────────────────────"
+                echo "✅ Firmware confirmed running — device is scanning."
+                exec 3>&- 2>/dev/null
+                return
+            fi
+        fi
+    done
+
+    exec 3>&- 2>/dev/null
+    echo "────────────────────────────────────────────────────────────────"
+    if [[ $seen_flockyou -eq 1 ]]; then
+        echo "✅ Firmware started (heartbeat not yet received — still booting)."
+    else
+        echo "⚠️  No firmware output seen in ${timeout_s}s — check baud rate or reboot manually."
+    fi
+}
 
 # Returns 0 if MAC was already flashed, 1 otherwise
 mac_already_flashed() {
@@ -174,6 +248,11 @@ flash_device() {
         else
             echo "⚠️  Device port not detected — may still be booting."
         fi
+        # Expose final port to caller so show_boot_output knows where to connect
+        BOOT_PORT="${RESTART_PORT:-$port}"
+    else
+        # FTDI devices stay on the same port after upload reset
+        BOOT_PORT="$port"
     fi
 }
 
@@ -334,6 +413,9 @@ while true; do
             exit 1
         fi
     fi
+
+    # ── Stream boot output until firmware heartbeat (or 15 s timeout) ────────
+    show_boot_output "${BOOT_PORT:-$PORT}"
 
     if $LOOP; then
         echo ""
