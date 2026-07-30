@@ -195,6 +195,7 @@
 
     .badge-esp32   { background: #1c3a1c; color: var(--green); }
     .badge-esp32s3 { background: #1c2a3a; color: #79c0ff; }
+    .badge-esp32c5 { background: #2a1c3a; color: #d2a8ff; }
 
     /* ── Footer ──────────────────────────────────────────────────── */
     footer {
@@ -228,6 +229,7 @@
       <option value="manifest-m5atom-voice-ble.json"  data-chip="ESP32">M5Atom Voice &nbsp;·&nbsp; with BLE</option>
       <option value="manifest-m5atom-voices3r-ble.json" data-chip="ESP32-S3">M5Atom VoiceS3R &nbsp;·&nbsp; with BLE (ESP32-S3)</option>
       <option value="manifest-esp32dev-ble.json"      data-chip="ESP32">Generic ESP32 DevKit &nbsp;·&nbsp; with BLE</option>
+      <option value="manifest-lilygo-t-dongle-c5-ble.json" data-chip="ESP32-C5">LILYGO T-Dongle C5 &nbsp;·&nbsp; with BLE (ESP32-C5 dual-band)</option>
     </select>
 
     <p class="board-note" id="board-note"></p>
@@ -303,6 +305,12 @@
           <td>✅</td>
           <td>Serial log + LED (GPIO2)</td>
         </tr>
+        <tr>
+          <td>LILYGO T-Dongle C5</td>
+          <td><span class="badge badge-esp32c5">ESP32-C5</span></td>
+          <td>✅ BT5</td>
+          <td>GPIO8 LED · dual-band WiFi 6</td>
+        </tr>
       </tbody>
     </table>
   </div>
@@ -339,6 +347,7 @@
     "manifest-m5atom-voice-ble.json":    "ESP32-PICO-D4 · RGB LED · NS4168 I²S speaker",
     "manifest-m5atom-voices3r-ble.json": "ESP32-S3-PICO · 8MB flash / 8MB PSRAM · USB-C native CDC · ES8311 speaker",
     "manifest-esp32dev-ble.json":        "Standard 38-pin ESP32 DevKit · onboard LED GPIO2 · any USB-serial adapter",
+    "manifest-lilygo-t-dongle-c5-ble.json": "ESP32-C5 RISC-V · dual-band WiFi 6 (2.4+5 GHz) · BT5 · 16MB flash · GPIO8 LED",
   };
 
   const sel = document.getElementById("board-select");

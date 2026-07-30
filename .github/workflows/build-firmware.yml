@@ -48,12 +48,15 @@ jobs:
       - name: Build m5atom-voices3r-ble
         run: pio run -e m5atom-voices3r-ble
 
+      - name: Build lilygo-t-dongle-c5-ble
+        run: pio run -e lilygo-t-dongle-c5-ble
+
       # ── Verify build artifacts ───────────────────────────────────────────────
       - name: Verify build artifacts
         run: |
           echo "=== Build directory contents ==="
           find .pio/build -name "firmware.bin" 2>/dev/null && echo "--listing--" && ls -la .pio/build/ || echo "WARNING: .pio/build missing or empty"
-          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble; do
+          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble lilygo-t-dongle-c5-ble; do
             if [ -f ".pio/build/$env/firmware.bin" ]; then
               echo "✅ $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
             else
@@ -86,6 +89,14 @@ jobs:
             cp "$BOOT_APP0"                   site/firmware/$env/boot_app0.bin
             echo "Copied $env ($(du -sh site/firmware/$env/firmware.bin | cut -f1))"
           done
+
+          # LILYGO T-Dongle C5 (ESP32-C5, RISC-V)
+          mkdir -p site/firmware/lilygo-t-dongle-c5-ble
+          cp .pio/build/lilygo-t-dongle-c5-ble/firmware.bin   site/firmware/lilygo-t-dongle-c5-ble/
+          cp .pio/build/lilygo-t-dongle-c5-ble/bootloader.bin site/firmware/lilygo-t-dongle-c5-ble/
+          cp .pio/build/lilygo-t-dongle-c5-ble/partitions.bin site/firmware/lilygo-t-dongle-c5-ble/
+          cp "$BOOT_APP0"                                     site/firmware/lilygo-t-dongle-c5-ble/boot_app0.bin
+          echo "Copied lilygo-t-dongle-c5-ble"
 
           # ESP32-S3 environment
           mkdir -p site/firmware/m5atom-voices3r-ble
@@ -142,6 +153,26 @@ jobs:
                   { "path": "firmware/m5atom-voices3r-ble/partitions.bin", "offset": 32768 },
                   { "path": "firmware/m5atom-voices3r-ble/boot_app0.bin",  "offset": 57344 },
                   { "path": "firmware/m5atom-voices3r-ble/firmware.bin",   "offset": 65536 }
+                ]
+              }
+            ]
+          }
+          MANIFEST
+
+          # ESP32-C5 manifest (RISC-V — bootloader at 0x0000 = 0)
+          cat > site/manifest-lilygo-t-dongle-c5-ble.json << MANIFEST
+          {
+            "name": "Flock You — LILYGO T-Dongle C5 (BLE, ESP32-C5)",
+            "version": "latest",
+            "new_install_prompt_erase": true,
+            "builds": [
+              {
+                "chipFamily": "ESP32-C5",
+                "parts": [
+                  { "path": "firmware/lilygo-t-dongle-c5-ble/bootloader.bin", "offset": 0 },
+                  { "path": "firmware/lilygo-t-dongle-c5-ble/partitions.bin", "offset": 32768 },
+                  { "path": "firmware/lilygo-t-dongle-c5-ble/boot_app0.bin",  "offset": 57344 },
+                  { "path": "firmware/lilygo-t-dongle-c5-ble/firmware.bin",   "offset": 65536 }
                 ]
               }
             ]

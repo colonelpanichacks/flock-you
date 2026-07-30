@@ -88,6 +88,14 @@
   #define USE_LED 1
   #define USE_LED_MATRIX 1
   #define LED_FLASH_MS 120
+#elif defined(USE_LILYGO_T_DONGLE_C5)
+  // LILYGO T-Dongle C5 — ESP32-C5 RISC-V, dual-band WiFi 6 + BT5
+  // GPIO8 = plain indicator LED (active-high); no NeoPixel, no buzzer
+  #define USE_BUZZER 0
+  #define LED_PIN 8
+  #define USE_LED 1
+  #define LED_ACTIVE_HIGH 1
+  #define LED_FLASH_MS 120
 #else
   #define BUZZER_PIN 25
   #define USE_BUZZER 1
