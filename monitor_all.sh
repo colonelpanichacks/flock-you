@@ -19,23 +19,21 @@ COLORS=("\033[1;32m" "\033[1;33m" "\033[1;36m" "\033[1;35m" "\033[1;34m" "\033[1
 RESET="\033[0m"
 DIM="\033[2m"
 BOLD="\033[1m"
-NC=$'\033[0m'
 
 # ── Cleanup on Ctrl-C ────────────────────────────────────────────────────────
 cleanup() {
   echo -e "\n${DIM}[monitor_all] shutting down...${RESET}"
-  # kill all per-port background jobs
   for pidfile in "$TMPDIR_ROOT"/*.pid; do
     [ -f "$pidfile" ] || continue
     pid=$(cat "$pidfile" 2>/dev/null)
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null
+    [ -n "$pid" ] && kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null
   done
   rm -rf "$TMPDIR_ROOT"
   exit 0
 }
 trap cleanup INT TERM
 
-# ── Color index assignment (stable across re-scans) ─────────────────────────
+# ── Stable color per port (persists across reconnects) ───────────────────────
 color_index_file="$TMPDIR_ROOT/color_idx"
 echo "0" > "$color_index_file"
 
@@ -53,62 +51,79 @@ get_color_for_port() {
 
 # ── Flash-tool detection ─────────────────────────────────────────────────────
 port_is_being_flashed() {
-  local port="$1"
-  lsof "$port" 2>/dev/null | grep -qE "esptool|platformio|pio|upload"
+  lsof "$1" 2>/dev/null | grep -qE "esptool|platformio|pio|upload"
 }
 
-# ── Per-port monitor loop (runs in background subshell) ─────────────────────
+# ── Per-port monitor loop ────────────────────────────────────────────────────
+#
+# Key macOS serial fix: use "exec N<>$port" (O_RDWR) to open the port ONCE
+# and keep the fd alive across stty.  Re-opening /dev/cu.* with cat or < each
+# time pulses DTR → ESP32 auto-reset → ESP32 bootloader → EOF on that fd.
+# With exec the fd stays open (DTR held asserted), stty configures it in-place,
+# and "while read <&N" blocks correctly via VMIN=1.
+#
 monitor_port() {
   local port="$1"
   local label="[$(basename "$port")]"
   local color
   color=$(get_color_for_port "$port")
-  local pidfile="$TMPDIR_ROOT/$(basename "$port").pid"
 
   while true; do
-    # ── Wait for device to appear ────────────────────────────────────────
+
+    # ── Wait for the device node to exist ────────────────────────────────
     if [ ! -c "$port" ]; then
       sleep 1
       continue
     fi
 
-    # ── Back off if a flash tool owns the port ───────────────────────────
+    # ── Back off while a flash tool holds the port ───────────────────────
     if port_is_being_flashed "$port"; then
       echo -e "${DIM}${color}${label}${RESET}${DIM} ⚡ flash tool active — standing by...${RESET}"
       sleep 3
       continue
     fi
 
-    # ── Configure port (non-exclusive) ──────────────────────────────────
-    stty -f "$port" "$BAUD" raw cs8 -cstopb -parenb clocal 2>/dev/null || {
+    # ── Open port O_RDWR — single persistent fd, no DTR re-pulse ────────
+    exec 3<>"$port" 2>/dev/null
+    if [ $? -ne 0 ]; then
       sleep 1
       continue
-    }
+    fi
+
+    # ── Configure terminal on the now-open fd ────────────────────────────
+    # -hupcl : don't drop DTR on last close (prevents ESP32 reset on our close)
+    # clocal : ignore modem-control lines (don't treat DCD loss as hangup)
+    # raw    : disable all line processing (pass bytes through as-is)
+    stty -f "$port" "$BAUD" raw cs8 -cstopb -parenb clocal -hupcl 2>/dev/null
 
     echo -e "${color}${BOLD}${label}${RESET}${color} ● connected at ${BAUD} baud${RESET}"
 
-    # ── Stream lines via cat (blocks correctly on a character device) ────
-    # cat blocks on the serial fd and exits when the port disappears.
-    # We track its PID so we can kill it if a flash tool takes over.
-    cat "$port" | while IFS= read -r line; do
+    # ── Stream lines from the persistent fd ──────────────────────────────
+    # In raw mode with VMIN=1, bash's "read <&3" issues one character-at-a-time
+    # read(2) calls, blocking until each char arrives, then lines on \n.
+    # We strip the trailing \r ESP32 Serial.println() appends.
+    while IFS= read -r line <&3; do
+      line="${line%$'\r'}"        # strip trailing CR from \r\n line endings
       printf "${color}%s${RESET} %s\n" "$label" "$line"
     done
 
-    # ── Port closed / unplugged ──────────────────────────────────────────
+    # ── fd closed (port disappeared or flash tool took over) ─────────────
+    exec 3>&- 2>/dev/null
+
     if [ -c "$port" ] && port_is_being_flashed "$port"; then
-      # Flash in progress — wait for it to finish then reconnect
       echo -e "${DIM}${color}${label}${RESET}${DIM} waiting for flash to complete...${RESET}"
       while port_is_being_flashed "$port"; do sleep 1; done
-      echo -e "${color}${label}${RESET}${DIM} flash done, reconnecting...${RESET}"
+      echo -e "${color}${label}${RESET}${DIM} flash done — reconnecting...${RESET}"
       sleep 2
     else
       echo -e "${DIM}${color}${label}${RESET}${DIM} disconnected — waiting for reconnect...${RESET}"
       sleep 2
     fi
+
   done
 }
 
-# ── Track which ports already have a monitor running ────────────────────────
+# ── PID tracking ─────────────────────────────────────────────────────────────
 is_alive() {
   local pidfile="$1"
   [ -f "$pidfile" ] || return 1
@@ -127,17 +142,16 @@ start_monitor() {
 # ── Header ───────────────────────────────────────────────────────────────────
 echo -e "${BOLD}flock-you multi-device serial monitor${RESET}  (baud=${BAUD}, Ctrl-C to quit)"
 echo -e "${DIM}Watching: /dev/cu.usbserial-*  /dev/cu.usbmodem*${RESET}"
+echo -e "${DIM}Output: [flockyou] log lines + {\"event\":\"detection\",...} JSON per alert${RESET}"
 echo ""
 
-# ── Main scan loop ───────────────────────────────────────────────────────────
+# ── Main scan loop (new ports picked up every 2 s) ───────────────────────────
 while true; do
-  # Discover all candidate ports
   ports=()
   for p in /dev/cu.usbserial-* /dev/cu.usbmodem*; do
     [ -c "$p" ] && ports+=("$p")
   done
 
-  # Start a monitor for any new port
   for port in "${ports[@]}"; do
     pidfile="$TMPDIR_ROOT/$(basename "$port").pid"
     if ! is_alive "$pidfile"; then
@@ -145,11 +159,11 @@ while true; do
     fi
   done
 
-  # Reap stale pid files whose port has disappeared for good
+  # Reap pid files for ports that are gone for good
   for pidfile in "$TMPDIR_ROOT"/*.pid; do
     [ -f "$pidfile" ] || continue
-    portname="${pidfile##*/}"
-    portname="/dev/${portname%.pid}"
+    portname="/dev/${pidfile##*/}"
+    portname="${portname%.pid}"
     if [ ! -c "$portname" ]; then
       pid=$(cat "$pidfile" 2>/dev/null)
       [ -n "$pid" ] && kill "$pid" 2>/dev/null
