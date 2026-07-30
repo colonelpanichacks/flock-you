@@ -1,0 +1,148 @@
+name: Build Firmware & Deploy Web Flasher
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Install PlatformIO & esptool
+        run: pip install platformio esptool
+
+      # ── Build all user-facing environments ──────────────────────────────────
+      - name: Build esp32dev-ble
+        run: pio run -e esp32dev-ble
+
+      - name: Build m5atom-lite-ble
+        run: pio run -e m5atom-lite-ble
+
+      - name: Build m5atom-echo-ble
+        run: pio run -e m5atom-echo-ble
+
+      - name: Build m5atom-voice-ble
+        run: pio run -e m5atom-voice-ble
+
+      - name: Build m5atom-voices3r-ble
+        run: pio run -e m5atom-voices3r-ble
+
+      # ── Assemble site ────────────────────────────────────────────────────────
+      - name: Prepare firmware directories
+        run: |
+          set -e
+          mkdir -p site/firmware
+
+          # Find boot_app0.bin from the installed Arduino framework
+          BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" 2>/dev/null | head -1)
+          if [ -z "$BOOT_APP0" ]; then
+            echo "ERROR: boot_app0.bin not found in PlatformIO packages"
+            exit 1
+          fi
+          echo "Found boot_app0.bin at: $BOOT_APP0"
+
+          # Standard ESP32 environments
+          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble; do
+            mkdir -p site/firmware/$env
+            cp .pio/build/$env/firmware.bin   site/firmware/$env/
+            cp .pio/build/$env/bootloader.bin site/firmware/$env/
+            cp .pio/build/$env/partitions.bin site/firmware/$env/
+            cp "$BOOT_APP0"                   site/firmware/$env/boot_app0.bin
+            echo "Copied $env ($(du -sh site/firmware/$env/firmware.bin | cut -f1))"
+          done
+
+          # ESP32-S3 environment
+          mkdir -p site/firmware/m5atom-voices3r-ble
+          cp .pio/build/m5atom-voices3r-ble/firmware.bin   site/firmware/m5atom-voices3r-ble/
+          cp .pio/build/m5atom-voices3r-ble/bootloader.bin site/firmware/m5atom-voices3r-ble/
+          cp .pio/build/m5atom-voices3r-ble/partitions.bin site/firmware/m5atom-voices3r-ble/
+          cp "$BOOT_APP0"                                   site/firmware/m5atom-voices3r-ble/boot_app0.bin
+          echo "Copied m5atom-voices3r-ble"
+
+      - name: Generate manifests
+        run: |
+          set -e
+
+          # Helper: generate an ESP32 manifest (bootloader at 0x1000 = 4096)
+          gen_esp32_manifest() {
+            local env=$1
+            local name=$2
+            cat > site/manifest-${env}.json << MANIFEST
+          {
+            "name": "${name}",
+            "version": "latest",
+            "new_install_prompt_erase": true,
+            "builds": [
+              {
+                "chipFamily": "ESP32",
+                "parts": [
+                  { "path": "firmware/${env}/bootloader.bin", "offset": 4096 },
+                  { "path": "firmware/${env}/partitions.bin", "offset": 32768 },
+                  { "path": "firmware/${env}/boot_app0.bin",  "offset": 57344 },
+                  { "path": "firmware/${env}/firmware.bin",   "offset": 65536 }
+                ]
+              }
+            ]
+          }
+          MANIFEST
+          }
+
+          gen_esp32_manifest "esp32dev-ble"      "Flock You — Generic ESP32 DevKit (BLE)"
+          gen_esp32_manifest "m5atom-lite-ble"   "Flock You — M5Atom Lite (BLE)"
+          gen_esp32_manifest "m5atom-echo-ble"   "Flock You — M5Atom Echo (BLE)"
+          gen_esp32_manifest "m5atom-voice-ble"  "Flock You — M5Atom Voice (BLE)"
+
+          # ESP32-S3 manifest (bootloader at 0x0000 = 0)
+          cat > site/manifest-m5atom-voices3r-ble.json << MANIFEST
+          {
+            "name": "Flock You — M5Atom VoiceS3R (BLE, ESP32-S3)",
+            "version": "latest",
+            "new_install_prompt_erase": true,
+            "builds": [
+              {
+                "chipFamily": "ESP32-S3",
+                "parts": [
+                  { "path": "firmware/m5atom-voices3r-ble/bootloader.bin", "offset": 0 },
+                  { "path": "firmware/m5atom-voices3r-ble/partitions.bin", "offset": 32768 },
+                  { "path": "firmware/m5atom-voices3r-ble/boot_app0.bin",  "offset": 57344 },
+                  { "path": "firmware/m5atom-voices3r-ble/firmware.bin",   "offset": 65536 }
+                ]
+              }
+            ]
+          }
+          MANIFEST
+
+          echo "Manifests generated:"
+          ls -la site/manifest-*.json
+
+      - name: Copy flasher page
+        run: cp docs/index.html site/index.html
+
+      - name: Deploy to gh-pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          branch: gh-pages
+          folder: site
+          clean: true
+          commit-message: "ci: deploy firmware build ${{ github.sha }}"

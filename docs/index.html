@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flock You — Web Flasher</title>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+  <style>
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #30363d;
+      --accent:   #f78166;
+      --accent2:  #ff7b72;
+      --text:     #e6edf3;
+      --muted:    #8b949e;
+      --green:    #3fb950;
+      --yellow:   #d29922;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem 4rem;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 680px;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────── */
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+
+    .logo {
+      font-size: 3rem;
+      margin-bottom: 0.25rem;
+    }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.02em;
+    }
+
+    .tagline {
+      color: var(--muted);
+      margin-top: 0.4rem;
+      font-size: 0.95rem;
+    }
+
+    /* ── Cards ───────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.5rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .card h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+
+    /* ── Board selector ──────────────────────────────────────────── */
+    label[for="board-select"] {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    select {
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 0.9rem;
+      font-size: 0.95rem;
+      margin-bottom: 1rem;
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0.9rem center;
+    }
+
+    select:focus { outline: 2px solid var(--accent); }
+
+    .board-note {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: -0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    /* ── Install button wrapper ──────────────────────────────────── */
+    .flash-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    esp-web-install-button {
+      --esp-tools-button-color: var(--accent);
+      --esp-tools-button-text-color: #fff;
+    }
+
+    esp-web-install-button::part(button) {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.6rem 1.4rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    esp-web-install-button::part(button):hover {
+      background: var(--accent2);
+    }
+
+    .no-serial-msg {
+      display: none;
+      background: #2d1b1b;
+      border: 1px solid #5c2323;
+      color: #f78166;
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      font-size: 0.9rem;
+    }
+
+    /* ── Steps ───────────────────────────────────────────────────── */
+    ol {
+      padding-left: 1.4rem;
+    }
+
+    ol li {
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+
+    ol li strong { color: var(--accent); }
+
+    /* ── Chip table ──────────────────────────────────────────────── */
+    .chip-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+
+    .chip-table th {
+      text-align: left;
+      padding: 0.4rem 0.6rem;
+      color: var(--muted);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .chip-table td {
+      padding: 0.45rem 0.6rem;
+      border-bottom: 1px solid #21262d;
+    }
+
+    .chip-table tr:last-child td { border-bottom: none; }
+
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+
+    .badge-esp32   { background: #1c3a1c; color: var(--green); }
+    .badge-esp32s3 { background: #1c2a3a; color: #79c0ff; }
+
+    /* ── Footer ──────────────────────────────────────────────────── */
+    footer {
+      margin-top: 2rem;
+      text-align: center;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    footer a { color: var(--muted); }
+    footer a:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="logo">🚨</div>
+    <h1>Flock You</h1>
+    <p class="tagline">Flock Safety camera detector · Flash your device in one click</p>
+  </header>
+
+  <!-- ── Flash card ─────────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Flash Firmware</h2>
+
+    <label for="board-select">Select your hardware</label>
+    <select id="board-select" onchange="onBoardChange()">
+      <option value="manifest-m5atom-lite-ble.json"   data-chip="ESP32">M5Atom Lite &nbsp;·&nbsp; with BLE (recommended)</option>
+      <option value="manifest-m5atom-echo-ble.json"   data-chip="ESP32">M5Atom Echo &nbsp;·&nbsp; with BLE</option>
+      <option value="manifest-m5atom-voice-ble.json"  data-chip="ESP32">M5Atom Voice &nbsp;·&nbsp; with BLE</option>
+      <option value="manifest-m5atom-voices3r-ble.json" data-chip="ESP32-S3">M5Atom VoiceS3R &nbsp;·&nbsp; with BLE (ESP32-S3)</option>
+      <option value="manifest-esp32dev-ble.json"      data-chip="ESP32">Generic ESP32 DevKit &nbsp;·&nbsp; with BLE</option>
+    </select>
+
+    <p class="board-note" id="board-note"></p>
+
+    <div class="flash-row">
+      <esp-web-install-button id="install-btn" manifest="manifest-m5atom-lite-ble.json">
+        <span slot="unsupported">
+          <!-- shown when Web Serial is unavailable -->
+        </span>
+      </esp-web-install-button>
+    </div>
+
+    <div class="no-serial-msg" id="no-serial">
+      ⚠️ <strong>Web Serial is not supported in this browser.</strong><br>
+      Please use <strong>Chrome</strong> or <strong>Edge</strong> (version 89+) on desktop.
+      Safari and Firefox do not support Web Serial.
+    </div>
+  </div>
+
+  <!-- ── Instructions ───────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>How to Flash</h2>
+    <ol>
+      <li><strong>Use Chrome or Edge</strong> on a desktop/laptop (Web Serial is not available on mobile or Safari/Firefox).</li>
+      <li><strong>Select your hardware</strong> from the dropdown above.</li>
+      <li><strong>Connect your device</strong> via USB.</li>
+      <li>Click <strong>Install</strong> and select the correct serial port from the browser dialog.</li>
+      <li>Wait ~30 seconds for the flash to complete — the device will reboot automatically.</li>
+      <li>Open a serial monitor at <strong>115200 baud</strong> to confirm it's scanning.</li>
+    </ol>
+  </div>
+
+  <!-- ── Board reference ────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Supported Hardware</h2>
+    <table class="chip-table">
+      <thead>
+        <tr>
+          <th>Device</th>
+          <th>Chip</th>
+          <th>BLE</th>
+          <th>Alert</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>M5Atom Lite</td>
+          <td><span class="badge badge-esp32">ESP32</span></td>
+          <td>✅</td>
+          <td>RGB LED</td>
+        </tr>
+        <tr>
+          <td>M5Atom Echo</td>
+          <td><span class="badge badge-esp32">ESP32</span></td>
+          <td>✅</td>
+          <td>RGB LED + buzzer</td>
+        </tr>
+        <tr>
+          <td>M5Atom Voice</td>
+          <td><span class="badge badge-esp32">ESP32</span></td>
+          <td>✅</td>
+          <td>RGB LED + speaker</td>
+        </tr>
+        <tr>
+          <td>M5Atom VoiceS3R</td>
+          <td><span class="badge badge-esp32s3">ESP32-S3</span></td>
+          <td>✅</td>
+          <td>RGB LED + speaker</td>
+        </tr>
+        <tr>
+          <td>Generic ESP32 DevKit</td>
+          <td><span class="badge badge-esp32">ESP32</span></td>
+          <td>✅</td>
+          <td>Serial log + LED (GPIO2)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── What it detects ────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>What It Detects</h2>
+    <p style="color:var(--muted); font-size:0.92rem; margin-bottom:0.75rem;">
+      Flock You passively monitors 802.11 probe requests and BLE advertisements for signals
+      associated with Flock Safety infrastructure.
+    </p>
+    <ul style="padding-left:1.4rem; color:var(--muted); font-size:0.92rem;">
+      <li>35 Flock Safety Wi-Fi OUIs (field-verified MAC prefixes)</li>
+      <li>6 contract-manufacturer OUIs (Liteon / USI)</li>
+      <li>SoundThinking / ShotSpotter infrastructure (d4:11:d6)</li>
+      <li>BLE device names: FS Ext Battery, Penguin, Flock, Pigvision, Raven</li>
+      <li>BLE manufacturer ID 0x09C8 (XUNTONG / Flock Safety)</li>
+      <li>Raven camera GATT service UUIDs (8 UUIDs)</li>
+    </ul>
+  </div>
+
+  <footer>
+    <a href="https://github.com/YOUR_ORG/flock-you-esp32">GitHub</a> ·
+    Requires Chrome / Edge · Web Serial API ·
+    <span id="build-info">latest build</span>
+  </footer>
+
+</div>
+
+<script>
+  const NOTES = {
+    "manifest-m5atom-lite-ble.json":     "ESP32-PICO-D4 · SK6812 RGB LED on GPIO27 · USB-C via FTDI",
+    "manifest-m5atom-echo-ble.json":     "ESP32-PICO-D4 · RGB LED · built-in buzzer on GPIO25",
+    "manifest-m5atom-voice-ble.json":    "ESP32-PICO-D4 · RGB LED · NS4168 I²S speaker",
+    "manifest-m5atom-voices3r-ble.json": "ESP32-S3-PICO · 8MB flash / 8MB PSRAM · USB-C native CDC · ES8311 speaker",
+    "manifest-esp32dev-ble.json":        "Standard 38-pin ESP32 DevKit · onboard LED GPIO2 · any USB-serial adapter",
+  };
+
+  const sel = document.getElementById("board-select");
+  const btn = document.getElementById("install-btn");
+  const note = document.getElementById("board-note");
+  const noSerial = document.getElementById("no-serial");
+
+  function onBoardChange() {
+    const val = sel.value;
+    btn.setAttribute("manifest", val);
+    note.textContent = NOTES[val] || "";
+  }
+
+  // Detect Web Serial support
+  if (!("serial" in navigator)) {
+    noSerial.style.display = "block";
+    btn.style.display = "none";
+  }
+
+  // Init note
+  onBoardChange();
+</script>
+</body>
+</html>
