@@ -822,8 +822,10 @@ static inline bool IRAM_ATTR isMulticast(const uint8_t* mac) {
 }
 
 // High-confidence Flock Safety OUIs (direct registration / exclusively Flock).
+// NOTE: 82:6b:f2 (DeFlockJoplin, 12th camera) has the locally-administered bit
+// set (0x82 & 0x02 = 2), but it IS a confirmed Flock OUI — do NOT filter it here.
+// The LAA-bit check belongs in the SSID path (ALERT_LAA_SSID), not here.
 static bool IRAM_ATTR matchFlockHighOui(const uint8_t* mac) {
-  if (mac[0] & 0x02) return false;  // skip locally-administered MACs
   for (size_t i = 0; i < FY_OUI_HIGH_COUNT; i++) {
     if (mac[0] == oui_high_bytes[i][0] &&
         mac[1] == oui_high_bytes[i][1] &&
