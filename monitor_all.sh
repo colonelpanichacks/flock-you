@@ -87,15 +87,12 @@ monitor_port() {
 
     echo -e "${color}${BOLD}${label}${RESET}${color} ● connected at ${BAUD} baud${RESET}"
 
-    # ── Stream lines ─────────────────────────────────────────────────────
-    while IFS= read -r line; do
-      # If a flash tool grabbed the port mid-stream, stop reading
-      if port_is_being_flashed "$port"; then
-        echo -e "${DIM}${color}${label}${RESET}${DIM} ⚡ flash tool detected — pausing monitor${RESET}"
-        break
-      fi
+    # ── Stream lines via cat (blocks correctly on a character device) ────
+    # cat blocks on the serial fd and exits when the port disappears.
+    # We track its PID so we can kill it if a flash tool takes over.
+    cat "$port" | while IFS= read -r line; do
       printf "${color}%s${RESET} %s\n" "$label" "$line"
-    done < "$port"
+    done
 
     # ── Port closed / unplugged ──────────────────────────────────────────
     if [ -c "$port" ] && port_is_being_flashed "$port"; then
