@@ -1,6 +1,15 @@
 
+# PlatformIO build artifacts
 .pio/
 
+# IDE settings
 .vscode/
 
+# macOS junk
 .DS_Store
+
+# SPIFFS runtime session files (written by firmware to the ESP32 filesystem,
+# never source-controlled — they contain field detection data)
+session.json
+session.tmp
+prev_session.json

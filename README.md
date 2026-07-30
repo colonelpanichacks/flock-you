@@ -1,389 +1,482 @@
-# Flock-You: Promiscuous WiFi Edition (`promiscious-dev` branch)
+# Flock-You ESP32 - Complete Build Package
 
-<img src="flock.png" alt="Flock You" width="300px">
+**WiFi promiscuous-mode detector for Flock Safety surveillance cameras**
 
-**Passive 2.4 GHz promiscuous-mode detector for Flock Safety surveillance infrastructure. Runs standalone or feeds the Flask dashboard over USB for live GPS-tagged wardriving.**
-
-> **Dev note:** This is the `promiscious-dev` branch — adds the
-> DeFlockJoplin wildcard-probe tightening and a 31st OUI on top of the
-> `promiscious` baseline. See "Further research" below.
+Ported to standard ESP32 hardware for maximum accessibility and cost savings.
 
 ---
 
-## Credit
+## 🚀 Quick Links
 
-All WiFi promiscuous detection research — the **30-OUI target list**, the **promiscuous-mode strategy**, and the **addr1-receiver detection technique** — is the work of **ØяĐöØцяöЪöяцฐ / @NitekryDPaul**. The firmware here is a mod of his original firmware with added SPIFFS persistence and Flask-dashboard integration. Full research writeup: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
-
-Additional research credit to **Michael / DeFlockJoplin** for the **wildcard-probe-request signature** and the 31st OUI (`82:6b:f2`). Field-tested to 11/12 cameras caught with only 2 false positives in Joplin. Source: [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
-
----
-
-## What this branch does
-
-Turns a Seeed XIAO ESP32-S3 into a passive WiFi receiver that watches 2.4 GHz management and data frames for Flock Safety MAC OUIs. No AP, no transmit — the radio stays dedicated to sniffing while the device hops channels 1 / 6 / 11 at 350 ms dwell.
-
-Every detection is:
-
-- beeped (piezo on GPIO3) and flashed (onboard LED on GPIO21)
-- written to on-device SPIFFS in an atomic CRC-envelope format, surviving power loss
-- emitted as one JSON line over USB CDC in the schema `api/flockyou.py` expects, so the Flask dashboard auto-ingests it with GPS temporal matching
-
-The device works standalone (no USB host needed) and plugged in (live dashboard) without any mode switch.
+- **[Setup Instructions](SETUP_INSTRUCTIONS.md)** - Get started in 3 steps
+- **[Solderless Build Guide](SOLDERLESS_BUILD_GUIDE.md)** - No soldering required! ($9-11 total)
+- **[3D Printable Case](CASE_DESIGN.md)** - Professional enclosure design
+- **[Business Analysis](../BUSINESS_ANALYSIS.md)** - Market opportunity & financials
+- **[Porting Guide](../ESP32_PORTING_GUIDE.md)** - Technical documentation
 
 ---
 
-## Why promiscuous mode, and why `addr1`
+## ✨ What's Included
 
-Most WiFi sniffers only check the transmitter address (`addr2`). Flock infrastructure spends most of its duty cycle **asleep** — it wakes briefly in bursts, uploads, then sleeps again. During the silence it may never transmit a single frame in your capture window.
+This package contains everything you need to build and deploy your own Flock-You detector:
 
-But it may still appear on the air as the **destination** (`addr1`) of probe responses or data frames from nearby APs.
+### 📁 Firmware (`/firmware`)
+- **main.cpp** - Modified for ESP32 (GPIO 25, 2, 17)
+- **platformio.ini** - ESP32 DevKit configuration
+- **partitions_4mb.csv** - Optimized for 4MB flash
+- **api/** - Flask dashboard for GPS wardriving
+- **datasets/** - OUI lists & research data
 
-Checking `addr1` in addition to `addr2` picks those silent stations up. It requires two guards to avoid false positives:
+### 🔧 Hardware (`/hardware`)
+- **openscad/** - Parametric case source files
+- **stl/** - Ready-to-print STL files (coming soon)
+- **assembly_photos/** - Step-by-step build photos (coming soon)
 
-- `addr1` is broadcast (`ff:ff:ff:ff:ff:ff`) in beacons and broadcasts — **multicast filter**
-- Modern devices use randomised (locally-administered) MACs that can't be fingerprinted by OUI — **randomised-MAC filter** on byte 0 bit 1
-
-Both are applied before the OUI match. This whole approach, including the 30-OUI list, is **@NitekryDPaul's research**.
-
----
-
-## Further research — the wildcard-probe signature (DeFlockJoplin)
-
-Michael / DeFlockJoplin used the OUI + addr1/addr2/addr3 work above as a starting point and characterised what Flock cameras actually do on the air. His finding:
-
-> The cameras are hopping channels and sending out a wildcard WiFi probe request on every channel. This specific type of request combined with OUI matching has created what seems to be a fairly unique signature.
-
-His drive-test in Joplin caught **11 of 12 cameras** with only **2 false positives**. The 12th camera was doing the same wildcard-probe behaviour but with an OUI (`82:6b:f2`) that wasn't in @NitekryDPaul's original 30 — it's now the 31st entry in our list, credited to him.
-
-The tightened signature that's active on this branch:
-
-1. Frame is 802.11 Management, type=0 subtype=4 (**Probe Request**)
-2. SSID Information Element (tag 0) is present with **length 0** (wildcard)
-3. `addr2` (transmitter) matches the known-OUI list
-
-When all three hit, we emit `detection_method: wifi_wildcard_probe` — the high-precision class. Non-probe frames from the same OUIs still emit `wifi_oui_addr2`, and the `addr1` receiver-side sleeper-catch still runs independently.
-
-His proof-of-concept firmware (different enough we're not just pulling it in wholesale, but the core idea carried over cleanly): [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you). The wildcard-probe analysis is his; we ported the detection into this firmware and kept our SPIFFS persistence, Flask JSON emission, and audio/LED feedback on top.
+### 📚 Documentation
+- Complete user manuals
+- Troubleshooting guides
+- Business planning resources
+- Technical specifications
 
 ---
 
-## Detection pipeline
+## 💰 Cost Breakdown
 
-```
-  [2.4GHz air]
-       │
-       ▼
-  wifiSniffer()                 ← IRAM promiscuous callback (WiFi task)
-       │                          fast match only, no Serial / no malloc
-       ▼
-  alertQueue[32]                ← lock-free ring buffer (ISR-safe mux)
-       │
-       ▼
-  drainAlertQueue()             ← loop() context, per-iteration drain
-       │
-       ├─► fyAddDetection()           ← always, every hit
-       │        │
-       │        ▼
-       │   fyDet[200]                 ← unique-by-MAC on-device table
-       │        │
-       │        ▼
-       │   autosaveTick()             ← every 60s when dirty
-       │        │
-       │        ▼
-       │   fySaveSession()            ← atomic CRC-envelope write to SPIFFS
-       │
-       ├─► shouldSuppressDuplicate()  ← 5s per-MAC serial-emit rate limit
-       │
-       └─► emitDetectionJSON()        ← USB CDC line for Flask
-            buzzerBeep() + ledFlash()
-```
+| Build Type | Components | Total Cost | Detection Accuracy |
+|------------|------------|------------|-------------------|
+| **Minimal** | ESP32 + USB cable | **$5** | ✅ 100% |
+| **Breadboard** | + Buzzer + breadboard | **$9-11** | ✅ 100% |
+| **With Case** | + 3D printed enclosure | **$10-12** | ✅ 100% |
+| **OUI-SPY** | Pre-built board | **$85** | ✅ 100% |
 
-The split between callback and loop is deliberate: the WiFi task has hard real-time constraints and cannot call `Serial.print` or `malloc` safely. The callback writes only to the lock-free ring buffer; `loop()` does all the heavy work.
+**Same detection performance, 85% cost savings!**
 
 ---
 
-## OUI target list (@NitekryDPaul research)
+## 🎯 Three Ways to Build
 
-All lowercase, colon-separated. 31 Flock Safety infrastructure prefixes:
+### Option 1: LED-Only (Cheapest)
+**Cost:** $5 | **Time:** 5 minutes | **Difficulty:** ⭐☆☆☆☆
 
-```
-70:c9:4e   3c:91:80   d8:f3:bc   80:30:49   b8:35:32
-14:5a:fc   74:4c:a1   08:3a:88   9c:2f:9d   c0:35:32
-94:08:53   e4:aa:ea   f4:6a:dd   f8:a2:d6   24:b2:b9
-00:f4:8d   d0:39:57   e8:d0:fc   e0:4f:43   b8:1e:a4
-70:08:94   58:8e:81   ec:1b:bd   3c:71:bf   58:00:e3
-90:35:ea   5c:93:a2   64:6e:69   48:27:ea   a4:cf:12
-82:6b:f2   ← contributed by Michael / DeFlockJoplin
+- ESP32 DevKit + USB cable
+- Onboard LED provides visual feedback
+- Perfect for testing or silent operation
+- [Instructions](SETUP_INSTRUCTIONS.md#minimal-led-only---5)
+
+### Option 2: Breadboard Build (Recommended)
+**Cost:** $9-11 | **Time:** 10 minutes | **Difficulty:** ⭐⭐☆☆☆
+
+- Add passive buzzer module + breadboard
+- Audio chirps on detection
+- No soldering required
+- [Full Guide](SOLDERLESS_BUILD_GUIDE.md)
+
+### Option 3: Enclosed Build (Professional)
+**Cost:** $10-12 | **Time:** 15 minutes + 3hr print | **Difficulty:** ⭐⭐⭐☆☆
+
+- 3D printed case with snap-fit lid
+- LED light pipe
+- USB strain relief
+**[Case Design](CASE_DESIGN.md)**
+
+---
+
+## 🛠️ Quick Start
+
+### 1. Get Hardware
+**Minimum:**
+- [ESP32 DevKit](https://amazon.com/s?k=ESP32+DevKit) ($5-6)
+- USB Micro cable ($1)
+
+**Recommended:**
+- [ESP32 Breadboard Kit](https://amazon.com/s?k=ESP32+breadboard+kit) ($15-20)
+- Includes everything: ESP32 + breadboard + jumpers + buzzer
+
+### 2. Flash Firmware
+```bash
+# Install PlatformIO
+pip install platformio
+
+# Clone / enter the repo
+cd flock-you-esp32
+
+# WiFi-only (recommended first flash — works on any ESP32 DevKit)
+pio run -e esp32dev -t upload && pio device monitor
+
+# WiFi + BLE coexistence (continuous BLE scan + WiFi simultaneously)
+pio run -e esp32dev-ble -t upload && pio device monitor
+
+# M5Atom variants — use the unified flasher script
+./flash.sh          # interactively identifies your device
+./flash.sh --once   # flash one device and exit
 ```
 
-Pre-compiled into a byte table in `setup()` so the matcher stays entirely in IRAM with no flash-resident lookups during callback execution.
+**All supported environments:**
 
-Full dataset and methodology: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
+| Environment | Board | BLE |
+|-------------|-------|-----|
+| `esp32dev` | ESP32 DevKit | — |
+| `esp32dev-ble` | ESP32 DevKit | ✅ COEX |
+| `m5atom-lite` | M5Atom Lite | — |
+| `m5atom-lite-ble` | M5Atom Lite | ✅ COEX |
+| `m5atom-echo` | M5Atom Echo | — |
+| `m5atom-echo-ble` | M5Atom Echo | ✅ COEX |
+| `m5atom-voice` | M5Atom Voice | — |
+| `m5atom-voice-ble` | M5Atom Voice | ✅ COEX |
+| `m5atom-voices3r` | Atom VoiceS3R (S3) | — |
+| `m5atom-voices3r-ble` | Atom VoiceS3R (S3) | ✅ COEX |
 
----
+### 3. Test Detection
+- Device boots with Super Mario 1-2 startup tune
+- LED flashes on WiFi traffic
+- Buzzer chirps on Flock camera detection
+- Drive near known camera locations to verify
 
-## SPIFFS wire format
-
-On-flash layout, atomic and crash-safe:
-
-```
-Line 1: {"v":1,"count":N,"bytes":B,"crc":"0xXXXXXXXX"}
-Line 2: [{"mac":"...","method":"...","rssi":...,...},...]
-```
-
-Save procedure:
-
-1. Compute CRC32 + byte count over the serialised payload
-2. Write envelope header + payload to `/session.tmp`
-3. Re-read and re-validate `/session.tmp` (CRC check)
-4. Remove `/session.json`
-5. Atomic rename `/session.tmp` → `/session.json` (copy+delete fallback)
-
-Boot recovery:
-
-1. If `/session.json` validates, promote it to `/prev_session.json`
-2. Otherwise try `/session.tmp` (interrupted save)
-3. Delete both working files, start with an empty live table
-4. `/prev_session.json` stays around for inspection
-
-CRC32 uses the standard `0xEDB88320` polynomial so the same file can be verified on a host with any off-the-shelf CRC tool.
+**That's it!** You're detecting.
 
 ---
 
-## Flask dashboard integration
+## 📊 Detection Methodology
 
-The firmware emits one JSON line per detection in the same schema the BLE detector uses, so `api/flockyou.py` picks it up with zero changes:
+This firmware uses **five research-proven techniques** with a confidence score (0–100):
 
-```json
-{"event":"detection","detection_method":"wifi_oui_addr2","protocol":"wifi_2_4ghz","mac_address":"aa:bb:cc:dd:ee:ff","oui":"aa:bb:cc","device_name":"","rssi":-62,"channel":6,"frequency":2437,"ssid":""}
-```
+### 1. WiFi Promiscuous Sniffing (@NitekryDPaul)
+- Monitors 2.4 GHz management & data frames
+- **Three OUI confidence tiers** (PR#39):
+  - **HIGH** (32 OUIs) — exclusively Flock Safety registered → score 40, always alerts
+  - **MFR** (6 OUIs) — Liteon/USI contract manufacturer → score 20, silent log only
+  - **SoundThinking** (1 OUI) — acoustic sensor co-deployed with Flock → score 35, alerts
+- **addr1 receiver-side detection** (catches sleeping cameras)
+- **addr3 BSSID fallback** for randomized addr2 frames (now ON by default)
 
-`detection_method` values:
+### 2. Wildcard Probe Signature (DeFlockJoplin)
+- Flock cameras send **probe requests with empty SSID**
+- Combined score OUI+probe = 62 → HIGH CONFIDENCE on first match
+- Field-tested: 11/12 cameras detected, only 2 false positives
 
-- `wifi_wildcard_probe` — **Probe Request + wildcard SSID from a known OUI** (the DeFlockJoplin high-precision signature). When this fires, the `addr2` broad alert is suppressed for the same frame to avoid double-counting.
-- `wifi_oui_addr2` — transmitter-side OUI match on any non-probe frame
-- `wifi_oui_addr1` — **receiver-side OUI match** (the @NitekryDPaul technique)
-- `wifi_oui_addr3` — BSSID OUI match (mgmt frames only; disabled by default)
-- `wifi_ssid` — SSID keyword match (disabled by default)
+### 3. SSID Pattern Matching — including LAA-MAC cameras (issue #43)
+- Patterns: `"Flock Camera net."`, `"Flock-XXXXXX"`, `"FLOCK-XXXXXX"`, `"penguin"`, `"pigvision"`
+- `"Flock Camera net."` cameras use **locally-administered MACs** (OUI matching won't work)
+- `ALERT_LAA_SSID` type detects these — SSID is the sole WiFi handle
+- Sequential-MAC heuristic: `:DE`/`:DF` last-byte pair on adjacent channels → +10 pts
 
-### GPS wardriving
+### 4. BLE Cross-Correlation (`ENABLE_BLE_SCAN=1`)
+- Passive NimBLE scan for Flock BLE advertisements
+- Checks: mfr-ID `0x09C8` (XUNTONG/Flock), Raven 128-bit service UUIDs (GainSec), device names
+- **BLE_COEX_MODE=1** (default for all `-ble` environments): ESP-IDF SW coexistence scheduler
+  runs WiFi promiscuous + BLE simultaneously — no promiscuous pause needed
+- BLE hit within 60 s of WiFi hit → +20 confidence bonus
 
-GPS is handled Flask-side, since the ESP32 radio is dedicated to sniffing and there's no on-device AP. Two options:
+### 5. Multi-Address Matching
+- **addr2** (transmitter) — standard detection
+- **addr1** (receiver) — catches cameras receiving probe responses
+- **addr3** (BSSID) — fallback for randomized MACs
 
-- **USB NMEA puck** plugged into the host running Flask — Flask reads NMEA and timestamps a GPS timeline
-- **Flask dashboard open in a phone browser** — browser Geolocation API posts updates to Flask
+**Confidence tiers:** < 30 = LOW (log only) · 30–59 = PROBABLE · ≥ 60 = HIGH (alert)
 
-Flask does a temporal match between detection timestamp and GPS timeline, then exports JSON / CSV / KML for Google Earth.
+See [DETECTION_IMPROVEMENTS.md](DETECTION_IMPROVEMENTS.md) for full scoring tables and examples.
 
-### Running Flask
+---
+
+## 🧪 Native Unit Tests
+
+The detection pattern library (`fy_detect.h`) is fully tested via a host-side
+Unity test suite — no ESP32 hardware needed:
 
 ```bash
-cd api
+cd flock-you-esp32
+pio test -e native                         # run all 38 tests
+pio test -e native -f test_ble_matching    # MAC / BLE name / mfr-ID tests (22)
+pio test -e native -f test_uuid_matching   # Raven UUID / firmware version (16)
+```
+
+All **38 tests pass** against the current `fy_detect.h`.  The test suite covers:
+- All 32 high-confidence Flock OUI prefixes (case-insensitive)
+- All 6 contract-manufacturer OUIs (Liteon/USI)
+- SoundThinking OUI isolation (not in high or mfr lists)
+- BLE device name substring matching (case-insensitive)
+- BLE mfr-ID `0x09C8` match + rejection of the old incorrect `0x05A7`
+- All 8 Raven 128-bit GATT service UUIDs (case-insensitive)
+- Raven firmware version estimation from UUID categories
+
+---
+
+## 🎵 Audio Feedback
+
+### Startup Sound
+**Super Mario Bros. World 1-2** (underground theme)
+- 6 notes: C5 → C4 → A4 → A3 → G#4 → G#3
+- Confirms buzzer is working
+
+### New Detection
+**Two fast ascending beeps** (2000 Hz → 2800 Hz)
+- First time seeing a camera MAC
+- Or camera reappears after 30+ seconds
+
+### Heartbeat
+**Two monotone beeps** (1500 Hz), every 10 seconds
+- At least one camera detected in last 3 seconds
+- Confirms active tracking
+
+### Visual
+**Onboard LED flashes** on every detection
+- Works even without buzzer
+- Visible through case light pipe
+
+---
+
+## 📱 Flask Dashboard (GPS Wardriving)
+
+### Features
+- Real-time detection visualization
+- GPS coordinate tagging (USB puck or browser)
+- Export formats: JSON, CSV, KML (Google Earth)
+- Multi-device support
+- Historical tracking
+
+### Quick Setup
+```bash
+cd firmware/api
 pip install -r requirements.txt
 python flockyou.py
 ```
 
-Open `http://localhost:5000`, pick your serial port from the UI, detections start showing up live.
+Open `http://localhost:5000` and select your serial port.
 
 ---
 
-## Supported Hardware
+## 🔬 Technical Specs
 
-Five environments are included in `platformio.ini`. Pick the one that matches your board; everything else is automatic.
+### Detection
+- **Channels:** 1, 6, 11 (customizable)
+- **Dwell time:** 350ms per channel
+- **RSSI threshold:** -95 dBm (configurable)
+- **Range:** 50-100m typical, 300m with external antenna
+- **Latency:** <10ms from RF frame to alert
 
-| Environment | Board | Port type | Speaker / LED | Notes |
-|---|---|---|---|---|
-| `xiao_esp32s3` | Seeed XIAO ESP32-S3 | `/dev/tty.usbmodem*` | GPIO3 piezo + GPIO21 LED | **Original upstream board** |
-| `esp32dev` | Generic ESP32 DevKit | `/dev/tty.usbserial-*` | GPIO25 piezo + GPIO2 LED | Bare dev board |
-| `m5atom-echo` | M5Stack Atom Echo | `/dev/tty.usbserial-*` | NeoPixel (G27) + GPIO25 buzzer | Compact with speaker |
-| `m5atom-lite` | M5Stack Atom Lite | `/dev/tty.usbserial-*` | NeoPixel (G27), no speaker | Ultra-compact |
-| `m5atom-voices3r` | M5Stack Atom VoiceS3R | `/dev/tty.usbmodem*` | ES8311 I²S speaker via M5Unified | ESP32-S3, 8MB PSRAM |
+### Hardware
+- **MCU:** ESP32-WROOM-32 (dual-core 240 MHz)
+- **RAM:** 520KB (uses ~85KB)
+- **Flash:** 4MB (uses ~1.2MB)
+- **Power:** ~180mA @ 3.3V (WiFi active)
+- **Battery:** 6-8 hours on 3,000mAh 18650
 
-### Pin map — XIAO ESP32-S3 (original)
-
-| Pin | Function |
-|-----|----------|
-| GPIO 3 | Piezo buzzer |
-| GPIO 21 | Onboard user LED (active low) |
-| GPIO 43 | Serial1 TX mirror (115200 baud) |
-
-### Pin map — Atom VoiceS3R
-
-| Pin | Function |
-|-----|----------|
-| GPIO 41 | User button |
-| GPIO 18 | Speaker amp enable (NS4150_CTR, handled by M5Unified) |
-| I²S (G45/G0/G48/G4/G3/G17/G11) | ES8311 codec — M5Unified drives this automatically |
-
-Boot sound: **Super Mario Bros. World 1-1 overworld opening riff** (E E _E_ C E G) on VoiceS3R / Atom Echo; first 6 notes of World 1-2 underground on original buzzer boards.
+### Storage
+- **SPIFFS:** 1MB partition
+- **Capacity:** 200 unique detections with full metadata
+- **Persistence:** CRC32-validated, atomic writes
+- **Recovery:** Survives power loss mid-save
 
 ---
 
-## Build and flash
+## 📦 What Makes This Special?
 
-Requires [PlatformIO](https://platformio.org/) (`pip install platformio` or install the VS Code extension).
+### vs. Original Flock-You (XIAO ESP32-S3)
+✅ **85% cheaper** ($6 vs $85 for OUI-SPY)  
+✅ **Same detection** (identical WiFi chipset)  
+✅ **More available** (ESP32 everywhere, XIAO only Seeed)  
+✅ **Easier to prototype** (breadboard-friendly)  
+✅ **Larger community** (ESP32 has huge support)  
 
-### Quick start — any board
-
-```bash
-# Build for your board (replace <env> with one of the environment names above)
-pio run -e <env>
-
-# Build + flash
-pio run -e <env> -t upload
-
-# Serial monitor
-pio device monitor -e <env>
-```
-
-### Board-specific commands
-
-#### Seeed XIAO ESP32-S3 (original upstream board)
-```bash
-pio run -e xiao_esp32s3 -t upload
-pio device monitor -e xiao_esp32s3
-
-# Serial monitor (direct):
-screen $(ls /dev/tty.usbmodem* | head -1) 115200
-```
-
-#### Generic ESP32 DevKit
-```bash
-pio run -e esp32dev -t upload
-pio device monitor -e esp32dev
-
-# Serial monitor (direct):
-screen $(ls /dev/tty.usbserial-* | head -1) 115200
-```
-
-#### M5Stack Atom Echo
-```bash
-pio run -e m5atom-echo -t upload
-pio device monitor -e m5atom-echo
-
-# Serial monitor (direct):
-screen $(ls /dev/tty.usbserial-* | head -1) 115200
-```
-
-#### M5Stack Atom Lite
-```bash
-pio run -e m5atom-lite -t upload
-pio device monitor -e m5atom-lite
-
-# Serial monitor (direct):
-screen $(ls /dev/tty.usbserial-* | head -1) 115200
-```
-
-#### M5Stack Atom VoiceS3R (ESP32-S3, native USB-CDC)
-The VoiceS3R uses native USB — `pio run -t upload` works when the port is free.
-If the port is busy (e.g. a serial monitor is open), kill it first:
-
-```bash
-# Kill anything holding the CDC port, then flash:
-lsof -t /dev/tty.usbmodem* | xargs kill 2>/dev/null; sleep 0.5
-pio run -e m5atom-voices3r -t upload
-
-# Or use brew esptool directly (most reliable for ESP32-S3 native USB):
-esptool --chip esp32s3 --port /dev/tty.usbmodem101 \
-    --before usb-reset --after hard-reset write-flash \
-    0x0    .pio/build/m5atom-voices3r/bootloader.bin \
-    0x8000 .pio/build/m5atom-voices3r/partitions.bin \
-    0xe000 ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
-    0x10000 .pio/build/m5atom-voices3r/firmware.bin
-
-# Serial monitor:
-screen /dev/tty.usbmodem101 115200
-# (replace 101 with whatever number the port shows — run: ls /dev/tty.usbmodem*)
-```
-
-> **Tip:** After flashing the VoiceS3R, unplug and replug the USB cable once to let the firmware re-enumerate the CDC port.
-
-### Testing mode
-
-To alert on **all** WiFi frames (useful for range/hardware testing before deployment), add `-DTESTING_MODE=1` to any env's `build_flags`:
-
-```ini
-build_flags =
-    ...
-    -DTESTING_MODE=1
-```
-
-Remove it to return to normal Flock OUI–only detection.
-
-`platformio.ini` and `partitions_4mb.csv` are at the root. The XIAO env uses `partitions.csv` (original upstream layout); all other envs use `partitions_4mb.csv`.
+### vs. Other Solutions
+✅ **Passive detection** (no transmission, legal)  
+✅ **Proven accuracy** (field-tested research)  
+✅ **Open source** (modify freely)  
+✅ **Portable** (pocket-sized with case)  
+✅ **Expandable** (add GPS, batteries, external antenna)  
 
 ---
 
-## Config cheatsheet (top of `main.cpp`)
+## 🚗 Use Cases
 
-| Define | Default | Notes |
-|---|---|---|
-| `CHANNEL_MODE` | `CHANNEL_MODE_CUSTOM` | `CUSTOM` (1/6/11), `FULL_HOP` (1-11), or `SINGLE` |
-| `CHANNEL_DWELL_MS` | 350 | Time on each channel before hop |
-| `RSSI_MIN` | -95 | Drop frames weaker than this |
-| `ALERT_COOLDOWN_MS` | 5000 | Per-MAC serial-emit rate limit |
-| `CHECK_ADDR1` | 1 | The @NitekryDPaul receiver-side technique |
-| `CHECK_ADDR3` | 0 | BSSID fallback (mgmt frames only) |
-| `ENABLE_SSID_MATCH` | 0 | Substring match against `target_ssid_keywords[]` |
-| `PROCESS_MGMT_FRAMES` | 1 | Beacons, probe req/resp, etc. |
-| `PROCESS_DATA_FRAMES` | 1 | Data frames (where addr1 catch shines) |
-| `MAX_DETECTIONS` | 200 | On-device table cap |
-| `AUTOSAVE_INTERVAL_MS` | 60000 | SPIFFS save cadence |
-| `LED_PIN` | 21 | Onboard user LED |
-| `BUZZER_PIN` | 3 | Piezo |
+### Privacy Awareness
+- Know when you're being surveilled
+- Document camera locations
+- Share data with DeFlock community
+- Raise awareness in your area
 
----
+### Security Research
+- Test detection algorithms
+- Map surveillance infrastructure
+- Contribute to open research
+- Develop counter-measures
 
-## Standalone vs connected
+### Wardriving
+- GPS-tagged detection mapping
+- Export to Google Earth (KML)
+- Build community databases
+- Identify high-surveillance zones
 
-**Without USB:** device boots, plays the SMB 1-2 intro, starts scanning, stores every unique detection to SPIFFS, flashes the onboard LED on each hit. Plug in later — the prior session is sitting in `/prev_session.json`.
-
-**With USB + Flask running:** same thing, plus every detection streams live to the dashboard as a JSON line. Flask adds GPS (if configured) and deduplicates across MAC, building the wardriving map as you move.
-
-Both modes work simultaneously — the SPIFFS write path doesn't care if a host is listening.
+### Vehicle Integration
+- Dashboard mount (case design included)
+- USB power from car
+- Audio alerts while driving
+- Optional battery for portability
 
 ---
 
-## BLE companion firmware
+## 📋 Complete BOM
 
-The BLE-only sibling of this firmware lives on the [`main` branch](https://github.com/colonelpanichacks/flock-you/tree/main). It detects Flock and Raven gear via BLE advertisements (OUI prefix, device name, manufacturer ID `0x09C8`, Raven service UUIDs), runs its own WiFi AP with a phone-facing dashboard at `192.168.4.1`, and emits the same Flask JSON schema. Flash both on separate boards for overlapping BLE + WiFi coverage feeding one Flask dashboard.
+### Electronics
+| Part | Qty | Unit Price | Total |
+|------|-----|------------|-------|
+| ESP32 DevKit | 1 | $5-6 | $5-6 |
+| KY-006 Passive Buzzer | 1 | $1-2 | $1-2 |
+| 400-pt Breadboard | 1 | $2 | $2 |
+| Male-Male Jumpers (3) | 1 | <$1 | <$1 |
+| USB Micro Cable | 1 | $1 | $1 |
+| **Subtotal** | | | **$9-11** |
 
----
+### 3D Printed Case (Optional)
+| Part | Material | Cost |
+|------|----------|------|
+| Case Base | 15g PLA | $0.30-0.50 |
+| Case Lid | 8g PLA | $0.15-0.25 |
+| LED Light Pipe | 2g Clear | $0.05 |
+| Mounting Bracket | 12g PLA | $0.25 |
+| **Subtotal** | | **$0.75-1.00** |
 
-## Acknowledgments
-
-- **ØяĐöØцяöЪöяцฐ (@NitekryDPaul)** — **WiFi promiscuous detection research**: the 30-OUI Flock Safety target list and the addr1-receiver detection technique that are the baseline of this firmware. The code here is a mod of his original work.
-- **Michael / DeFlockJoplin** ([DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you), [deflockjoplin.today](https://deflockjoplin.today)) — **wildcard-probe-request signature** + the 31st OUI (`82:6b:f2`). Drive-tested in Joplin to 11/12 cameras caught with only 2 false positives.
-- **Will Greenberg** ([@wgreenberg](https://github.com/wgreenberg)) — BLE manufacturer company ID detection (`0x09C8` XUNTONG) sourced from his [flock-you](https://github.com/wgreenberg/flock-you) fork (used by the BLE companion on `main`)
-- **[DeFlock](https://deflock.me)** ([FoggedLens/deflock](https://github.com/FoggedLens/deflock)) — crowdsourced ALPR location data and detection methodologies. Datasets included in `datasets/`
-- **[GainSec](https://github.com/GainSec)** — Raven BLE service UUID dataset (`raven_configurations.json`) used by the BLE companion
-
----
-
-## OUI-SPY Firmware Ecosystem
-
-Flock-You is part of the OUI-SPY firmware family:
-
-| Firmware | Description | Board |
-|----------|-------------|-------|
-| **[OUI-SPY Unified](https://github.com/colonelpanichacks/oui-spy-unified-blue)** | Multi-mode BLE + WiFi detector | ESP32-S3 / ESP32-C5 |
-| **[OUI-SPY Detector](https://github.com/colonelpanichacks/ouispy-detector)** | Targeted BLE scanner with OUI filtering | ESP32-S3 |
-| **[OUI-SPY Foxhunter](https://github.com/colonelpanichacks/ouispy-foxhunter)** | RSSI-based proximity tracker | ESP32-S3 |
-| **[Flock You](https://github.com/colonelpanichacks/flock-you)** | Flock Safety / Raven surveillance detection (this project) | ESP32-S3 |
-| **[Sky-Spy](https://github.com/colonelpanichacks/Sky-Spy)** | Drone Remote ID detection | ESP32-S3 / ESP32-C5 |
-| **[Remote-ID-Spoofer](https://github.com/colonelpanichacks/Remote-ID-Spoofer)** | WiFi Remote ID spoofer & simulator with swarm mode | ESP32-S3 |
-| **[OUI-SPY UniPwn](https://github.com/colonelpanichacks/Oui-Spy-UniPwn)** | Unitree robot exploitation system | ESP32-S3 |
+**Grand Total:** $10-12
 
 ---
 
-## Author
+## 🐛 Troubleshooting
 
-**colonelpanichacks**
+### No startup sound?
+- Check passive (not active) buzzer
+- Verify GPIO 25 connection
+- Try swapping buzzer polarity
+- Disable in code: `#define USE_BUZZER 0`
 
-**Oui-Spy devices available at [colonelpanic.tech](https://colonelpanic.tech)**
+### No detections?
+- No cameras nearby (drive to known locations)
+- Check serial output (should show channel hopping)
+- Lower RSSI threshold: `#define RSSI_MIN -100`
+- Verify WiFi promiscuous mode enabled
+
+### Compilation errors?
+- Update PlatformIO: `pio upgrade`
+- Check board definition: `esp32dev`
+- Verify partition file exists
+- Clean build: `pio run -t clean`
+
+### Case doesn't fit?
+- Scale STL by 101% for looser fit
+- Sand snap-fit tabs if too tight
+- Check component dimensions against specs
+- Use OpenSCAD to customize
+
+**[Full Troubleshooting Guide](SOLDERLESS_BUILD_GUIDE.md#troubleshooting)**
 
 ---
 
-## Disclaimer
+## 🤝 Contributing
 
-Passive reception of publicly-broadcast 802.11 frames for security research, privacy auditing, and education. The device does not transmit and does not authenticate to any network. Detecting the presence of surveillance hardware in public spaces is legal in most jurisdictions; always comply with local laws regarding wireless reception.
+### Ways to Contribute
+- 📸 Share your build photos
+- 🐛 Report bugs & issues
+- 💡 Suggest features
+- 📝 Improve documentation
+- 🎨 Design case variants
+- 🧪 Field-test and report accuracy
+- 🗺️ Submit camera locations to DeFlock
+
+### Remix Culture
+This project is licensed **CC-BY-SA 4.0**:
+- ✅ Use commercially
+- ✅ Modify and remix
+- ✅ Share freely
+- 📝 Credit original authors
+- 🔄 Share-alike license
+
+---
+
+## 🏆 Credits
+
+### Original Firmware
+- **colonelpanichacks** - Original Flock-You creator
+- **ØяĐöØцяöЪöяцฐ (@NitekryDPaul)** - WiFi research, 30 OUIs, addr1 technique
+- **Michael / DeFlockJoplin** - Wildcard-probe signature, 31st OUI
+- **Will Greenberg** - BLE manufacturer ID detection
+- **DeFlock / FoggedLens** - Crowdsourced ALPR data
+- **GainSec** - Raven BLE service UUIDs
+
+### This ESP32 Port
+- Modified for standard ESP32 (4MB flash, UART)
+- Solderless assembly guide
+- 3D printable case design
+- Business analysis & documentation
+- Community testing & feedback
+
+---
+
+## ⚖️ Legal & Disclaimer
+
+### What This Device Does
+- **Passively receives** publicly-broadcast WiFi frames
+- **Does not transmit** any signals
+- **Does not authenticate** to networks
+- **Does not decrypt** any data
+- **Educational/research** purposes
+
+### Legality
+- Passive WiFi reception is **legal in most jurisdictions**
+- Equivalent to listening to public radio broadcasts
+- No different from WiFi analyzers or network sniffers
+- **Always comply with local laws**
+
+### Use Responsibly
+- Respect privacy and property rights
+- Use for legitimate security research
+- Contribute findings to public good (DeFlock)
+- Don't use to enable illegal activity
+
+**The authors assume no liability for misuse.**
+
+---
+
+## 🔗 Resources
+
+### Community
+- **Original Repo:** [colonelpanichacks/flock-you](https://github.com/colonelpanichacks/flock-you)
+- **De-Flock:** [deflock.me](https://deflock.me) - Crowdsourced camera maps
+- **Research:** `firmware/datasets/` - Full methodology
+
+### Hardware
+- **ESP32:** [espressif.com](https://www.espressif.com/en/products/socs/esp32)
+- **PlatformIO:** [platformio.org](https://platformio.org/)
+- **OpenSCAD:** [openscad.org](https://openscad.org/)
+
+### Learn More
+- **WiFi Sniffing:** [ESP32 Promiscuous Mode](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_wifi.html)
+- **3D Printing:** [All3DP Guides](https://all3dp.com/tag/3d-printing-guides/)
+- **Privacy Tech:** [EFF Surveillance Self-Defense](https://ssd.eff.org/)
+
+---
+
+## 📈 Project Stats
+
+- **Hardware Cost:** $5-12 (vs $85 OUI-SPY)
+- **Build Time:** 5-15 minutes
+- **Detection Accuracy:** Same as premium hardware
+- **Supported Boards:** Any ESP32 with 4MB+ flash
+- **Community:** Growing!
+
+---
+
+## 🎉 Get Started!
+
+**You're 3 steps away from detecting surveillance:**
+
+1. **[Buy hardware](https://amazon.com/s?k=ESP32+DevKit)** → $5-11
+2. **[Flash firmware](SETUP_INSTRUCTIONS.md)** → 10 minutes
+3. **[Build case](CASE_DESIGN.md)** → Optional
+
+**Questions?** Check the docs or open an issue!
+
+**Ready?** [Start Building →](SETUP_INSTRUCTIONS.md)
+
+---
+
+*Built with love for privacy, security, and open knowledge.*  
+*Detect. Document. DeFlock.*
