@@ -16,10 +16,12 @@
     .tab-nav{display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 1.5rem;position:sticky;top:0;z-index:100}
     .tab-btn{padding:.75rem 1.25rem;border:none;background:none;color:var(--muted);cursor:pointer;font-size:.9rem;font-weight:500;border-bottom:2px solid transparent;transition:color .2s}
     .tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
-    .tab-pane{display:none}.tab-pane.active{display:block}
+    /* tab pane visibility — use IDs so specificity is consistent */
+    #pane-flash{display:none}
+    #pane-flash.active{display:flex}
 
     /* ── Flasher pane ── */
-    #pane-flash{display:flex;flex-direction:column;align-items:center;padding:2rem 1rem 4rem}
+    #pane-flash{flex-direction:column;align-items:center;padding:2rem 1rem 4rem}
     .container{width:100%;max-width:680px}
     header{text-align:center;margin-bottom:2.5rem}
     .logo{font-size:3rem;margin-bottom:.25rem}
@@ -48,8 +50,8 @@
     a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
     code{background:rgba(110,118,129,.2);border-radius:4px;padding:1px 6px;font-size:.85em;font-family:"SF Mono",Consolas,monospace}
 
-    /* ── Dashboard pane ── */
-    #pane-dash{height:calc(100vh - 45px);display:none;flex-direction:row}
+    /* ── Dashboard pane ── fixed overlay so it doesn't scroll with page ── */
+    #pane-dash{display:none;flex-direction:row;position:fixed;top:45px;left:0;right:0;bottom:0;z-index:50}
     #pane-dash.active{display:flex}
     .dash-sidebar{width:290px;min-width:230px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
     .dash-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
@@ -276,7 +278,7 @@ let cntDeauth=0, cntProbes=0;
 
 function initDashMap(){
   dashMap=L.map('dash-map').setView([39.5,-98.35],4);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OSM'}).addTo(dashMap);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,attribution:'© <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors © <a href="https://carto.com/">CARTO</a>'}).addTo(dashMap);
   dashDets.forEach(d=>{if(d.gps)addDMapMarker(d);});
 }
 
