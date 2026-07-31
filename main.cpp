@@ -37,6 +37,11 @@
   #include <Adafruit_NeoPixel.h>
 #endif
 
+// T-Dongle C5 TFT display + RGB LED
+#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
+  #include "c5_display.h"
+#endif
+
 // M5Atom LED support — GPIO27 SK6812, GPIO39 button
 #if defined(USE_M5ATOM_LITE) || defined(USE_M5ATOM_VOICE)
   #define USE_M5ATOM 1
@@ -90,12 +95,11 @@
   #define LED_FLASH_MS 120
 #elif defined(USE_LILYGO_T_DONGLE_C5)
   // LILYGO T-Dongle C5 — ESP32-C5 RISC-V, dual-band WiFi 6 + BT5
-  // GPIO8 = plain indicator LED (active-high); no NeoPixel, no buzzer
-  #define USE_BUZZER 0
-  #define LED_PIN 8
-  #define USE_LED 1
-  #define LED_ACTIVE_HIGH 1
-  #define LED_FLASH_MS 120
+  // ST7735S TFT (80×160) + WS2812B RGB LED via c5_display.h
+  #define USE_BUZZER     0
+  #define USE_LED        0
+  #define USE_C5_DISPLAY 1
+  #define LED_FLASH_MS   120
 #else
   #define BUZZER_PIN 25
   #define USE_BUZZER 1
@@ -978,6 +982,9 @@ static void printHeartbeat() {
     dualPrintf("[flockyou] scanning (ch=%u mode=%s det=%d)\n",
                   currentChannel, channelModeName(), fyDetCount);
     lastHeartbeat = millis();
+#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
+    c5DisplayScanning(currentChannel, fyDetCount);
+#endif
   }
 }
 
@@ -1627,6 +1634,13 @@ static void drainAlertQueue() {
     if (e.confidence >= CHIRP_MIN_CONFIDENCE) {
       ledFlash(LED_FLASH_MS);
     }
+#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
+    {
+      const char* dt = (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
+                       ? "SSID" : "OUI";
+      c5DisplayDetection(dt, macStr, e.confidence, e.rssi, e.channel);
+    }
+#endif
 
 #if STOP_ON_OUI_HIT
     if (e.type != ALERT_SSID && e.type != ALERT_LAA_SSID) stopSniffing("OUI hit");
@@ -1663,6 +1677,10 @@ static void heartbeatTick() {
 void setup() {
   Serial.begin(115200);
   delay(300);
+
+#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
+  c5DisplayInit();
+#endif
 
 #if defined(USE_M5ATOM)
   strip.begin();
