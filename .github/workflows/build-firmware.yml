@@ -26,33 +26,29 @@ jobs:
         with:
           path: ~/.platformio
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          # No restore-keys — prevents stale partial-platform caches
+          # No restore-keys -- prevents stale partial-platform caches
 
       - name: Install PlatformIO & esptool
         run: pip install platformio esptool
 
-      # Build non-ESP32 targets FIRST so any arch-switch project-level clean
-      # (triggered by C5 or S3 chip family) hits an empty workspace and does
-      # not wipe the standard ESP32 builds that follow
-      - name: Build lilygo-t-dongle-c5-ble (experimental, runs first)
+      # Build experimental C5 first (separate invocation, non-blocking).
+      # Each pio run call cleans .pio/build/ on start, so C5 runs alone first;
+      # any wipe it triggers is harmless since nothing else has been built yet.
+      - name: Build lilygo-t-dongle-c5-ble (experimental)
         continue-on-error: true
         run: pio run -e lilygo-t-dongle-c5-ble
 
-      - name: Build m5atom-voices3r-ble (ESP32-S3, runs before standard ESP32)
-        run: pio run -e m5atom-voices3r-ble
-
-      # Build all standard ESP32 environments
-      - name: Build esp32dev-ble
-        run: pio run -e esp32dev-ble
-
-      - name: Build m5atom-lite-ble
-        run: pio run -e m5atom-lite-ble
-
-      - name: Build m5atom-echo-ble
-        run: pio run -e m5atom-echo-ble
-
-      - name: Build m5atom-voice-ble
-        run: pio run -e m5atom-voice-ble
+      # Build ALL required environments in ONE pio run invocation.
+      # A single invocation only cleans once at start, then builds each env
+      # sequentially -- so all five firmware.bin files survive together.
+      - name: Build all required environments
+        run: >
+          pio run
+          -e m5atom-voices3r-ble
+          -e esp32dev-ble
+          -e m5atom-lite-ble
+          -e m5atom-echo-ble
+          -e m5atom-voice-ble
 
       # Verify required build artifacts
       - name: Verify build artifacts
