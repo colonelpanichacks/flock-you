@@ -1,374 +1,407 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Flock You — Web Flasher</title>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Flock You — Web Flasher &amp; Dashboard</title>
   <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
-    :root {
-      --bg:       #0d1117;
-      --surface:  #161b22;
-      --border:   #30363d;
-      --accent:   #f78166;
-      --accent2:  #ff7b72;
-      --text:     #e6edf3;
-      --muted:    #8b949e;
-      --green:    #3fb950;
-      --yellow:   #d29922;
-    }
+    :root{--bg:#0d1117;--surface:#161b22;--border:#30363d;--accent:#f78166;--accent2:#ff7b72;--text:#e6edf3;--muted:#8b949e;--green:#3fb950;--yellow:#d29922;--red:#f85149;--blue:#58a6ff;--ble:#bc8cff}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6;min-height:100vh}
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    /* ── Tab nav ── */
+    .tab-nav{display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 1.5rem;position:sticky;top:0;z-index:100}
+    .tab-btn{padding:.75rem 1.25rem;border:none;background:none;color:var(--muted);cursor:pointer;font-size:.9rem;font-weight:500;border-bottom:2px solid transparent;transition:color .2s}
+    .tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+    .tab-pane{display:none}.tab-pane.active{display:block}
 
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-      font-size: 16px;
-      line-height: 1.6;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 2rem 1rem 4rem;
-    }
+    /* ── Flasher pane ── */
+    #pane-flash{display:flex;flex-direction:column;align-items:center;padding:2rem 1rem 4rem}
+    .container{width:100%;max-width:680px}
+    header{text-align:center;margin-bottom:2.5rem}
+    .logo{font-size:3rem;margin-bottom:.25rem}
+    h1{font-size:2rem;font-weight:700;color:var(--accent);letter-spacing:-.02em}
+    .tagline{color:var(--muted);margin-top:.4rem;font-size:.95rem}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.5rem;margin-bottom:1.25rem}
+    .card h2{font-size:1rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:1rem}
+    .firmware-grid{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+    @media(max-width:500px){.firmware-grid{grid-template-columns:1fr}}
+    .fw-option{border:1px solid var(--border);border-radius:8px;padding:1rem;cursor:pointer;transition:border-color .2s,background .2s;text-align:left;background:transparent;color:var(--text);width:100%}
+    .fw-option:hover{border-color:var(--accent);background:rgba(247,129,102,.06)}
+    .fw-option.selected{border-color:var(--accent);background:rgba(247,129,102,.1)}
+    .fw-name{font-weight:600;font-size:.9rem;display:block;margin-bottom:.2rem}
+    .fw-desc{font-size:.78rem;color:var(--muted);line-height:1.4}
+    .install-wrap{margin-top:1.25rem;text-align:center}
+    esp-web-install-button::part(button){background:var(--accent);color:#0d1117;border:none;border-radius:8px;padding:.7rem 1.8rem;font-size:1rem;font-weight:700;cursor:pointer;letter-spacing:.02em;transition:opacity .2s}
+    esp-web-install-button::part(button):hover{opacity:.85}
+    .req-list{list-style:none;display:flex;flex-direction:column;gap:.5rem}
+    .req-list li{display:flex;align-items:flex-start;gap:.6rem;font-size:.9rem}
+    .req-list li::before{content:"✓";color:var(--green);font-weight:700;flex-shrink:0;margin-top:.05rem}
+    .steps{counter-reset:step;list-style:none;display:flex;flex-direction:column;gap:.9rem}
+    .steps li{counter-increment:step;display:flex;align-items:flex-start;gap:.9rem;font-size:.9rem}
+    .steps li::before{content:counter(step);background:var(--accent);color:#0d1117;font-weight:700;font-size:.75rem;width:1.6rem;height:1.6rem;border-radius:50%;display:grid;place-items:center;flex-shrink:0;margin-top:.1rem}
+    .badge{display:inline-block;font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:4px;background:rgba(247,129,102,.15);color:var(--accent);text-transform:uppercase;letter-spacing:.06em}
+    footer-note{display:block;text-align:center;color:var(--muted);font-size:.82rem;margin-top:2rem}
+    a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+    code{background:rgba(110,118,129,.2);border-radius:4px;padding:1px 6px;font-size:.85em;font-family:"SF Mono",Consolas,monospace}
 
-    .container {
-      width: 100%;
-      max-width: 680px;
-    }
-
-    /* ── Header ──────────────────────────────────────────────────── */
-    header {
-      text-align: center;
-      margin-bottom: 2.5rem;
-    }
-
-    .logo {
-      font-size: 3rem;
-      margin-bottom: 0.25rem;
-    }
-
-    h1 {
-      font-size: 2rem;
-      font-weight: 700;
-      color: var(--accent);
-      letter-spacing: -0.02em;
-    }
-
-    .tagline {
-      color: var(--muted);
-      margin-top: 0.4rem;
-      font-size: 0.95rem;
-    }
-
-    /* ── Cards ───────────────────────────────────────────────────── */
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.5rem;
-      margin-bottom: 1.25rem;
-    }
-
-    .card h2 {
-      font-size: 1rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--muted);
-      margin-bottom: 1rem;
-    }
-
-    /* ── Board selector ──────────────────────────────────────────── */
-    label[for="board-select"] {
-      display: block;
-      font-weight: 600;
-      margin-bottom: 0.5rem;
-    }
-
-    select {
-      width: 100%;
-      background: var(--bg);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.6rem 0.9rem;
-      font-size: 0.95rem;
-      margin-bottom: 1rem;
-      cursor: pointer;
-      appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 0.9rem center;
-    }
-
-    select:focus { outline: 2px solid var(--accent); }
-
-    .board-note {
-      font-size: 0.85rem;
-      color: var(--muted);
-      margin-top: -0.5rem;
-      margin-bottom: 1rem;
-    }
-
-    /* ── Install button wrapper ──────────────────────────────────── */
-    .flash-row {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-
-    esp-web-install-button {
-      --esp-tools-button-color: var(--accent);
-      --esp-tools-button-text-color: #fff;
-    }
-
-    esp-web-install-button::part(button) {
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 6px;
-      padding: 0.6rem 1.4rem;
-      font-size: 1rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-
-    esp-web-install-button::part(button):hover {
-      background: var(--accent2);
-    }
-
-    .no-serial-msg {
-      display: none;
-      background: #2d1b1b;
-      border: 1px solid #5c2323;
-      color: #f78166;
-      border-radius: 6px;
-      padding: 0.75rem 1rem;
-      font-size: 0.9rem;
-    }
-
-    /* ── Steps ───────────────────────────────────────────────────── */
-    ol {
-      padding-left: 1.4rem;
-    }
-
-    ol li {
-      margin-bottom: 0.5rem;
-      color: var(--text);
-    }
-
-    ol li strong { color: var(--accent); }
-
-    /* ── Chip table ──────────────────────────────────────────────── */
-    .chip-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.9rem;
-    }
-
-    .chip-table th {
-      text-align: left;
-      padding: 0.4rem 0.6rem;
-      color: var(--muted);
-      font-weight: 600;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .chip-table td {
-      padding: 0.45rem 0.6rem;
-      border-bottom: 1px solid #21262d;
-    }
-
-    .chip-table tr:last-child td { border-bottom: none; }
-
-    .badge {
-      display: inline-block;
-      padding: 0.15rem 0.5rem;
-      border-radius: 4px;
-      font-size: 0.78rem;
-      font-weight: 600;
-    }
-
-    .badge-esp32   { background: #1c3a1c; color: var(--green); }
-    .badge-esp32s3 { background: #1c2a3a; color: #79c0ff; }
-    .badge-esp32c5 { background: #2a1c3a; color: #d2a8ff; }
-
-    /* ── Footer ──────────────────────────────────────────────────── */
-    footer {
-      margin-top: 2rem;
-      text-align: center;
-      font-size: 0.82rem;
-      color: var(--muted);
-    }
-
-    footer a { color: var(--muted); }
-    footer a:hover { color: var(--text); }
+    /* ── Dashboard pane ── */
+    #pane-dash{height:calc(100vh - 45px);display:none;flex-direction:row}
+    #pane-dash.active{display:flex}
+    .dash-sidebar{width:290px;min-width:230px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+    .dash-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+    .d-panel{padding:12px 14px;border-bottom:1px solid var(--border)}
+    .d-panel h3{font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:8px}
+    .d-select{width:100%;background:#0d1117;border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:.82rem;margin-bottom:6px}
+    .d-btn{padding:6px 10px;border-radius:6px;border:none;cursor:pointer;font-size:.8rem;font-weight:600}
+    .d-btn-p{background:var(--accent);color:#0d1117}.d-btn-d{background:var(--red);color:#fff}
+    .d-btn-sm{padding:4px 9px;border-radius:5px;border:none;cursor:pointer;font-size:.74rem;font-weight:600;color:#fff}
+    .conn-row{display:flex;gap:6px;align-items:center}
+    .det-feed{flex:1;overflow-y:auto}
+    .det-item{padding:7px 14px;border-bottom:1px solid rgba(48,54,61,.4);font-size:.78rem}
+    .det-item .d-row1{display:flex;justify-content:space-between;gap:6px;align-items:center}
+    .det-badge{font-size:.65rem;font-weight:700;padding:1px 5px;border-radius:3px}
+    .t-oui{background:rgba(247,129,102,.15);color:var(--accent)}
+    .t-ble{background:rgba(188,140,255,.15);color:var(--ble)}
+    .t-wifi{background:rgba(88,166,255,.15);color:var(--blue)}
+    .det-method{font-weight:600;color:var(--text)}
+    .det-meta{color:var(--muted);margin-top:1px}
+    .has-gps::after{content:"📍";margin-left:3px;font-size:.65rem}
+    .stat-box{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    .stat-item{background:#0d1117;border-radius:6px;padding:7px 10px}
+    .stat-v{font-size:1.3rem;font-weight:800;color:var(--accent);line-height:1}
+    .stat-k{font-size:.66rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:2px}
+    .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px}
+    .dot-on{background:var(--green)}.dot-off{background:var(--muted)}
+    /* map + terminal row */
+    .dash-top{display:grid;grid-template-columns:1fr 1fr;height:50%;border-bottom:1px solid var(--border)}
+    #dash-map{height:100%;width:100%}
+    .map-wrap{position:relative;overflow:hidden}
+    .map-btns{position:absolute;top:6px;right:6px;z-index:999;display:flex;gap:5px}
+    .term-wrap{background:#0a0e13;border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+    .term-hdr{display:flex;justify-content:space-between;align-items:center;padding:5px 10px;border-bottom:1px solid var(--border);background:var(--surface)}
+    .term-hdr span{font-size:.7rem;font-weight:600;text-transform:uppercase;color:var(--muted)}
+    #dash-term{flex:1;overflow-y:auto;padding:6px 8px;font-family:"SF Mono",Consolas,monospace;font-size:.7rem;line-height:1.5;color:#7ee787}
+    /* table */
+    .dash-bottom{flex:1;overflow:hidden;display:flex;flex-direction:column}
+    .tbl-hdr{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;border-bottom:1px solid var(--border);background:var(--surface)}
+    .tbl-hdr span{font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+    .exp-row{display:flex;gap:5px}
+    .tbl-scroll{flex:1;overflow-y:auto}
+    table{width:100%;border-collapse:collapse;font-size:.76rem}
+    thead th{position:sticky;top:0;background:var(--surface);padding:6px 10px;text-align:left;font-size:.67rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap}
+    tbody tr{border-bottom:1px solid rgba(48,54,61,.35)}
+    tbody tr:hover{background:rgba(247,129,102,.04)}
+    tbody td{padding:5px 10px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .conf-bar{height:4px;border-radius:2px;background:var(--green);display:inline-block;min-width:4px;vertical-align:middle}
+    @media(max-width:800px){.dash-sidebar{width:220px}.dash-top{grid-template-columns:1fr;height:auto}#dash-map{height:200px}}
+    @media(max-width:600px){.dash-sidebar{display:none}}
   </style>
 </head>
 <body>
-<div class="container">
+<nav class="tab-nav">
+  <button class="tab-btn active" onclick="switchTab('flash')">⚡ Flash Firmware</button>
+  <button class="tab-btn" onclick="switchTab('dash')">📡 Live Dashboard</button>
+</nav>
 
+<!-- ═══════════════ FLASH PANE ═══════════════ -->
+<div id="pane-flash" class="tab-pane active">
+<div class="container">
   <header>
-    <div class="logo">🚨</div>
+    <div class="logo">🐦</div>
     <h1>Flock You</h1>
-    <p class="tagline">Flock Safety camera detector · Flash your device in one click</p>
+    <p class="tagline">WiFi &amp; BLE Probe / Deauth Detector — ESP32 Web Flasher</p>
   </header>
 
-  <!-- ── Flash card ─────────────────────────────────────────────────── -->
   <div class="card">
-    <h2>Flash Firmware</h2>
-
-    <label for="board-select">Select your hardware</label>
-    <select id="board-select" onchange="onBoardChange()">
-      <option value="manifest-m5atom-lite-ble.json"   data-chip="ESP32">M5Atom Lite &nbsp;·&nbsp; with BLE (recommended)</option>
-      <option value="manifest-m5atom-echo-ble.json"   data-chip="ESP32">M5Atom Echo &nbsp;·&nbsp; with BLE</option>
-      <option value="manifest-m5atom-voice-ble.json"  data-chip="ESP32">M5Atom Voice &nbsp;·&nbsp; with BLE</option>
-      <option value="manifest-m5atom-voices3r-ble.json" data-chip="ESP32-S3">M5Atom VoiceS3R &nbsp;·&nbsp; with BLE (ESP32-S3)</option>
-      <option value="manifest-esp32dev-ble.json"      data-chip="ESP32">Generic ESP32 DevKit &nbsp;·&nbsp; with BLE</option>
-      <option value="manifest-lilygo-t-dongle-c5-ble.json" data-chip="ESP32-C5">LILYGO T-Dongle C5 &nbsp;·&nbsp; with BLE (ESP32-C5 dual-band)</option>
-    </select>
-
-    <p class="board-note" id="board-note"></p>
-
-    <div class="flash-row">
-      <esp-web-install-button id="install-btn" manifest="manifest-m5atom-lite-ble.json">
-        <span slot="unsupported">
-          <!-- shown when Web Serial is unavailable -->
-        </span>
-      </esp-web-install-button>
+    <h2>Select Firmware</h2>
+    <div class="firmware-grid">
+      <button class="fw-option selected" onclick="selectFW(this,'manifest.json')" id="fw-default">
+        <span class="fw-name">🔵 Standard Build</span>
+        <span class="fw-desc">Generic ESP32 / WROOM — most common boards</span>
+      </button>
+      <button class="fw-option" onclick="selectFW(this,'manifest-c5.json')" id="fw-c5">
+        <span class="fw-name">🟠 T-Dongle C5</span>
+        <span class="fw-desc">LILYGO T-Dongle C5 with TFT display + RGB LED</span>
+      </button>
+      <button class="fw-option" onclick="selectFW(this,'manifest-atom.json')" id="fw-atom">
+        <span class="fw-name">🟢 M5Stack ATOM</span>
+        <span class="fw-desc">ATOM Lite / Matrix S3 variants</span>
+      </button>
+      <button class="fw-option" onclick="selectFW(this,'manifest-voices3r.json')" id="fw-v3">
+        <span class="fw-name">🟤 Voices3r</span>
+        <span class="fw-desc">Custom Voices3r pinout build</span>
+      </button>
     </div>
-
-    <div class="no-serial-msg" id="no-serial">
-      ⚠️ <strong>Web Serial is not supported in this browser.</strong><br>
-      Please use <strong>Chrome</strong> or <strong>Edge</strong> (version 89+) on desktop.
-      Safari and Firefox do not support Web Serial.
+    <div class="install-wrap">
+      <esp-web-install-button id="install-btn" manifest="manifest.json"></esp-web-install-button>
+      <p style="color:var(--muted);font-size:.8rem;margin-top:.7rem">Requires Chrome / Edge on desktop. Connect ESP32 via USB.</p>
     </div>
   </div>
 
-  <!-- ── Instructions ───────────────────────────────────────────────── -->
   <div class="card">
-    <h2>How to Flash</h2>
-    <ol>
-      <li><strong>Use Chrome or Edge</strong> on a desktop/laptop (Web Serial is not available on mobile or Safari/Firefox).</li>
-      <li><strong>Select your hardware</strong> from the dropdown above.</li>
-      <li><strong>Connect your device</strong> via USB.</li>
-      <li>Click <strong>Install</strong> and select the correct serial port from the browser dialog.</li>
-      <li>Wait ~30 seconds for the flash to complete — the device will reboot automatically.</li>
-      <li>Open a serial monitor at <strong>115200 baud</strong> to confirm it's scanning.</li>
-    </ol>
-  </div>
-
-  <!-- ── Board reference ────────────────────────────────────────────── -->
-  <div class="card">
-    <h2>Supported Hardware</h2>
-    <table class="chip-table">
-      <thead>
-        <tr>
-          <th>Device</th>
-          <th>Chip</th>
-          <th>BLE</th>
-          <th>Alert</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>M5Atom Lite</td>
-          <td><span class="badge badge-esp32">ESP32</span></td>
-          <td>✅</td>
-          <td>RGB LED</td>
-        </tr>
-        <tr>
-          <td>M5Atom Echo</td>
-          <td><span class="badge badge-esp32">ESP32</span></td>
-          <td>✅</td>
-          <td>RGB LED + buzzer</td>
-        </tr>
-        <tr>
-          <td>M5Atom Voice</td>
-          <td><span class="badge badge-esp32">ESP32</span></td>
-          <td>✅</td>
-          <td>RGB LED + speaker</td>
-        </tr>
-        <tr>
-          <td>M5Atom VoiceS3R</td>
-          <td><span class="badge badge-esp32s3">ESP32-S3</span></td>
-          <td>✅</td>
-          <td>RGB LED + speaker</td>
-        </tr>
-        <tr>
-          <td>Generic ESP32 DevKit</td>
-          <td><span class="badge badge-esp32">ESP32</span></td>
-          <td>✅</td>
-          <td>Serial log + LED (GPIO2)</td>
-        </tr>
-        <tr>
-          <td>LILYGO T-Dongle C5</td>
-          <td><span class="badge badge-esp32c5">ESP32-C5</span></td>
-          <td>✅ BT5</td>
-          <td>GPIO8 LED · dual-band WiFi 6</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <!-- ── What it detects ────────────────────────────────────────────── -->
-  <div class="card">
-    <h2>What It Detects</h2>
-    <p style="color:var(--muted); font-size:0.92rem; margin-bottom:0.75rem;">
-      Flock You passively monitors 802.11 probe requests and BLE advertisements for signals
-      associated with Flock Safety infrastructure.
-    </p>
-    <ul style="padding-left:1.4rem; color:var(--muted); font-size:0.92rem;">
-      <li>35 Flock Safety Wi-Fi OUIs (field-verified MAC prefixes)</li>
-      <li>6 contract-manufacturer OUIs (Liteon / USI)</li>
-      <li>SoundThinking / ShotSpotter infrastructure (d4:11:d6)</li>
-      <li>BLE device names: FS Ext Battery, Penguin, Flock, Pigvision, Raven</li>
-      <li>BLE manufacturer ID 0x09C8 (XUNTONG / Flock Safety)</li>
-      <li>Raven camera GATT service UUIDs (8 UUIDs)</li>
+    <h2>Requirements</h2>
+    <ul class="req-list">
+      <li>Chrome or Edge browser (desktop)</li>
+      <li>ESP32 connected via USB-C/USB-A cable</li>
+      <li>No drivers needed on modern OS</li>
+      <li>Approximately 1.5 MB free flash on device</li>
     </ul>
   </div>
 
-  <footer>
-    <a href="https://github.com/YOUR_ORG/flock-you-esp32">GitHub</a> ·
-    Requires Chrome / Edge · Web Serial API ·
-    <span id="build-info">latest build</span>
-  </footer>
+  <div class="card">
+    <h2>Quick Start</h2>
+    <ol class="steps">
+      <li>Select your board variant above</li>
+      <li>Click <strong>Install</strong> and select the correct COM/tty port</li>
+      <li>Wait ~60 s for flash + verify to complete</li>
+      <li>Open Serial Monitor at <code>115200</code> baud to see detections</li>
+      <li>Switch to the <strong>Live Dashboard</strong> tab above for real-time visualization</li>
+    </ol>
+  </div>
 
+  <div class="card">
+    <h2>What It Detects</h2>
+    <p style="font-size:.9rem;color:var(--muted);line-height:1.7">
+      Flock You passively scans for <span class="badge">WiFi probes</span>
+      <span class="badge">deauth frames</span> <span class="badge">BLE trackers</span>
+      <span class="badge">pwnagotchi</span> <span class="badge">OUI fingerprinting</span>
+      and emits structured JSON on serial for wardriving / logging.<br><br>
+      Outputs: <code>{"event":"detection","detection_method":"OUI","mac_address":"xx:xx:xx","rssi":-72,...}</code>
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Resources</h2>
+    <p style="font-size:.9rem;line-height:2">
+      <a href="https://github.com/simeononsecurity/flock-you-esp32">GitHub Repository</a> ·
+      <a href="https://github.com/simeononsecurity/flock-you-esp32/blob/main/README.md">README</a> ·
+      <a href="https://github.com/simeononsecurity/flock-you-esp32/releases">Releases</a>
+    </p>
+  </div>
+  <footer-note>Flock You ESP32 — open source. Check serial output at 115200 baud.</footer-note>
+</div>
+</div>
+
+<!-- ═══════════════ DASHBOARD PANE ═══════════════ -->
+<div id="pane-dash" class="tab-pane">
+  <!-- Sidebar -->
+  <div class="dash-sidebar">
+    <div class="d-panel">
+      <h3>Connection</h3>
+      <div style="font-size:.74rem;margin-bottom:6px"><span class="dot dot-off" id="d-dot"></span><span id="d-status">Not connected</span></div>
+      <select class="d-select" id="d-port-sel"><option value="">Select serial port…</option></select>
+      <div class="conn-row">
+        <button class="d-btn d-btn-p" style="flex:1" onclick="dashConnect()">Connect</button>
+        <button class="d-btn d-btn-d" onclick="dashDisconnect()">✕</button>
+      </div>
+      <div style="margin-top:8px;font-size:.72rem;color:var(--muted)">
+        <span class="dot dot-off" id="gps-dot"></span><span id="gps-status">GPS: Browser geolocation</span>
+        <button class="d-btn-sm" style="background:var(--green);margin-top:4px;width:100%" onclick="enableGPS()">Enable GPS</button>
+      </div>
+    </div>
+    <div class="d-panel">
+      <h3>Stats</h3>
+      <div class="stat-box">
+        <div class="stat-item"><div class="stat-v" id="s-total">0</div><div class="stat-k">Detections</div></div>
+        <div class="stat-item"><div class="stat-v" id="s-session">0</div><div class="stat-k">This Session</div></div>
+        <div class="stat-item"><div class="stat-v" id="s-deauth">0</div><div class="stat-k">Deauths</div></div>
+        <div class="stat-item"><div class="stat-v" id="s-probes">0</div><div class="stat-k">Probes</div></div>
+      </div>
+    </div>
+    <div class="d-panel" style="padding-bottom:6px"><h3>Recent Detections</h3></div>
+    <div class="det-feed" id="d-feed"></div>
+  </div>
+  <!-- Main area -->
+  <div class="dash-main">
+    <div class="dash-top">
+      <div class="map-wrap">
+        <div id="dash-map"></div>
+        <div class="map-btns">
+          <button class="d-btn-sm" style="background:var(--muted);color:#fff" onclick="centerDashMap()">📍</button>
+          <button class="d-btn-sm" style="background:var(--muted);color:#fff" onclick="clearDashMap()">🗑</button>
+        </div>
+      </div>
+      <div class="term-wrap">
+        <div class="term-hdr"><span>Serial Output</span><button class="d-btn-sm" style="background:var(--border);color:var(--text)" onclick="document.getElementById('dash-term').innerHTML=''">Clear</button></div>
+        <div id="dash-term"></div>
+      </div>
+    </div>
+    <div class="dash-bottom">
+      <div class="tbl-hdr">
+        <span>Detection Log — <span id="d-cnt">0</span> records</span>
+        <div class="exp-row">
+          <button class="d-btn-sm" style="background:var(--green)" onclick="exportDash('json')">JSON</button>
+          <button class="d-btn-sm" style="background:var(--yellow);color:#000" onclick="exportDash('csv')">CSV</button>
+          <button class="d-btn-sm" style="background:var(--blue);color:#000" onclick="exportDash('kml')">KML</button>
+          <button class="d-btn-sm" style="background:var(--red)" onclick="clearDashAll()">Clear All</button>
+        </div>
+      </div>
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr><th>#</th><th>Time</th><th>Method</th><th>MAC</th><th>OUI</th><th>SSID</th><th>RSSI</th><th>Ch</th><th>Conf</th><th>Band</th><th>GPS</th></tr></thead>
+          <tbody id="d-table"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
-  const NOTES = {
-    "manifest-m5atom-lite-ble.json":     "ESP32-PICO-D4 · SK6812 RGB LED on GPIO27 · USB-C via FTDI",
-    "manifest-m5atom-echo-ble.json":     "ESP32-PICO-D4 · RGB LED · built-in buzzer on GPIO25",
-    "manifest-m5atom-voice-ble.json":    "ESP32-PICO-D4 · RGB LED · NS4168 I²S speaker",
-    "manifest-m5atom-voices3r-ble.json": "ESP32-S3-PICO · 8MB flash / 8MB PSRAM · USB-C native CDC · ES8311 speaker",
-    "manifest-esp32dev-ble.json":        "Standard 38-pin ESP32 DevKit · onboard LED GPIO2 · any USB-serial adapter",
-    "manifest-lilygo-t-dongle-c5-ble.json": "ESP32-C5 RISC-V · dual-band WiFi 6 (2.4+5 GHz) · BT5 · 16MB flash · GPIO8 LED",
-  };
+// ── Tab switching ──
+function switchTab(t){
+  document.querySelectorAll('.tab-btn').forEach((b,i)=>b.classList.toggle('active',['flash','dash'][i]===t));
+  document.querySelectorAll('.tab-pane').forEach(p=>p.classList.remove('active'));
+  document.getElementById('pane-'+t).classList.add('active');
+  if(t==='dash'&&!dashMap) initDashMap();
+}
 
-  const sel = document.getElementById("board-select");
-  const btn = document.getElementById("install-btn");
-  const note = document.getElementById("board-note");
-  const noSerial = document.getElementById("no-serial");
+// ── Firmware selector ──
+function selectFW(el,manifest){
+  document.querySelectorAll('.fw-option').forEach(b=>b.classList.remove('selected'));
+  el.classList.add('selected');
+  document.getElementById('install-btn').setAttribute('manifest',manifest);
+}
 
-  function onBoardChange() {
-    const val = sel.value;
-    btn.setAttribute("manifest", val);
-    note.textContent = NOTES[val] || "";
+// ── Dashboard state ──
+let dashPort=null, dashReader=null, dashRunning=false;
+let dashDets=[], dashDid=0, dashMap=null, dashMarkers=[], gpsPos=null, gpsMarker=null;
+let cntDeauth=0, cntProbes=0;
+
+// Load from localStorage
+(function(){try{const s=localStorage.getItem('fy_dets');if(s){dashDets=JSON.parse(s);dashDets.forEach(d=>{addDRow(d);addDFeed(d);});updateStats();}}catch(e){}})();
+
+function initDashMap(){
+  dashMap=L.map('dash-map').setView([39.5,-98.35],4);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OSM'}).addTo(dashMap);
+  dashDets.forEach(d=>{if(d.gps)addDMapMarker(d);});
+}
+
+// ── Web Serial ──
+async function dashConnect(){
+  if(!('serial' in navigator))return alert('Web Serial requires Chrome/Edge on desktop.');
+  try{
+    dashPort=await navigator.serial.requestPort();
+    await dashPort.open({baudRate:115200});
+    document.getElementById('d-dot').className='dot dot-on';
+    document.getElementById('d-status').textContent='Connected';
+    dashRunning=true;
+    readSerial();
+  }catch(e){console.error(e);alert('Could not open port: '+e.message);}
+}
+async function dashDisconnect(){
+  dashRunning=false;
+  try{if(dashReader){await dashReader.cancel();dashReader=null;}if(dashPort){await dashPort.close();dashPort=null;}}catch(e){}
+  document.getElementById('d-dot').className='dot dot-off';
+  document.getElementById('d-status').textContent='Disconnected';
+}
+async function readSerial(){
+  const dec=new TextDecoderStream(); const inp=dashPort.readable.pipeTo(dec.writable);
+  dashReader=dec.readable.getReader(); let buf='';
+  try{
+    while(dashRunning){
+      const {value,done}=await dashReader.read(); if(done)break;
+      buf+=value;
+      let nl; while((nl=buf.indexOf('\n'))!==-1){processLine(buf.slice(0,nl).trim());buf=buf.slice(nl+1);}
+    }
+  }catch(e){if(dashRunning)console.error(e);}
+  dashDisconnect();
+}
+function processLine(line){
+  if(!line)return;
+  appendTerm(line);
+  try{
+    const d=JSON.parse(line);
+    if(d.event==='detection'||d.detection_method){
+      const det={
+        id:++dashDid, ts:new Date().toLocaleTimeString(),
+        method:d.detection_method||'?',
+        mac:d.mac_address||'?', oui:d.oui||'',
+        ssid:d.ssid||'', rssi:d.rssi!=null?d.rssi:'',
+        channel:d.channel||'', confidence:d.confidence||0,
+        band:d.band||(d.protocol==='wifi_5ghz'?'5G':'2.4G'),
+        protocol:d.protocol||'', gps:gpsPos?{lat:gpsPos[0],lon:gpsPos[1]}:null
+      };
+      if((det.method||'').toLowerCase().includes('deauth'))cntDeauth++;
+      else if((det.method||'').toLowerCase().includes('probe'))cntProbes++;
+      dashDets.push(det); if(dashDets.length>2000)dashDets.shift();
+      addDRow(det); addDFeed(det); updateStats();
+      if(det.gps)addDMapMarker(det);
+      try{localStorage.setItem('fy_dets',JSON.stringify(dashDets.slice(-500)));}catch(e){}
+    }
+  }catch(e){}
+}
+function appendTerm(line){
+  const t=document.getElementById('dash-term'); const d=document.createElement('div');
+  d.textContent=line; t.appendChild(d); t.scrollTop=t.scrollHeight; if(t.children.length>600)t.removeChild(t.firstChild);
+}
+function addDRow(det){
+  const tb=document.getElementById('d-table'); const tr=document.createElement('tr');
+  const confPct=Math.max(4,Math.min(100,(det.confidence||0)));
+  const confColor=confPct>=70?'var(--red)':confPct>=40?'var(--yellow)':'var(--green)';
+  const gpsStr=det.gps?'📍':'—';
+  tr.innerHTML=`<td>${det.id}</td><td>${det.ts}</td><td>${det.method}</td>
+    <td style="font-family:monospace;font-size:.7rem">${det.mac}</td><td>${det.oui}</td>
+    <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${det.ssid||'—'}</td>
+    <td>${det.rssi!==''?det.rssi+'dBm':'—'}</td><td>${det.channel||'—'}</td>
+    <td><span style="display:inline-block;width:${confPct*0.6}px;height:4px;background:${confColor};border-radius:2px;vertical-align:middle;margin-right:4px"></span>${det.confidence||0}%</td>
+    <td>${det.band||'—'}</td><td>${gpsStr}</td>`;
+  tb.insertBefore(tr,tb.firstChild);
+  document.getElementById('d-cnt').textContent=tb.rows.length;
+}
+function addDFeed(det){
+  const feed=document.getElementById('d-feed'); const div=document.createElement('div');
+  div.className='det-item';
+  const m=det.method||'?'; const typeKey=(m.includes('OUI')||m.includes('oui'))?'oui':(m.includes('BLE')||m.includes('ble'))?'ble':'wifi';
+  const gStr=det.gps?' has-gps':'';
+  div.innerHTML=`<div class="d-row1"><span class="det-method${gStr}">${m}</span><span class="det-badge t-${typeKey}">${typeKey.toUpperCase()}</span></div>
+    <div class="det-meta">${det.rssi!==''?det.rssi+'dBm · ':''} ${det.mac} ${det.ssid?'· "'+det.ssid+'"':''}</div>`;
+  feed.insertBefore(div,feed.firstChild); if(feed.children.length>80)feed.removeChild(feed.lastChild);
+}
+function addDMapMarker(det){
+  if(!dashMap||!det.gps)return;
+  const conf=det.confidence||0; const color=conf>=70?'#f85149':conf>=40?'#d29922':'#3fb950';
+  const m=L.circleMarker([det.gps.lat,det.gps.lon],{radius:6,color,fillColor:color,fillOpacity:.75}).addTo(dashMap)
+    .bindPopup(`<b>${det.method}</b><br>MAC: ${det.mac}<br>RSSI: ${det.rssi}dBm<br>Conf: ${det.confidence}%<br>SSID: ${det.ssid||'—'}<br>${det.ts}`);
+  dashMarkers.push(m);
+}
+function updateStats(){
+  document.getElementById('s-total').textContent=dashDets.length;
+  document.getElementById('s-session').textContent=dashDid;
+  document.getElementById('s-deauth').textContent=cntDeauth;
+  document.getElementById('s-probes').textContent=cntProbes;
+}
+// GPS via browser geolocation
+function enableGPS(){
+  if(!navigator.geolocation)return alert('Geolocation not available');
+  navigator.geolocation.watchPosition(pos=>{
+    gpsPos=[pos.coords.latitude,pos.coords.longitude];
+    document.getElementById('gps-dot').className='dot dot-on';
+    document.getElementById('gps-status').textContent=`GPS: ${gpsPos[0].toFixed(4)},${gpsPos[1].toFixed(4)}`;
+    if(dashMap){
+      if(!gpsMarker)gpsMarker=L.circleMarker(gpsPos,{radius:9,color:'#f78166',fillColor:'#f78166',fillOpacity:.85}).addTo(dashMap).bindPopup('Your location');
+      else gpsMarker.setLatLng(gpsPos);
+    }
+  },err=>{alert('GPS error: '+err.message);},{enableHighAccuracy:true,maximumAge:5000});
+}
+function centerDashMap(){if(dashMap){if(gpsPos)dashMap.setView(gpsPos,15);else if(dashMarkers.length)dashMap.fitBounds(dashMarkers.map(m=>m.getLatLng()));}}
+function clearDashMap(){dashMarkers.forEach(m=>dashMap.removeLayer(m));dashMarkers=[];}
+function clearDashAll(){if(!confirm('Clear all detections?'))return;dashDets=[];dashDid=0;cntDeauth=0;cntProbes=0;document.getElementById('d-table').innerHTML='';document.getElementById('d-feed').innerHTML='';document.getElementById('d-cnt').textContent=0;updateStats();clearDashMap();localStorage.removeItem('fy_dets');}
+function exportDash(fmt){
+  if(fmt==='json'){dl('flockyou_'+ts()+'.json',JSON.stringify(dashDets,null,2),'application/json');return;}
+  if(fmt==='csv'){
+    const hdr='id,ts,method,mac,oui,ssid,rssi,channel,confidence,band,lat,lon\n';
+    const rows=dashDets.map(d=>[d.id,d.ts,d.method,d.mac,d.oui,'"'+(d.ssid||'')+'"',d.rssi,d.channel,d.confidence,d.band,d.gps?d.gps.lat:'',d.gps?d.gps.lon:''].join(',')).join('\n');
+    dl('flockyou_'+ts()+'.csv',hdr+rows,'text/csv');return;
   }
-
-  // Detect Web Serial support
-  if (!("serial" in navigator)) {
-    noSerial.style.display = "block";
-    btn.style.display = "none";
-  }
-
-  // Init note
-  onBoardChange();
+  const pms=dashDets.filter(d=>d.gps).map(d=>`<Placemark><name>${d.method}</name><description>MAC: ${d.mac} | RSSI: ${d.rssi}dBm | Conf: ${d.confidence}%</description><Point><coordinates>${d.gps.lon},${d.gps.lat},0</coordinates></Point></Placemark>`).join('\n');
+  dl('flockyou_'+ts()+'.kml','<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Flock You Detections</name>'+pms+'</Document></kml>','application/vnd.google-earth.kml+xml');
+}
+function dl(name,content,mime){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([content],{type:mime}));a.download=name;a.click();}
+function ts(){return new Date().toISOString().slice(0,19).replace(/[T:]/g,'-');}
 </script>
 </body>
 </html>
