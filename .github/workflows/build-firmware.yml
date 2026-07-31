@@ -31,13 +31,17 @@ jobs:
       - name: Install PlatformIO & esptool
         run: pip install platformio esptool
 
-      # ── Build experimental C5 FIRST so its project-level clean (if any)
-      #    does not wipe the required builds that follow ─────────────────────
+      # Build non-ESP32 targets FIRST so any arch-switch project-level clean
+      # (triggered by C5 or S3 chip family) hits an empty workspace and does
+      # not wipe the standard ESP32 builds that follow
       - name: Build lilygo-t-dongle-c5-ble (experimental, runs first)
         continue-on-error: true
         run: pio run -e lilygo-t-dongle-c5-ble
 
-      # ── Build all required environments ─────────────────────────────────────
+      - name: Build m5atom-voices3r-ble (ESP32-S3, runs before standard ESP32)
+        run: pio run -e m5atom-voices3r-ble
+
+      # Build all standard ESP32 environments
       - name: Build esp32dev-ble
         run: pio run -e esp32dev-ble
 
@@ -50,10 +54,7 @@ jobs:
       - name: Build m5atom-voice-ble
         run: pio run -e m5atom-voice-ble
 
-      - name: Build m5atom-voices3r-ble
-        run: pio run -e m5atom-voices3r-ble
-
-      # ── Verify required build artifacts ─────────────────────────────────────
+      # Verify required build artifacts
       - name: Verify build artifacts
         run: |
           echo "=== Build directory contents ==="
@@ -61,25 +62,25 @@ jobs:
           echo "--- directories ---"
           ls -la .pio/build/ 2>/dev/null || echo "WARNING: .pio/build missing or empty"
 
-          # Required envs — failure here blocks deploy
+          # Required envs - failure here blocks deploy
           for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble; do
             if [ -f ".pio/build/$env/firmware.bin" ]; then
-              echo "✅ $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
+              echo "OK $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
             else
-              echo "❌ $env: firmware.bin MISSING"
+              echo "FAIL $env: firmware.bin MISSING"
               ls -la ".pio/build/$env/" 2>/dev/null || echo "  (build dir does not exist)"
               exit 1
             fi
           done
 
-          # Optional C5 env — advisory only
+          # Optional C5 env - advisory only
           if [ -f ".pio/build/lilygo-t-dongle-c5-ble/firmware.bin" ]; then
-            echo "✅ lilygo-t-dongle-c5-ble: $(du -sh .pio/build/lilygo-t-dongle-c5-ble/firmware.bin | cut -f1)"
+            echo "OK lilygo-t-dongle-c5-ble: $(du -sh .pio/build/lilygo-t-dongle-c5-ble/firmware.bin | cut -f1)"
           else
-            echo "⚠️  lilygo-t-dongle-c5-ble: not built (ESP32-C5 experimental — skipping)"
+            echo "WARN lilygo-t-dongle-c5-ble: not built (ESP32-C5 experimental - skipping)"
           fi
 
-      # ── Assemble site ────────────────────────────────────────────────────────
+      # Assemble site
       - name: Prepare firmware directories
         run: |
           set -e
@@ -116,7 +117,7 @@ jobs:
             cp "$BOOT_APP0"                                      site/firmware/lilygo-t-dongle-c5-ble/boot_app0.bin
             echo "Copied lilygo-t-dongle-c5-ble"
           else
-            echo "⚠️  lilygo-t-dongle-c5-ble build not found — skipping"
+            echo "WARN lilygo-t-dongle-c5-ble build not found - skipping"
           fi
 
       - name: Generate manifests
@@ -146,14 +147,14 @@ jobs:
           MANIFEST
           }
 
-          gen_esp32_manifest "esp32dev-ble"      "Flock You — Generic ESP32 DevKit (BLE)"
-          gen_esp32_manifest "m5atom-lite-ble"   "Flock You — M5Atom Lite (BLE)"
-          gen_esp32_manifest "m5atom-echo-ble"   "Flock You — M5Atom Echo (BLE)"
-          gen_esp32_manifest "m5atom-voice-ble"  "Flock You — M5Atom Voice (BLE)"
+          gen_esp32_manifest "esp32dev-ble"      "Flock You - Generic ESP32 DevKit (BLE)"
+          gen_esp32_manifest "m5atom-lite-ble"   "Flock You - M5Atom Lite (BLE)"
+          gen_esp32_manifest "m5atom-echo-ble"   "Flock You - M5Atom Echo (BLE)"
+          gen_esp32_manifest "m5atom-voice-ble"  "Flock You - M5Atom Voice (BLE)"
 
           cat > site/manifest-m5atom-voices3r-ble.json << MANIFEST
           {
-            "name": "Flock You — M5Atom VoiceS3R (BLE, ESP32-S3)",
+            "name": "Flock You - M5Atom VoiceS3R (BLE, ESP32-S3)",
             "version": "latest",
             "new_install_prompt_erase": true,
             "builds": [
@@ -173,7 +174,7 @@ jobs:
           if [ -d "site/firmware/lilygo-t-dongle-c5-ble" ]; then
             cat > site/manifest-lilygo-t-dongle-c5-ble.json << MANIFEST
           {
-            "name": "Flock You — LILYGO T-Dongle C5 (BLE, ESP32-C5)",
+            "name": "Flock You - LILYGO T-Dongle C5 (BLE, ESP32-C5)",
             "version": "latest",
             "new_install_prompt_erase": true,
             "builds": [
@@ -191,7 +192,7 @@ jobs:
           MANIFEST
             echo "Generated manifest-lilygo-t-dongle-c5-ble.json"
           else
-            echo "⚠️  Skipping C5 manifest (firmware not built)"
+            echo "WARN Skipping C5 manifest (firmware not built)"
           fi
 
           echo "Manifests generated:"
