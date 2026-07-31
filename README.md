@@ -125,6 +125,8 @@ pio run -e esp32dev-ble -t upload && pio device monitor
 | `m5atom-voice-ble` | M5Atom Voice | ✅ COEX |
 | `m5atom-voices3r` | Atom VoiceS3R (S3) | — |
 | `m5atom-voices3r-ble` | Atom VoiceS3R (S3) | ✅ COEX |
+| `lilygo-t-dongle-c5` | LILYGO T-Dongle C5 | — |
+| `lilygo-t-dongle-c5-ble` | LILYGO T-Dongle C5 | ✅ NimBLE 2.x |
 
 ### 3. Test Detection
 - Device boots with Super Mario 1-2 startup tune
@@ -242,6 +244,50 @@ python flockyou.py
 ```
 
 Open `http://localhost:5000` and select your serial port.
+
+---
+
+## 📺 LILYGO T-Dongle C5 — Display & RGB LED
+
+The `lilygo-t-dongle-c5` and `lilygo-t-dongle-c5-ble` environments target the
+**LILYGO T-Dongle C5** — a USB-C dongle packing an ESP32-C5 (dual-band WiFi 6 + BT 5),
+an ST7735S **80×160 colour TFT**, and a **WS2812B RGB LED**.
+
+### What shows on the TFT
+
+| State | Display | RGB LED |
+|---|---|---|
+| Startup | Splash screen "T-Dongle C5 ready" → "Scanning…" | Blue blink × 3, then green |
+| Idle scanning | `Scanning…` · Channel & detection count | Dim green |
+| Detection (conf < 30) | Detection type (large) · MAC tail · RSSI · Channel · Confidence% | Dim green |
+| Detection (conf 30–59) | Same, dark-orange background | Amber |
+| Detection (conf ≥ 60) | Same, dark-red background | Red |
+
+### Pin reference
+
+| Signal | GPIO |
+|---|---|
+| TFT SCLK | 5 |
+| TFT MOSI | 6 |
+| TFT CS | 4 |
+| TFT DC | 2 |
+| TFT RST | 3 |
+| TFT Backlight | 1 |
+| RGB LED (WS2812B) | 11 |
+| BOOT button | 9 |
+
+### Flash commands
+
+```bash
+# WiFi-only (no BLE)
+pio run -e lilygo-t-dongle-c5 -t upload
+
+# WiFi + BLE (NimBLE 2.x required for ESP32-C5 BLE support)
+pio run -e lilygo-t-dongle-c5-ble -t upload
+```
+
+> **Note:** The T-Dongle C5 environments are marked experimental (`continue-on-error` in CI)
+> because ESP32-C5 toolchain support is still maturing in espressif32@6.7.0.
 
 ---
 
