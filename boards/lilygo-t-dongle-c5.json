@@ -1,0 +1,36 @@
+{
+  "build": {
+    "arduino": {
+      "ldscript": "esp32c5_out.ld"
+    },
+    "core": "esp32",
+    "extra_flags": "-DARDUINO_ESP32C5_DEV -DARDUINO_ARCH_ESP32",
+    "f_cpu": "240000000L",
+    "f_flash": "80000000L",
+    "flash_mode": "qio",
+    "flash_size": "16MB",
+    "mcu": "esp32c5",
+    "variant": "esp32c5"
+  },
+  "connectivity": [
+    "wifi",
+    "bluetooth"
+  ],
+  "debug": {
+    "openocd_board": "esp32c5.cfg"
+  },
+  "frameworks": [
+    "arduino",
+    "espidf"
+  ],
+  "name": "LILYGO T-Dongle C5",
+  "upload": {
+    "flash_size": "16MB",
+    "maximum_ram_size": 524288,
+    "maximum_size": 16777216,
+    "require_upload_port": true,
+    "speed": 921600
+  },
+  "url": "https://www.lilygo.cc",
+  "vendor": "LILYGO"
+}

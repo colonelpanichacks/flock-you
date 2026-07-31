@@ -26,13 +26,12 @@ jobs:
         with:
           path: ~/.platformio
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: |
-            pio-${{ runner.os }}-
+          # No restore-keys — prevents stale partial-platform caches causing build failures
 
       - name: Install PlatformIO & esptool
         run: pip install platformio esptool
 
-      # ── Build all user-facing environments ──────────────────────────────────
+      # ── Build all required environments ─────────────────────────────────────
       - name: Build esp32dev-ble
         run: pio run -e esp32dev-ble
 
@@ -48,15 +47,21 @@ jobs:
       - name: Build m5atom-voices3r-ble
         run: pio run -e m5atom-voices3r-ble
 
-      - name: Build lilygo-t-dongle-c5-ble
+      # ── Build experimental C5 environment (non-blocking) ────────────────────
+      - name: Build lilygo-t-dongle-c5-ble (experimental)
+        continue-on-error: true
         run: pio run -e lilygo-t-dongle-c5-ble
 
-      # ── Verify build artifacts ───────────────────────────────────────────────
+      # ── Verify required build artifacts ─────────────────────────────────────
       - name: Verify build artifacts
         run: |
           echo "=== Build directory contents ==="
-          find .pio/build -name "firmware.bin" 2>/dev/null && echo "--listing--" && ls -la .pio/build/ || echo "WARNING: .pio/build missing or empty"
-          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble lilygo-t-dongle-c5-ble; do
+          find .pio/build -name "firmware.bin" 2>/dev/null | sort
+          echo "--- directories ---"
+          ls -la .pio/build/ 2>/dev/null || echo "WARNING: .pio/build missing or empty"
+
+          # Required envs — failure here blocks deploy
+          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble; do
             if [ -f ".pio/build/$env/firmware.bin" ]; then
               echo "✅ $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
             else
@@ -66,13 +71,19 @@ jobs:
             fi
           done
 
+          # Optional C5 env — print status only, no failure
+          if [ -f ".pio/build/lilygo-t-dongle-c5-ble/firmware.bin" ]; then
+            echo "✅ lilygo-t-dongle-c5-ble: $(du -sh .pio/build/lilygo-t-dongle-c5-ble/firmware.bin | cut -f1)"
+          else
+            echo "⚠️  lilygo-t-dongle-c5-ble: not built (ESP32-C5 support experimental — skipping)"
+          fi
+
       # ── Assemble site ────────────────────────────────────────────────────────
       - name: Prepare firmware directories
         run: |
           set -e
           mkdir -p site/firmware
 
-          # Find boot_app0.bin from the installed Arduino framework
           BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" 2>/dev/null | head -1)
           if [ -z "$BOOT_APP0" ]; then
             echo "ERROR: boot_app0.bin not found in PlatformIO packages"
@@ -80,7 +91,6 @@ jobs:
           fi
           echo "Found boot_app0.bin at: $BOOT_APP0"
 
-          # Standard ESP32 environments
           for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble; do
             mkdir -p site/firmware/$env
             cp .pio/build/$env/firmware.bin   site/firmware/$env/
@@ -90,15 +100,6 @@ jobs:
             echo "Copied $env ($(du -sh site/firmware/$env/firmware.bin | cut -f1))"
           done
 
-          # LILYGO T-Dongle C5 (ESP32-C5, RISC-V)
-          mkdir -p site/firmware/lilygo-t-dongle-c5-ble
-          cp .pio/build/lilygo-t-dongle-c5-ble/firmware.bin   site/firmware/lilygo-t-dongle-c5-ble/
-          cp .pio/build/lilygo-t-dongle-c5-ble/bootloader.bin site/firmware/lilygo-t-dongle-c5-ble/
-          cp .pio/build/lilygo-t-dongle-c5-ble/partitions.bin site/firmware/lilygo-t-dongle-c5-ble/
-          cp "$BOOT_APP0"                                     site/firmware/lilygo-t-dongle-c5-ble/boot_app0.bin
-          echo "Copied lilygo-t-dongle-c5-ble"
-
-          # ESP32-S3 environment
           mkdir -p site/firmware/m5atom-voices3r-ble
           cp .pio/build/m5atom-voices3r-ble/firmware.bin   site/firmware/m5atom-voices3r-ble/
           cp .pio/build/m5atom-voices3r-ble/bootloader.bin site/firmware/m5atom-voices3r-ble/
@@ -106,11 +107,21 @@ jobs:
           cp "$BOOT_APP0"                                   site/firmware/m5atom-voices3r-ble/boot_app0.bin
           echo "Copied m5atom-voices3r-ble"
 
+          if [ -f ".pio/build/lilygo-t-dongle-c5-ble/firmware.bin" ]; then
+            mkdir -p site/firmware/lilygo-t-dongle-c5-ble
+            cp .pio/build/lilygo-t-dongle-c5-ble/firmware.bin   site/firmware/lilygo-t-dongle-c5-ble/
+            cp .pio/build/lilygo-t-dongle-c5-ble/bootloader.bin site/firmware/lilygo-t-dongle-c5-ble/
+            cp .pio/build/lilygo-t-dongle-c5-ble/partitions.bin site/firmware/lilygo-t-dongle-c5-ble/
+            cp "$BOOT_APP0"                                      site/firmware/lilygo-t-dongle-c5-ble/boot_app0.bin
+            echo "Copied lilygo-t-dongle-c5-ble"
+          else
+            echo "⚠️  lilygo-t-dongle-c5-ble build not found — skipping firmware copy"
+          fi
+
       - name: Generate manifests
         run: |
           set -e
 
-          # Helper: generate an ESP32 manifest (bootloader at 0x1000 = 4096)
           gen_esp32_manifest() {
             local env=$1
             local name=$2
@@ -139,7 +150,6 @@ jobs:
           gen_esp32_manifest "m5atom-echo-ble"   "Flock You — M5Atom Echo (BLE)"
           gen_esp32_manifest "m5atom-voice-ble"  "Flock You — M5Atom Voice (BLE)"
 
-          # ESP32-S3 manifest (bootloader at 0x0000 = 0)
           cat > site/manifest-m5atom-voices3r-ble.json << MANIFEST
           {
             "name": "Flock You — M5Atom VoiceS3R (BLE, ESP32-S3)",
@@ -159,8 +169,8 @@ jobs:
           }
           MANIFEST
 
-          # ESP32-C5 manifest (RISC-V — bootloader at 0x0000 = 0)
-          cat > site/manifest-lilygo-t-dongle-c5-ble.json << MANIFEST
+          if [ -d "site/firmware/lilygo-t-dongle-c5-ble" ]; then
+            cat > site/manifest-lilygo-t-dongle-c5-ble.json << MANIFEST
           {
             "name": "Flock You — LILYGO T-Dongle C5 (BLE, ESP32-C5)",
             "version": "latest",
@@ -178,6 +188,10 @@ jobs:
             ]
           }
           MANIFEST
+            echo "Generated manifest-lilygo-t-dongle-c5-ble.json"
+          else
+            echo "⚠️  Skipping C5 manifest (firmware not built)"
+          fi
 
           echo "Manifests generated:"
           ls -la site/manifest-*.json
