@@ -26,10 +26,16 @@ jobs:
         with:
           path: ~/.platformio
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          # No restore-keys — prevents stale partial-platform caches causing build failures
+          # No restore-keys — prevents stale partial-platform caches
 
       - name: Install PlatformIO & esptool
         run: pip install platformio esptool
+
+      # ── Build experimental C5 FIRST so its project-level clean (if any)
+      #    does not wipe the required builds that follow ─────────────────────
+      - name: Build lilygo-t-dongle-c5-ble (experimental, runs first)
+        continue-on-error: true
+        run: pio run -e lilygo-t-dongle-c5-ble
 
       # ── Build all required environments ─────────────────────────────────────
       - name: Build esp32dev-ble
@@ -46,11 +52,6 @@ jobs:
 
       - name: Build m5atom-voices3r-ble
         run: pio run -e m5atom-voices3r-ble
-
-      # ── Build experimental C5 environment (non-blocking) ────────────────────
-      - name: Build lilygo-t-dongle-c5-ble (experimental)
-        continue-on-error: true
-        run: pio run -e lilygo-t-dongle-c5-ble
 
       # ── Verify required build artifacts ─────────────────────────────────────
       - name: Verify build artifacts
@@ -71,11 +72,11 @@ jobs:
             fi
           done
 
-          # Optional C5 env — print status only, no failure
+          # Optional C5 env — advisory only
           if [ -f ".pio/build/lilygo-t-dongle-c5-ble/firmware.bin" ]; then
             echo "✅ lilygo-t-dongle-c5-ble: $(du -sh .pio/build/lilygo-t-dongle-c5-ble/firmware.bin | cut -f1)"
           else
-            echo "⚠️  lilygo-t-dongle-c5-ble: not built (ESP32-C5 support experimental — skipping)"
+            echo "⚠️  lilygo-t-dongle-c5-ble: not built (ESP32-C5 experimental — skipping)"
           fi
 
       # ── Assemble site ────────────────────────────────────────────────────────
@@ -115,7 +116,7 @@ jobs:
             cp "$BOOT_APP0"                                      site/firmware/lilygo-t-dongle-c5-ble/boot_app0.bin
             echo "Copied lilygo-t-dongle-c5-ble"
           else
-            echo "⚠️  lilygo-t-dongle-c5-ble build not found — skipping firmware copy"
+            echo "⚠️  lilygo-t-dongle-c5-ble build not found — skipping"
           fi
 
       - name: Generate manifests
