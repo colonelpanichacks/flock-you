@@ -1,4 +1,6 @@
 # Flock-You: Promiscuous WiFi Edition
+# ESP32C3
+This is a fork I made of the main project automatically configured for a standalone esp32c3, specifically, the ESP32-C3-DevKit-RUST-1.
 
 <img src="flock.png" alt="Flock You" width="300px">
 
