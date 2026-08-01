@@ -269,7 +269,16 @@ def flock_reader():
                             # Try to parse as detection data
                             try:
                                 data = json.loads(line)
-                                if 'detection_method' in data:
+                                if data.get('event') == 'detection' or 'detection_method' in data:
+                                    # Normalize protocol: "wifi_2_4ghz"/"wifi_5ghz" → "wifi"
+                                    proto = data.get('protocol', '')
+                                    if proto.startswith('wifi_'):
+                                        data['protocol'] = 'wifi'
+                                        data['band'] = proto  # keep original band info
+                                    # Normalize detection_method: "wifi_OUI" → "OUI"
+                                    dm = data.get('detection_method', '')
+                                    if dm.startswith('wifi_'):
+                                        data['detection_method'] = dm[5:]
                                     # Map ESP32 GPS from phone to Flask GPS format
                                     esp_gps = data.get('gps')
                                     if esp_gps:
@@ -282,13 +291,12 @@ def flock_reader():
                                         }
                                         if esp_gps.get('accuracy') is not None:
                                             data['gps']['accuracy'] = esp_gps['accuracy']
-                                    # This is a detection, add it
                                     add_detection_from_serial(data)
                                 else:
                                     print(f"JSON data without detection_method: {data}")
                             except json.JSONDecodeError:
-                                # Not JSON, just log it
-                                print(f"Flock device (non-JSON): {line}")
+                                # Not JSON — plain-text log line, ignore
+                                pass
                                 
                 except Exception as e:
                     print(f"Flock device read error: {e}")
