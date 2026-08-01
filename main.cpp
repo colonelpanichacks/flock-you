@@ -24,6 +24,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <SPIFFS.h>
+#include "esp_log.h"
 #include "fy_detect.h"   // PR#39: detection patterns + pure matching functions
 
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
@@ -1744,7 +1745,13 @@ void setup() {
   memset(seqMacTable, 0, sizeof(seqMacTable));
   seqMacCount = 0;
 
-  if (SPIFFS.begin(true)) {
+  // Suppress expected first-boot format noise: on freshly-erased flash the
+  // SPIFFS driver logs "mount failed, -10025" before auto-formatting.
+  // The error is cosmetic — SPIFFS.begin(true) handles it silently after this.
+  esp_log_level_set("SPIFFS", ESP_LOG_NONE);
+  bool spiffsOk = SPIFFS.begin(true);
+  esp_log_level_set("SPIFFS", ESP_LOG_WARN);
+  if (spiffsOk) {
     fySpiffsReady = true;
     dualPrintln("[flockyou] SPIFFS ready");
     fyPromotePrevSession();
