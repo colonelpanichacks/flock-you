@@ -82,7 +82,7 @@
   #define USE_BUZZER 0
   #define USE_LED 1
   #define USE_LED_MATRIX 1
-  #define LED_FLASH_MS 120
+  #define LED_FLASH_MS 30000  // hold red 30 s after detection
 #elif defined(USE_M5ATOM_VOICES3R)
   #define USE_BUZZER 0
   #define USE_M5_SPEAKER 1
@@ -93,21 +93,21 @@
   #define USE_M5_SPEAKER 1
   #define USE_LED 1
   #define USE_LED_MATRIX 1
-  #define LED_FLASH_MS 120
+  #define LED_FLASH_MS 30000  // hold red 30 s after detection
 #elif defined(USE_LILYGO_T_DONGLE_C5)
   // LILYGO T-Dongle C5 — ESP32-C5 RISC-V, dual-band WiFi 6 + BT5
   // ST7735S TFT (80×160) + WS2812B RGB LED via c5_display.h
   #define USE_BUZZER     0
   #define USE_LED        0
   #define USE_C5_DISPLAY 1
-  #define LED_FLASH_MS   120
+  #define LED_FLASH_MS   30000  // hold red 30 s after detection
 #else
   #define BUZZER_PIN 25
   #define USE_BUZZER 1
   #define LED_PIN 2
   #define USE_LED 1
   #define LED_ACTIVE_HIGH 1
-  #define LED_FLASH_MS 120
+  #define LED_FLASH_MS 30000  // hold red 30 s after detection
 #endif
 
 #define MIRROR_SERIAL    1
@@ -163,7 +163,7 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 #define RSSI_MIN        -95
 #define ALERT_COOLDOWN_MS 5000
 
-#define HB_DEVICE_ACTIVE_MS    3000
+#define HB_DEVICE_ACTIVE_MS    120000  // keep beeping for 2 min after last detection
 #define HB_BEEP_INTERVAL_MS    10000
 #define REDISCOVER_MS          30000
 #define NEW_CHIRP_LO_HZ        2000

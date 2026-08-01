@@ -321,9 +321,9 @@ while true; do
     echo "🔌 Device detected at $PORT  [$PORT_TYPE]"
     echo ""
     echo "   What device is this?"
-    echo "   1) Atom Lite        — LED only, no speaker          (FTDI/usbserial)"
-    echo "   2) Atom Echo        — speaker only, no LED          (FTDI/usbserial)"
-    echo "   3) Atom Voice       — LED + I²S speaker (NS4168)    (FTDI/usbserial)"
+    echo "   1) Atom Lite + BLE  — LED + BLE scan                (FTDI/usbserial)"
+    echo "   2) Atom Echo + BLE  — speaker + BLE scan            (FTDI/usbserial)"
+    echo "   3) Atom Voice + BLE — LED + I²S speaker + BLE scan  (FTDI/usbserial)"
     echo "   4) Atom VoiceS3R    — native USB, ES8311 codec      (ESP32-S3, usbmodem)"
     echo "   5) Atom Echo S3R    — native USB, I²S speaker       (ESP32-S3, usbmodem)"
     echo ""
@@ -334,14 +334,19 @@ while true; do
     read -r -p "   Enter 1, 2, 3, 4, or 5: " VARIANT
 
     case "$VARIANT" in
+        1)
+            ENV="m5atom-lite-ble"
+            LABEL="Atom Lite + BLE"
+            EXPECTED_PORT_TYPE="usbserial"
+            ;;
         2)
-            ENV="m5atom-echo"
-            LABEL="Atom Echo (speaker only)"
+            ENV="m5atom-echo-ble"
+            LABEL="Atom Echo + BLE (speaker)"
             EXPECTED_PORT_TYPE="usbserial"
             ;;
         3)
-            ENV="m5atom-voice"
-            LABEL="Atom Voice (LED + I²S speaker)"
+            ENV="m5atom-voice-ble"
+            LABEL="Atom Voice + BLE (LED + I²S speaker)"
             EXPECTED_PORT_TYPE="usbserial"
             ;;
         4)
@@ -355,8 +360,8 @@ while true; do
             EXPECTED_PORT_TYPE="usbmodem"
             ;;
         *)
-            ENV="m5atom-lite"
-            LABEL="Atom Lite (LED only)"
+            ENV="m5atom-lite-ble"
+            LABEL="Atom Lite + BLE"
             EXPECTED_PORT_TYPE="usbserial"
             ;;
     esac
