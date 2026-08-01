@@ -1,15 +1,14 @@
+# Flock-You: Promiscuous WiFi Edition
 # ESP32C3
 This is a fork I made of the main project automatically configured for a standalone esp32c3, specifically, the ESP32-C3-DevKit-RUST-1.
-
-# Flock-You: Promiscuous WiFi Edition (`promiscious-dev` branch)
 
 <img src="flock.png" alt="Flock You" width="300px">
 
 **Passive 2.4 GHz promiscuous-mode detector for Flock Safety surveillance infrastructure. Runs standalone or feeds the Flask dashboard over USB for live GPS-tagged wardriving.**
 
-> **Dev note:** This is the `promiscious-dev` branch — adds the
-> DeFlockJoplin Information Element research + wildcard probe on top of the
-> `promiscious` baseline. See "Further research" below.
+This is the `main` branch — stable line. Development happens on `promiscious-dev`, which adds the DeFlockJoplin Information Element research and wildcard-probe signature on top of this baseline. See "Further research" below.
+
+> **Region:** Flock Safety hardware is deployed primarily in the United States (and to a lesser extent Canada). If you're outside North America the OUI list and probe-request signatures here won't match anything — the tool is still useful for research, but it's not going to find infrastructure that isn't there.
 
 ---
 
@@ -171,10 +170,11 @@ The firmware emits one JSON line per detection in the same schema the BLE detect
 
 ### GPS wardriving
 
-GPS is handled Flask-side, since the ESP32 radio is dedicated to sniffing and there's no on-device AP. Two options:
+GPS is handled Flask-side, since the ESP32 radio is dedicated to sniffing and there's no on-device AP. Three options, all selectable from the dashboard's GPS **source** dropdown:
 
-- **USB NMEA puck** plugged into the host running Flask — Flask reads NMEA and timestamps a GPS timeline
-- **Flask dashboard open in a phone browser** — browser Geolocation API posts updates to Flask
+- **Serial NMEA** — a USB NMEA puck plugged into the host running Flask; Flask reads NMEA at 9600 baud and timestamps a GPS timeline
+- **gpsd** — connect to a running `gpsd` daemon over TCP (default `localhost:2947`, host and port are configurable in the dashboard). Uses gpsd's line-delimited JSON protocol directly; no extra Python client library needed. Handy when several tools already share the same GPS via gpsd.
+- **Browser Geolocation** — the Flask dashboard open in a phone browser; the browser Geolocation API posts updates to Flask
 
 Flask does a temporal match between detection timestamp and GPS timeline, then exports JSON / CSV / KML for Google Earth.
 
@@ -300,6 +300,12 @@ Flock-You is part of the OUI-SPY firmware family:
 **colonelpanichacks**
 
 **Oui-Spy devices available at [colonelpanic.tech](https://colonelpanic.tech)**
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). Free to fork, modify, and redistribute; upstream research credits above should be preserved.
 
 ---
 
