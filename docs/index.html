@@ -362,12 +362,25 @@ function selectFW(el, manifest){
 }
 
 // ── Open Serial Monitor ──
+// USB CDC devices (e.g. ESP32-S3 native USB) briefly re-enumerate when DTR is
+// asserted on open, causing the first open attempt to fail.  Retry once after
+// a short wait to let the device finish re-enumeration.
+async function tryOpenPort(port,opts={baudRate:115200}){
+  try{ await port.open(opts); }
+  catch(e){
+    if(e.name==='InvalidStateError'||e.name==='NetworkError'||
+       (e.message&&e.message.includes('Failed to open'))){
+      await new Promise(r=>setTimeout(r,1500));
+      await port.open(opts);
+    } else { throw e; }
+  }
+}
 async function openSerial(){
   if(!('serial' in navigator)){alert('Web Serial requires Chrome or Edge on desktop.');return;}
   if(dashPort||dashRunning) await dashDisconnect();
   try{
     const port=await navigator.serial.requestPort();
-    await port.open({baudRate:115200});
+    await tryOpenPort(port);
     const dec=new TextDecoderStream();
     port.readable.pipeTo(dec.writable);
     const reader=dec.readable.getReader();
@@ -399,7 +412,7 @@ async function dashConnect(){
   if(dashPort||dashRunning) await dashDisconnect();
   try{
     dashPort=await navigator.serial.requestPort();
-    await dashPort.open({baudRate:115200});
+    await tryOpenPort(dashPort);
     document.getElementById('d-dot').className='dot dot-on';
     document.getElementById('d-status').textContent='Connected';
     dashRunning=true;
