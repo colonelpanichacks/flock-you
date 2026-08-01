@@ -5,20 +5,27 @@
 #include <string.h>
 #include <SPIFFS.h>
 #include "display_dongle.h"
+#include <Adafruit_NeoPixel.h>
 
 // ============================================================
 // CONFIG  (board defaults; override via platformio build_flags)
 // ============================================================
 
-#ifdef BOARD_LILYGO_T_DONGLE_S3
+#ifdef BOARD_ESP32_C3_DEVKIT_RUST_1
+#define USE_BUZZER         0
+#define USE_LED            1
+#define USE_WS2812_LED     1
+#define WS2812_PIN         2
+#define MIRROR_SERIAL      0
+#elif defined(BOARD_LILYGO_T_DONGLE_S3)
 // LilyGO T-Dongle S3: ST7735 display + APA102 RGB (no buzzer).
 #define USE_BUZZER         0
 #define USE_LED            1
 #define USE_APA102_LED     1
 #define APA102_DATA_PIN    40
 #define APA102_CLK_PIN     39
-#define APA102_FLASH_R     255
-#define APA102_FLASH_G     0
+#define APA102_FLASH_R     0
+#define APA102_FLASH_G     255
 #define APA102_FLASH_B     0
 #define MIRROR_SERIAL      0   // GPIO43 is UART TX on this board
 #else
@@ -32,7 +39,8 @@
 #define MIRROR_TX_PIN      43
 #endif
 
-#define LED_FLASH_MS       120
+// #define LED_FLASH_MS       120
+#define LED_HOLD_MS        30000
 #define MIRROR_BAUD        115200
 
 #define CHANNEL_MODE_FULL_HOP   0
@@ -72,8 +80,9 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 #define HB_BEEP_GAP_MS         70
 
 #define ENABLE_SSID_MATCH 0
-#define CHECK_ADDR1 0   // disabled — see wifiSniffer() comment block
+#define CHECK_ADDR1 1   // disabled — see wifiSniffer() comment block
 #define CHECK_ADDR3 0   // disabled — see wifiSniffer() comment block
+#define ENABLE_BROAD_OUI_FILTER 1
 static const char* target_ssid_keywords[] = { "flock" };
 static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(target_ssid_keywords[0]);
 
@@ -83,7 +92,7 @@ static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(t
 #define PROCESS_DATA_FRAMES 1
 
 // Persistence
-#define MAX_DETECTIONS       200
+#define MAX_DETECTIONS       1000
 #define FY_SESSION_FILE      "/session.json"
 #define FY_SESSION_TMP       "/session.tmp"
 #define FY_PREV_FILE         "/prev_session.json"
@@ -113,7 +122,7 @@ static uint8_t oui_bytes[OUI_COUNT][3];
 // ALERT QUEUE  (callback → loop, avoids Serial in WiFi task)
 // ============================================================
 
-#define ALERT_QUEUE_SIZE 32
+#define ALERT_QUEUE_SIZE 128
 
 typedef enum : uint8_t {
   ALERT_OUI_ADDR2       = 0,
@@ -213,6 +222,10 @@ static struct {
 } dedupeTable[DEDUPE_SLOTS];
 static size_t dedupeIdx = 0;
 
+#if USE_LED && defined(USE_WS2812_LED)
+Adafruit_NeoPixel pixels(1, WS2812_PIN, NEO_GRB + NEO_KHZ800);
+#endif
+
 // LED one-shot pulse timer
 static volatile unsigned long ledOffAt = 0;
 
@@ -239,7 +252,7 @@ static void apa102Init() {
   pinMode(APA102_CLK_PIN, OUTPUT);
   digitalWrite(APA102_CLK_PIN, LOW);
   digitalWrite(APA102_DATA_PIN, LOW);
-  apa102SetColor(0, 0, 0);
+  apa102SetColor(5, 0, 0);
 }
 #endif
 
@@ -290,34 +303,135 @@ static void dualPrintln(const char* str) {
 #endif
 }
 
-static inline void ledSet(bool on) {
+// static inline void ledSet(bool on, AlertType type = ALERT_WILDCARD_PROBE_IE_SIG) {
+// #if USE_LED
+// #if defined(USE_APA102_LED)
+//   if (on) {
+//     if (type == ALERT_OUI_ADDR2) apa102SetColor(0, 0, 255); // Blue
+//     else if (type == ALERT_OUI_ADDR1) apa102SetColor(128, 0, 128); // Purple
+//     else apa102SetColor(APA102_FLASH_R, APA102_FLASH_G, APA102_FLASH_B);
+//   }
+//   else apa102SetColor(5, 0, 0);
+// #elif defined(USE_WS2812_LED)
+//   if (on) {
+//     if (type == ALERT_OUI_ADDR2) {
+//       pixels.setPixelColor(0, pixels.Color(0, 0, 255)); // Blue for Broad OUI
+//     } else if (type == ALERT_OUI_ADDR1) {
+//       pixels.setPixelColor(0, pixels.Color(128, 0, 128)); // Purple for Router Echo
+//     } else {
+//       pixels.setPixelColor(0, pixels.Color(0, 255, 0)); // Green for Strict Match
+//     }
+//   } 
+//   else pixels.setPixelColor(0, pixels.Color(5, 0, 0));
+//   pixels.show();
+// #else
+// #if LED_ACTIVE_HIGH
+//   digitalWrite(LED_PIN, on ? HIGH : LOW);
+// #else
+//   digitalWrite(LED_PIN, on ? LOW  : HIGH);
+// #endif
+// #endif
+// #endif
+// }
+
+// static void ledFlash(unsigned ms, AlertType type = ALERT_WILDCARD_PROBE_IE_SIG) {
+// #if USE_LED
+//   ledSet(true, type);
+//   ledOffAt = millis() + ms;
+//   if (ledOffAt == 0) ledOffAt = 1;  // avoid the "off" sentinel
+// #endif
+// }
+
+// static void ledTick() {
+// #if USE_LED
+//   if (ledOffAt && (long)(millis() - ledOffAt) >= 0) {
+//     ledSet(false);
+//     ledOffAt = 0;
+//   }
+// #endif
+// }
+
+// ============================================================
+// LED STATE MACHINE & PRIORITY LOGIC
+// ============================================================
+
+typedef enum {
+  LED_COLOR_IDLE   = 0, // Faint Red
+  LED_COLOR_BROAD  = 1, // Blue (OUI_ADDR2)
+  LED_COLOR_ROUTER = 2, // Purple (OUI_ADDR1)
+  LED_COLOR_STRICT = 3  // Green (IE_SIG or SSID)
+} LedColorState;
+
+static LedColorState currentLedColor = LED_COLOR_IDLE;
+static bool ledForceUpdate = true; // Force hardware update on boot
+static unsigned long expireStrict = 0;
+static unsigned long expireRouter = 0;
+static unsigned long expireBroad  = 0;
+
+static void applyLedColor(LedColorState state) {
 #if USE_LED
 #if defined(USE_APA102_LED)
-  if (on) apa102SetColor(APA102_FLASH_R, APA102_FLASH_G, APA102_FLASH_B);
-  else apa102SetColor(0, 0, 0);
+  if (state == LED_COLOR_STRICT) apa102SetColor(APA102_FLASH_R, APA102_FLASH_G, APA102_FLASH_B);
+  else if (state == LED_COLOR_ROUTER) apa102SetColor(128, 0, 128); // Purple
+  else if (state == LED_COLOR_BROAD) apa102SetColor(0, 0, 255); // Blue
+  else apa102SetColor(5, 0, 0); // Faint Red
+#elif defined(USE_WS2812_LED)
+  if (state == LED_COLOR_STRICT) pixels.setPixelColor(0, pixels.Color(0, 255, 0));
+  else if (state == LED_COLOR_ROUTER) pixels.setPixelColor(0, pixels.Color(128, 0, 128));
+  else if (state == LED_COLOR_BROAD) pixels.setPixelColor(0, pixels.Color(0, 0, 255));
+  else pixels.setPixelColor(0, pixels.Color(5, 0, 0)); // Faint Red
+  pixels.show();
 #else
 #if LED_ACTIVE_HIGH
-  digitalWrite(LED_PIN, on ? HIGH : LOW);
+  digitalWrite(LED_PIN, (state != LED_COLOR_IDLE) ? HIGH : LOW);
 #else
-  digitalWrite(LED_PIN, on ? LOW  : HIGH);
+  digitalWrite(LED_PIN, (state != LED_COLOR_IDLE) ? LOW : HIGH);
 #endif
 #endif
 #endif
 }
 
-static void ledFlash(unsigned ms) {
+// Just updates the expiration timers in memory (super fast, no hardware blocking)
+static void ledRegisterHit(AlertType type) {
 #if USE_LED
-  ledSet(true);
-  ledOffAt = millis() + ms;
-  if (ledOffAt == 0) ledOffAt = 1;  // avoid the "off" sentinel
+  unsigned long now = millis();
+  unsigned long expire = now + LED_HOLD_MS;
+  if (expire == 0) expire = 1;
+
+  if (type == ALERT_WILDCARD_PROBE_IE_SIG || type == ALERT_SSID) {
+    expireStrict = expire;
+  } else if (type == ALERT_OUI_ADDR1) {
+    expireRouter = expire;
+  } else if (type == ALERT_OUI_ADDR2) {
+    expireBroad = expire;
+  }
 #endif
 }
 
 static void ledTick() {
 #if USE_LED
-  if (ledOffAt && (long)(millis() - ledOffAt) >= 0) {
-    ledSet(false);
-    ledOffAt = 0;
+  unsigned long now = millis();
+  LedColorState desired = LED_COLOR_IDLE;
+
+  // 1. Determine highest priority active state (Green > Blue > Purple)
+  if (expireStrict && (long)(now - expireStrict) < 0) {
+    desired = LED_COLOR_STRICT;     // GREEN: Guaranteed Flock Camera
+  } else if (expireBroad && (long)(now - expireBroad) < 0) {
+    desired = LED_COLOR_BROAD;      // BLUE: LiteON chip actively transmitting
+  } else if (expireRouter && (long)(now - expireRouter) < 0) {
+    desired = LED_COLOR_ROUTER;     // PURPLE: Router talking to LiteON chip
+  }
+
+  // 2. Clear timers if they have expired (prevents long-uptime bugs)
+  if (expireStrict && (long)(now - expireStrict) >= 0) expireStrict = 0;
+  if (expireBroad  && (long)(now - expireBroad) >= 0)  expireBroad = 0;
+  if (expireRouter && (long)(now - expireRouter) >= 0) expireRouter = 0;
+
+  // 3. ONLY update physical LED if the color changed (saves massive CPU time)
+  if (desired != currentLedColor || ledForceUpdate) {
+    currentLedColor = desired;
+    applyLedColor(desired);
+    ledForceUpdate = false;
   }
 #endif
 }
@@ -487,9 +601,11 @@ static void printHeartbeat() {
     dualPrintf("[flockyou] scanning (ch=%u mode=%s det=%d)\n",
                   currentChannel, channelModeName(), fyDetCount);
     lastHeartbeat = millis();
+#ifdef BOARD_LILYGO_T_DONGLE_S3
     if (!dongleDisplayInAlert(millis())) {
       dongleDisplayShowIdle(currentChannel, fyDetCount);
     }
+#endif
   }
 }
 
@@ -1097,7 +1213,7 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   wifi_ieee80211_mac_hdr_t*    hdr = (wifi_ieee80211_mac_hdr_t*)pkt->payload;
   int8_t rssi = pkt->rx_ctrl.rssi;
 
-  if (rssi < RSSI_MIN) return;
+  // if (rssi < RSSI_MIN) return; // comment out to disable dBm strength limitss
 
   uint8_t ch = (uint8_t)pkt->rx_ctrl.channel;  // actual rx channel from driver
 
@@ -1110,6 +1226,7 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   // Suggest superseded by the IE fingerprint path: it uses the same wildcard
   // and OUI gates and adds verification on probe IE fields.
   if (matchOuiRaw(hdr->addr2)) {
+    bool emitted = false;
     if (type == WIFI_PKT_MGMT) {
       uint8_t fc0     = hdr->frame_ctrl & 0xFF;
       uint8_t ftype   = (fc0 >> 2) & 0x03;
@@ -1126,13 +1243,16 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         if (r == 1 && fyProbeBodyFlockIeSigPrimary(body, bodyLen)) {
           enqueueAlert(ALERT_WILDCARD_PROBE_IE_SIG, hdr->addr2, rssi, ch,
                        nullptr, "probe_req");
+          emitted = true;
         }
       }
     }
+#if ENABLE_BROAD_OUI_FILTER
     // wifi_oui_addr2 — broad transmitter OUI on any non-fingerprint frame:
-    // if (!emitted) {
-    //   enqueueAlert(ALERT_OUI_ADDR2, hdr->addr2, rssi, ch, nullptr, "addr2");
-    // }
+    if (!emitted) {
+      enqueueAlert(ALERT_OUI_ADDR2, hdr->addr2, rssi, ch, nullptr, "addr2");
+    }
+#endif
   }
 
   // --- Disabled: wifi_oui_addr1 (receiver / addr1) ---
@@ -1152,9 +1272,9 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   // behavior (AP replies), redundant with wildcard+IE detection on the uplink
   // probe request itself.
 #if CHECK_ADDR1
-  // if (!isMulticast(hdr->addr1) && matchOuiRaw(hdr->addr1)) {
-  //   enqueueAlert(ALERT_OUI_ADDR1, hdr->addr1, rssi, ch, nullptr, "addr1");
-  // }
+  if (!isMulticast(hdr->addr1) && matchOuiRaw(hdr->addr1)) {
+    enqueueAlert(ALERT_OUI_ADDR1, hdr->addr1, rssi, ch, nullptr, "addr1");
+  }
 #endif
 
   // --- Disabled: wifi_oui_addr3 (BSSID / addr3) ---
@@ -1164,9 +1284,9 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   // addr3, but still OUI-only with no probe/IE behavioral check, so it can
   // generate false positives on unrelated mgmt traffic.
 #if CHECK_ADDR3
-  // if (type == WIFI_PKT_MGMT && matchOuiRaw(hdr->addr3)) {
-  //   enqueueAlert(ALERT_OUI_ADDR3, hdr->addr3, rssi, ch, nullptr, "addr3");
-  // }
+  if (type == WIFI_PKT_MGMT && matchOuiRaw(hdr->addr3)) {
+    enqueueAlert(ALERT_OUI_ADDR3, hdr->addr3, rssi, ch, nullptr, "addr3");
+  }
 #endif
 
 #if ENABLE_SSID_MATCH
@@ -1244,6 +1364,9 @@ static void drainAlertQueue() {
     // rate-limited (still audible via heartbeat, just quieter on the wire).
     fyLastTargetSeen = millis();
 
+    // KEEP THE LED ON: Push the respective color timer 5 seconds into the future
+    ledRegisterHit(e.type);
+
     // Serial-rate-limit: suppress emit/beep/flash within ALERT_COOLDOWN_MS.
     if (shouldSuppressDuplicate(macStr)) continue;
 
@@ -1275,11 +1398,13 @@ static void drainAlertQueue() {
       // HB_BEEP_INTERVAL_MS after the initial chirp, not mid-window.
       fyLastHeartbeatAt = millis();
     }
-    ledFlash(LED_FLASH_MS);
+    // ledFlash(LED_FLASH_MS);
 
     char methodLine[40];
     snprintf(methodLine, sizeof(methodLine), "wifi_%s", method);
+#ifdef BOARD_LILYGO_T_DONGLE_S3
     dongleDisplayShowAlert(methodLine, macStr, e.rssi, e.channel, ALERT_COOLDOWN_MS);
+#endif
 
 #if STOP_ON_OUI_HIT
     if (e.type != ALERT_SSID) stopSniffing("OUI hit");
@@ -1337,16 +1462,22 @@ void setup() {
 
 #if USE_LED
 #if defined(USE_APA102_LED)
-  apa102Init();
+  apa102Init(); // You already set 5,0,0 inside this function, which is great
+#elif defined(USE_WS2812_LED)
+  pixels.begin();
+  pixels.setPixelColor(0, pixels.Color(5, 0, 0)); // Initialize faint red
+  pixels.show();
 #else
   pinMode(LED_PIN, OUTPUT);
-  ledSet(false);
+  applyLedColor(LED_COLOR_IDLE); // Use the new state machine function
 #endif
 #endif
 
   startupBeep();
 #if USE_LED
-  ledFlash(200);
+  // Force a brief Green flash on startup; ledTick will automatically fade it to Red
+  expireStrict = millis() + 200;
+  ledForceUpdate = true;
 #endif
 
   precompileOuis();
@@ -1402,7 +1533,9 @@ void loop() {
   autosaveTick();      // periodic SPIFFS write if dirty
   heartbeatTick();     // audible beep-pair while a target is still in range
   ledTick();           // turn off LED after LED_FLASH_MS
+#ifdef BOARD_LILYGO_T_DONGLE_S3
   dongleDisplayTick(millis(), currentChannel, fyDetCount);
+#endif
   printHeartbeat();
   delay(1);
 }
