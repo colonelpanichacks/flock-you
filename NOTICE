@@ -1,0 +1,13 @@
+flock-you-esp32
+Copyright 2024 SimeonOnSecurity (https://github.com/simeononsecurity)
+
+This product is licensed under the Apache License, Version 2.0.
+You may obtain a copy of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Attribution requirement: Any redistribution, derivative work, or product
+that incorporates code from this project must retain this NOTICE file and
+include clear attribution to the original author:
+
+    SimeonOnSecurity — https://github.com/simeononsecurity/flock-you-esp32

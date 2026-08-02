@@ -1,5 +1,8 @@
 # Flock-You ESP32 - Complete Build Package
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Author](https://img.shields.io/badge/Author-SimeonOnSecurity-green.svg)](https://github.com/simeononsecurity)
+
 **WiFi promiscuous-mode detector for Flock Safety surveillance cameras**
 
 Ported to standard ESP32 hardware for maximum accessibility and cost savings.

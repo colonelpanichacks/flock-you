@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2024 SimeonOnSecurity <https://github.com/simeononsecurity>
+
 // flock-you-esp32  —  Passive Flock Safety ALPR detector
 // Based on field research by @NitekryDPaul (OUI / addr1),
 // Michael / DeFlockJoplin (wildcard-probe + 82:6b:f2),
