@@ -30,6 +30,13 @@
 #include "esp_log.h"
 #include "fy_detect.h"   // PR#39: detection patterns + pure matching functions
 
+// M5Stack Core2 For AWS has the same 320×240 ILI9342C display and M5Unified
+// button/speaker API as the M5Stack Basic. Map USE_M5CORE2_AWS → USE_M5BASIC at
+// compile time so all existing display guards work transparently.
+#if defined(USE_M5CORE2_AWS) && !defined(USE_M5BASIC)
+  #define USE_M5BASIC 1
+#endif
+
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
   #include <NimBLEDevice.h>
   #include <NimBLEScan.h>
@@ -46,9 +53,14 @@
   #include "c5_display.h"
 #endif
 
-// M5Stack Basic Core v2.7 — ILI9342C 320×240 IPS display
+// M5Stack Basic Core v2.7 / Core2 For AWS — ILI9342C 320×240 IPS display
 #if defined(USE_M5BASIC)
   #include "m5basic_display.h"
+#endif
+
+// M5StickC Plus SE — ST7789v2 1.14" display (240×135 landscape)
+#if defined(USE_M5STICKC_PLUS_SE)
+  #include "m5stickc_display.h"
 #endif
 
 // M5Atom LED support — GPIO27 SK6812, GPIO39 button
@@ -115,6 +127,16 @@
   // No NeoPixel — display replaces LED status indication entirely.
   #define USE_BUZZER      0
   #define USE_M5_SPEAKER  1
+  #define USE_LED         0
+  #define LED_FLASH_MS    0
+  // Note: USE_M5CORE2_AWS is aliased to USE_M5BASIC above — no separate block needed.
+#elif defined(USE_M5STICKC_PLUS_SE)
+  // M5StickC Plus SE — passive buzzer G2 (tone/noTone), no NeoPixel.
+  // M5Unified speaker disabled (cfg.internal_spk=false) to prevent GPIO2 conflict.
+  // Display via m5stickc_display.h (240×135 landscape ST7789v2).
+  #define BUZZER_PIN      2
+  #define USE_BUZZER      1
+  #define USE_M5_SPEAKER  0
   #define USE_LED         0
   #define LED_FLASH_MS    0
 #else
@@ -1007,6 +1029,11 @@ static void printHeartbeat() {
                     millis(), fySpiffsReady,
                     (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
 #endif
+#if defined(USE_M5STICKC_PLUS_SE)
+    m5stickcScanning(currentChannel, channelModeName(), fyDetCount,
+                     millis(), fySpiffsReady,
+                     (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
+#endif
   }
 }
 
@@ -1670,6 +1697,13 @@ static void drainAlertQueue() {
                      fyDetCount,
                      (fyLastTargetSeen > 0) ? millis() - fyLastTargetSeen : 0UL);
 #endif
+#if defined(USE_M5STICKC_PLUS_SE)
+    m5stickcDetection(method, macStr, e.confidence, e.rssi, e.channel,
+                      (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
+                        ? e.ssid : "",
+                      fyDetCount,
+                      (fyLastTargetSeen > 0) ? millis() - fyLastTargetSeen : 0UL);
+#endif
 
 #if STOP_ON_OUI_HIT
     if (e.type != ALERT_SSID && e.type != ALERT_LAA_SSID) stopSniffing("OUI hit");
@@ -1749,13 +1783,16 @@ void setup() {
   }
 #endif
 
-// M5Stack Basic: M5Unified (display + speaker) fully inits inside m5basicInit().
-// Must be called before startupBeep() which uses M5.Speaker.tone().
+// M5Stack Basic/Core2: M5Unified fully inits inside m5basicInit().
 #if defined(USE_M5BASIC)
   m5basicInit();
 #endif
+// M5StickC Plus SE: M5Unified inits in m5stickcInit() (display + AXP192, no I2S).
+#if defined(USE_M5STICKC_PLUS_SE)
+  m5stickcInit();
+#endif
 
-#if MIRROR_SERIAL && !defined(USE_M5ATOM) && !defined(USE_M5ATOM_VOICES3R) && !defined(USE_M5BASIC)
+#if MIRROR_SERIAL && !defined(USE_M5ATOM) && !defined(USE_M5ATOM_VOICES3R) && !defined(USE_M5BASIC) && !defined(USE_M5STICKC_PLUS_SE)
   Serial1.begin(MIRROR_BAUD, SERIAL_8N1, -1, MIRROR_TX_PIN);
 #endif
 
@@ -1871,18 +1908,28 @@ void loop() {
   {
     int btn = m5basicButtonTick();
     if (btn == 1) {
-      // A: force SPIFFS session save
-      fySaveSession();
-      Serial.println("[flockyou] Manual save (Btn A)");
+      fySaveSession(); Serial.println("[flockyou] Manual save (Btn A)");
     } else if (btn == 3) {
-      // C: force immediate channel hop + return to scanning screen
       customChannelIndex = (customChannelIndex + 1) % customChannelCount;
       currentChannel = customChannels[customChannelIndex];
       esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
       lastHop = millis();
       Serial.printf("[flockyou] Manual ch hop -> %u (Btn C)\n", currentChannel);
     }
-    // btn==2 (brightness) is handled inside m5basicButtonTick() itself
+  }
+#endif
+#if defined(USE_M5STICKC_PLUS_SE)
+  {
+    int btn = m5stickcButtonTick();
+    if (btn == 1) {
+      fySaveSession(); Serial.println("[flockyou] Manual save (Btn A)");
+    } else if (btn == 3) {
+      customChannelIndex = (customChannelIndex + 1) % customChannelCount;
+      currentChannel = customChannels[customChannelIndex];
+      esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
+      lastHop = millis();
+      Serial.printf("[flockyou] Manual ch hop -> %u (Btn B)\n", currentChannel);
+    }
   }
 #endif
 
