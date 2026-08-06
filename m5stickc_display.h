@@ -203,7 +203,10 @@ static void m5stickcScanning(uint8_t ch, const char* mode, int detCount,
                                unsigned long runtimeMs, bool spiffsOk,
                                int ouiHi, int ouiMfr) {
     if (msc_lastAlertMs != 0 && (millis() - msc_lastAlertMs) < MSC_ALERT_HOLD_MS) return;
-    bool stale = (millis() - msc_lastDrawMs) >= 1000;
+    // Redraw at ~4Hz (was 1Hz) so the runtime clock / log-mirror strip feel
+    // genuinely real-time rather than visibly ticking once per second.
+    bool stale = (millis() - msc_lastDrawMs) >= 250;
+
     bool chg = (ch != msc_lastCh) || (detCount != msc_lastDetCount) || msc_needsRedraw || stale;
     if (!chg) return;
     msc_lastDrawMs = millis();

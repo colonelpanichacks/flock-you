@@ -1078,18 +1078,30 @@ static void printHeartbeat() {
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
     c5DisplayScanning(currentChannel, fyDetCount);
 #endif
-#if defined(USE_M5BASIC)
-    m5basicScanning(currentChannel, channelModeName(), fyDetCount,
-                    millis(), fySpiffsReady,
-                    (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
-#endif
-#if defined(USE_M5STICKC_PLUS_SE)
-    m5stickcScanning(currentChannel, channelModeName(), fyDetCount,
-                     millis(), fySpiffsReady,
-                     (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
-#endif
   }
 }
+
+// M5Stack Basic/Core2/StickC "scanning" screen — shows runtime, log-mirror
+// strip, and idle status.  IMPORTANT: this is called every loop() iteration
+// (NOT gated behind the 30 s printHeartbeat() interval above).
+// m5basicScanning()/m5stickcScanning() each already contain their own
+// internal staleness check (mb_lastDrawMs/msc_lastDrawMs) that cheaply
+// no-ops most calls, so calling them unconditionally here is what actually
+// makes the screen redraw several times per second in real time instead of
+// once every 30 s.
+static void screenTick() {
+#if defined(USE_M5BASIC)
+  m5basicScanning(currentChannel, channelModeName(), fyDetCount,
+                  millis(), fySpiffsReady,
+                  (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
+#endif
+#if defined(USE_M5STICKC_PLUS_SE)
+  m5stickcScanning(currentChannel, channelModeName(), fyDetCount,
+                   millis(), fySpiffsReady,
+                   (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
+#endif
+}
+
 
 // ============================================================
 // CONFIDENCE SCORE COMPUTATION  (called from promiscuous callback)
@@ -1988,10 +2000,12 @@ void loop() {
   heartbeatTick();
   ledTick();
   printHeartbeat();
+  screenTick();
 
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
   bleScanTick(fyPromiscPaused);
 #endif
+
 
 #if defined(USE_M5BASIC)
   {
@@ -2025,6 +2039,7 @@ void loop() {
     }
   }
 #endif
+
 
 #if defined(HAS_SIMPLE_BUTTON)
   // Single bare-GPIO button (Atom Lite/Echo/Voice/VoiceS3R, T-Dongle C5).

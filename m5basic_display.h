@@ -338,7 +338,10 @@ static void m5basicScanning(uint8_t ch, const char* modeName, int detCount,
                               unsigned long runtimeMs, bool spiffsOk,
                               int ouiHighCnt, int ouiMfrCnt) {
     if (mb_lastAlertMs != 0 && (millis() - mb_lastAlertMs) < MB_ALERT_HOLD_MS) return;
-    bool stale = (millis() - mb_lastDrawMs) >= 1000;
+    // Redraw at ~4Hz (was 1Hz) so the runtime clock / log-mirror strip feel
+    // genuinely real-time rather than visibly ticking once per second.
+    bool stale = (millis() - mb_lastDrawMs) >= 250;
+
     bool changed = (ch != mb_lastCh) || (detCount != mb_lastDetCount) || mb_needsRedraw || stale;
     if (!changed) return;
     mb_lastDrawMs = millis();
