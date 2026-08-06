@@ -1890,6 +1890,19 @@ void setup() {
 
   lastHeartbeat = millis();
   fyLastSaveAt  = millis();
+
+  // Force immediate scanning screen — clears splash without waiting 30 s
+  // for the first printHeartbeat() heartbeat tick.
+#if defined(USE_M5BASIC)
+  m5basicScanning(currentChannel, channelModeName(), fyDetCount,
+                  millis(), fySpiffsReady,
+                  (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
+#endif
+#if defined(USE_M5STICKC_PLUS_SE)
+  m5stickcScanning(currentChannel, channelModeName(), fyDetCount,
+                   millis(), fySpiffsReady,
+                   (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
+#endif
 }
 
 void loop() {
