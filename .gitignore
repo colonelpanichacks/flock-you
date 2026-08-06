@@ -2,8 +2,12 @@
 # PlatformIO build artifacts
 .pio/
 
+# platformio-mcp tool workspace (build logs, task registry, audit trail)
+.pio-mcp-workspace/
+
 # IDE settings
 .vscode/
+
 
 # macOS junk
 .DS_Store

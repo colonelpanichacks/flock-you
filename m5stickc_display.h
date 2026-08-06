@@ -22,6 +22,8 @@
 #include <M5Unified.h>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
+
 
 // ── RGB565 palette ────────────────────────────────────────────────────────────
 static constexpr uint16_t MSC_BLACK    = 0x0000;
@@ -125,6 +127,28 @@ static int  msc_rTrend(){
     int d=(int)msc_rH[(msc_rI+MSC_HIST-1)%MSC_HIST]-(int)msc_rH[(msc_rI+MSC_HIST-c)%MSC_HIST];
     return(d>=4)?1:(d<=-4)?-1:0;
 }
+
+// ── Distance estimate ("triangulation" proxy) ─────────────────────────────────
+// Single receiver ≠ true triangulation, but a free-space path-loss estimate
+// gives a practical range readout alongside the approach/recede trend arrow.
+//   distance_m = 10 ^ ((TxPower - RSSI) / (10 * n))
+static float msc_estimateDistanceM(int8_t rssi) {
+    const float txPowerAt1m = -40.0f;
+    const float pathLossExp = 2.0f;
+    float ratio = (txPowerAt1m - (float)rssi) / (10.0f * pathLossExp);
+    return powf(10.0f, ratio);
+}
+static void msc_drawRange(int x, int y, int8_t rssi) {
+    float d = msc_estimateDistanceM(rssi);
+    char buf[20];
+    if (d >= 1000.0f) snprintf(buf, sizeof(buf), "~%.1fkm", d / 1000.0f);
+    else if (d >= 10.0f) snprintf(buf, sizeof(buf), "~%.0fm", d);
+    else               snprintf(buf, sizeof(buf), "~%.1fm", d);
+    M5.Display.setTextColor(MSC_LT_GREY, MSC_BLACK);
+    M5.Display.setCursor(x, y);
+    M5.Display.print(buf);
+}
+
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -276,6 +300,10 @@ static void m5stickcDetection(const char* method, const char* mac,
         M5.Display.setCursor(3+126,y+4); M5.Display.printf("%s Ch:%u", ta, (unsigned)ch);
     }
     y += 17;
+    // Estimated range ("triangulation" proxy)
+    msc_drawRange(3, y, rssi);
+    y += 11;
+
     if (ssid && ssid[0]) {
         M5.Display.setTextColor(MSC_CYAN, MSC_BLACK);
         M5.Display.setCursor(3, y);

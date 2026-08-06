@@ -74,7 +74,9 @@
 
 #if defined(USE_M5ATOM_ECHO)
   #define BUTTON_PIN 39
+  #define USE_M5ATOM_ECHO_BTN 1
 #endif
+
 
 #if defined(USE_M5ATOM_VOICES3R) || defined(USE_M5ATOM_VOICE) || defined(USE_M5BASIC)
   #include <M5Unified.h>
@@ -83,9 +85,26 @@
   #define BUTTON_PIN 41
 #endif
 
+// ── Simple single-GPIO button support (Atom series + T-Dongle C5) ───────────
+// M5Stack Basic/Core2 and M5StickC Plus SE get button handling through
+// M5Unified (M5.BtnA/B/C) inside their respective display headers.  The
+// Atom Lite/Echo/Voice/VoiceS3R boards and the LILYGO T-Dongle C5 only have
+// a single bare GPIO button with no M5Unified Button_Class — previously
+// BUTTON_PIN/C5_BTN_PIN were #defined but *never read*, so the button did
+// nothing.  This block wires up a simple debounced digitalRead() handler.
+#if defined(USE_M5ATOM_LITE) || defined(USE_M5ATOM_ECHO) || \
+    defined(USE_M5ATOM_VOICE) || defined(USE_M5ATOM_VOICES3R)
+  #define HAS_SIMPLE_BUTTON 1
+  #define SIMPLE_BUTTON_PIN BUTTON_PIN
+#elif defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
+  #define HAS_SIMPLE_BUTTON 1
+  #define SIMPLE_BUTTON_PIN C5_BTN_PIN
+#endif
+
 // ============================================================
 // CONFIG
 // ============================================================
+
 
 #ifndef TESTING_MODE
   #define TESTING_MODE 0
@@ -708,6 +727,34 @@ static unsigned long fyLastHeartbeatAt = 0;
 
 // Tracks whether promiscuous mode is currently paused for BLE
 static bool fyPromiscPaused = false;
+
+// ============================================================
+// SIMPLE SINGLE-GPIO BUTTON  (Atom Lite/Echo/Voice/VoiceS3R + T-Dongle C5)
+// ============================================================
+// These boards have exactly one bare GPIO button with no M5Unified
+// Button_Class helper.  BUTTON_PIN / C5_BTN_PIN were previously #defined
+// but never actually read anywhere — the button did nothing.  This adds a
+// minimal debounced active-low (INPUT_PULLUP) press detector.  A press
+// forces an immediate channel hop (mirrors the M5Basic "Btn C" / StickC
+// "Btn B" action) plus a short audible/visual acknowledgement.
+#if defined(HAS_SIMPLE_BUTTON)
+static bool          simpleBtnLastState     = true;  // idle = HIGH (pulled up)
+static unsigned long simpleBtnLastChangeMs  = 0;
+#define SIMPLE_BUTTON_DEBOUNCE_MS 50
+
+// Returns true exactly once per physical press (debounced falling edge).
+static bool simpleButtonPressed() {
+  bool cur = digitalRead(SIMPLE_BUTTON_PIN);
+  unsigned long now = millis();
+  if (cur != simpleBtnLastState && (now - simpleBtnLastChangeMs) > SIMPLE_BUTTON_DEBOUNCE_MS) {
+    simpleBtnLastChangeMs = now;
+    simpleBtnLastState    = cur;
+    if (!cur) return true;   // LOW == pressed
+  }
+  return false;
+}
+#endif
+
 
 // ============================================================
 // 802.11 HEADER
@@ -1745,7 +1792,15 @@ void setup() {
   c5DisplayInit();
 #endif
 
+#if defined(HAS_SIMPLE_BUTTON)
+  // Single bare-GPIO button (Atom Lite/Echo/Voice/VoiceS3R, T-Dongle C5).
+  // Safe to call even where USE_M5ATOM's block below also sets this pin.
+  pinMode(SIMPLE_BUTTON_PIN, INPUT_PULLUP);
+  simpleBtnLastState = digitalRead(SIMPLE_BUTTON_PIN);
+#endif
+
 #if defined(USE_M5ATOM)
+
   strip.begin();
   strip.setBrightness(80);
   strip.show();
@@ -1786,11 +1841,25 @@ void setup() {
 // M5Stack Basic/Core2: M5Unified fully inits inside m5basicInit().
 #if defined(USE_M5BASIC)
   m5basicInit();
+  // Immediately replace the splash with the scanning screen.  SPIFFS/BLE/WiFi
+  // init below can take a while (or, on some StickC Plus SE / Basic units,
+  // stall) — drawing the real UI *now* means the display never appears
+  // "stuck at Init..." even if a later step is slow.  It gets redrawn with
+  // real data once init finishes (see bottom of setup()).
+  m5basicScanning(currentChannel, channelModeName(), 0,
+                  millis(), false,
+                  (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
 #endif
 // M5StickC Plus SE: M5Unified inits in m5stickcInit() (display + AXP192, no I2S).
 #if defined(USE_M5STICKC_PLUS_SE)
   m5stickcInit();
+  // Same rationale as above — replace "Init..." splash before any
+  // potentially slow/blocking SPIFFS/BLE/WiFi setup runs.
+  m5stickcScanning(currentChannel, channelModeName(), 0,
+                   millis(), false,
+                   (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
 #endif
+
 
 #if MIRROR_SERIAL && !defined(USE_M5ATOM) && !defined(USE_M5ATOM_VOICES3R) && !defined(USE_M5BASIC) && !defined(USE_M5STICKC_PLUS_SE)
   Serial1.begin(MIRROR_BAUD, SERIAL_8N1, -1, MIRROR_TX_PIN);
@@ -1946,5 +2015,29 @@ void loop() {
   }
 #endif
 
+#if defined(HAS_SIMPLE_BUTTON)
+  // Single bare-GPIO button (Atom Lite/Echo/Voice/VoiceS3R, T-Dongle C5).
+  // Press = force immediate channel hop + save session + short ack
+  // (beep on buzzer/speaker-equipped boards, LED flash on LED-equipped boards).
+  if (simpleButtonPressed()) {
+    fySaveSession();
+    customChannelIndex = (customChannelIndex + 1) % customChannelCount;
+    currentChannel = customChannels[customChannelIndex];
+    esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
+    lastHop = millis();
+    Serial.printf("[flockyou] Manual save + ch hop -> %u (button)\n", currentChannel);
+#if USE_BUZZER || (defined(USE_M5_SPEAKER) && USE_M5_SPEAKER)
+    heartbeatBeep();
+#endif
+#if USE_LED
+    ledFlash(400);
+#endif
+#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
+    c5DisplayScanning(currentChannel, fyDetCount);
+#endif
+  }
+#endif
+
   delay(1);
 }
+

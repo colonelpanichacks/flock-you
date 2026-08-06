@@ -25,6 +25,8 @@
 #include <M5Unified.h>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
+
 
 // ── RGB565 palette ────────────────────────────────────────────────────────────
 static constexpr uint16_t MB_BLACK    = 0x0000;
@@ -181,6 +183,34 @@ static int mb_rTrend() {
     int d = (int)newest - (int)oldest;
     return (d >= 5) ? 1 : (d <= -5) ? -1 : 0;
 }
+
+// ── Distance estimate ("triangulation" proxy) ─────────────────────────────────
+// A single receiver cannot truly triangulate (needs 2+ simultaneous readers
+// at known positions) — but a free-space path-loss RSSI→distance estimate,
+// shown alongside the approach/recede trend arrow above, gives the operator
+// a practical sense of range and whether the camera is getting closer.
+//   distance_m = 10 ^ ((TxPower - RSSI) / (10 * n))
+//   TxPower = calibrated RSSI at 1 m (~-40 dBm typical for a WiFi AP radio)
+//   n       = path-loss exponent (2.0 = free space / line-of-sight)
+static float mb_estimateDistanceM(int8_t rssi) {
+    const float txPowerAt1m = -40.0f;
+    const float pathLossExp = 2.0f;
+    float ratio = (txPowerAt1m - (float)rssi) / (10.0f * pathLossExp);
+    return powf(10.0f, ratio);
+}
+
+// Draws "~Xm" / "~X.Xkm" estimated range at (x,y), right-aligned-ish, dim grey.
+static void mb_drawRange(int x, int y, int8_t rssi) {
+    float d = mb_estimateDistanceM(rssi);
+    char buf[24];
+    if (d >= 1000.0f) snprintf(buf, sizeof(buf), "~%.1fkm est.", d / 1000.0f);
+    else if (d >= 10.0f) snprintf(buf, sizeof(buf), "~%.0fm est.", d);
+    else               snprintf(buf, sizeof(buf), "~%.1fm est.", d);
+    M5.Display.setTextColor(MB_LT_GREY, MB_BLACK);
+    M5.Display.setCursor(x, y);
+    M5.Display.print(buf);
+}
+
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -383,7 +413,12 @@ static void m5basicDetection(const char* method, const char* mac,
         M5.Display.setCursor(200, y + 8);
         M5.Display.printf("%s %s", tArrow, tLabel);
     }
-    y += 26;
+    y += 15;
+
+    // Estimated range ("triangulation" proxy) — free-space path-loss estimate
+    mb_drawRange(8, y, rssi);
+    y += 13;
+
 
     mb_hline(y); y += 5;
 

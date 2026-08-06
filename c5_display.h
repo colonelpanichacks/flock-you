@@ -11,6 +11,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 #include <Adafruit_NeoPixel.h>
+#include <cmath>
 
 // ── Hardware pins ─────────────────────────────────────────────────────────────
 #define C5_TFT_SCLK  5
@@ -42,6 +43,27 @@ static inline void c5LedStartup() {
         c5LedSet(0, 0,  0); delay(80);
     }
     c5LedIdle();
+}
+
+// ── Distance estimate ("triangulation" proxy) ─────────────────────────────────
+// Free-space path-loss RSSI→distance estimate. NOT true triangulation (which
+// requires 2+ simultaneous readers at known positions) — a practical proxy
+// for "roughly how far away is this device" from a single handheld unit.
+static float c5EstimateDistanceM(int8_t rssi) {
+    const float txPowerAt1m = -40.0f;
+    const float pathLossExp = 2.0f;
+    float ratio = (txPowerAt1m - (float)rssi) / (10.0f * pathLossExp);
+    return powf(10.0f, ratio);
+}
+static void c5DrawRange(int x, int y, int8_t rssi, uint16_t col) {
+    float d = c5EstimateDistanceM(rssi);
+    char buf[20];
+    if (d >= 1000.0f) snprintf(buf, sizeof(buf), "~%.1fkm est.", d / 1000.0f);
+    else if (d >= 10.0f) snprintf(buf, sizeof(buf), "~%.0fm est.", d);
+    else               snprintf(buf, sizeof(buf), "~%.1fm est.", d);
+    c5Tft.setTextColor(col);
+    c5Tft.setCursor(x, y);
+    c5Tft.print(buf);
 }
 
 // ── Display init ─────────────────────────────────────────────────────────────
@@ -125,6 +147,9 @@ static void c5DisplayDetection(const char* detType, const char* mac,
     c5Tft.setTextColor(confidence >= 60 ? ST77XX_RED : ST77XX_YELLOW);
     c5Tft.printf("Conf: %u%%", (unsigned)confidence);
 
+    // Estimated range ("triangulation" proxy)
+    c5DrawRange(4, 72, rssi, 0xC618 /* light grey */);
+
     // LED
     if (confidence >= 60)      c5LedAlert();
     else if (confidence >= 30) c5LedCaution();
@@ -135,7 +160,7 @@ static void c5DisplayDetection(const char* detType, const char* mac,
 // score     = current aggregate score
 // lastDet   = short label of most-recent detection type (may be nullptr)
 // phase     = "BLE" | "WIFI" | "PROMISC"
-static void c5DisplayScore(int score, const char* lastDet, const char* phase) {
+static void c5DisplayScore(int score, const char* lastDet, const char* phase, int8_t rssi = -100) {
     uint16_t bg = ST77XX_BLACK;
     if (score >= 6)      bg = 0x8000;   // dark red
     else if (score >= 3) bg = 0x8400;   // dark amber
@@ -174,6 +199,9 @@ static void c5DisplayScore(int score, const char* lastDet, const char* phase) {
     c5Tft.setTextColor(0x8410);   // grey
     c5Tft.setCursor(4, 62);
     c5Tft.printf("Phase: %s", phase ? phase : "?");
+
+    // Estimated range ("triangulation" proxy) — only when we have a real RSSI
+    if (rssi > -100) c5DrawRange(4, 72, rssi, 0x8410 /* grey */);
 
     // LED
     if (score >= 6)      c5LedAlert();
