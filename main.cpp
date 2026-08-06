@@ -46,6 +46,11 @@
   #include "c5_display.h"
 #endif
 
+// M5Stack Basic Core v2.7 — ILI9342C 320×240 IPS display
+#if defined(USE_M5BASIC)
+  #include "m5basic_display.h"
+#endif
+
 // M5Atom LED support — GPIO27 SK6812, GPIO39 button
 #if defined(USE_M5ATOM_LITE) || defined(USE_M5ATOM_VOICE)
   #define USE_M5ATOM 1
@@ -59,7 +64,7 @@
   #define BUTTON_PIN 39
 #endif
 
-#if defined(USE_M5ATOM_VOICES3R) || defined(USE_M5ATOM_VOICE)
+#if defined(USE_M5ATOM_VOICES3R) || defined(USE_M5ATOM_VOICE) || defined(USE_M5BASIC)
   #include <M5Unified.h>
 #endif
 #if defined(USE_M5ATOM_VOICES3R)
@@ -104,6 +109,14 @@
   #define USE_LED        0
   #define USE_C5_DISPLAY 1
   #define LED_FLASH_MS   30000  // hold red 30 s after detection
+#elif defined(USE_M5BASIC)
+  // M5Stack Basic Core v2.7 — ILI9342C 320×240 IPS + 1W speaker + 3 buttons
+  // Display handled via M5Unified in m5basic_display.h.
+  // No NeoPixel — display replaces LED status indication entirely.
+  #define USE_BUZZER      0
+  #define USE_M5_SPEAKER  1
+  #define USE_LED         0
+  #define LED_FLASH_MS    0
 #else
   #define BUZZER_PIN 25
   #define USE_BUZZER 1
@@ -989,6 +1002,11 @@ static void printHeartbeat() {
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
     c5DisplayScanning(currentChannel, fyDetCount);
 #endif
+#if defined(USE_M5BASIC)
+    m5basicScanning(currentChannel, channelModeName(), fyDetCount,
+                    millis(), fySpiffsReady,
+                    (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
+#endif
   }
 }
 
@@ -1645,6 +1663,13 @@ static void drainAlertQueue() {
       c5DisplayDetection(dt, macStr, e.confidence, e.rssi, e.channel);
     }
 #endif
+#if defined(USE_M5BASIC)
+    m5basicDetection(method, macStr, e.confidence, e.rssi, e.channel,
+                     (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
+                       ? e.ssid : "",
+                     fyDetCount,
+                     (fyLastTargetSeen > 0) ? millis() - fyLastTargetSeen : 0UL);
+#endif
 
 #if STOP_ON_OUI_HIT
     if (e.type != ALERT_SSID && e.type != ALERT_LAA_SSID) stopSniffing("OUI hit");
@@ -1724,7 +1749,13 @@ void setup() {
   }
 #endif
 
-#if MIRROR_SERIAL && !defined(USE_M5ATOM) && !defined(USE_M5ATOM_VOICES3R)
+// M5Stack Basic: M5Unified (display + speaker) fully inits inside m5basicInit().
+// Must be called before startupBeep() which uses M5.Speaker.tone().
+#if defined(USE_M5BASIC)
+  m5basicInit();
+#endif
+
+#if MIRROR_SERIAL && !defined(USE_M5ATOM) && !defined(USE_M5ATOM_VOICES3R) && !defined(USE_M5BASIC)
   Serial1.begin(MIRROR_BAUD, SERIAL_8N1, -1, MIRROR_TX_PIN);
 #endif
 
@@ -1834,6 +1865,25 @@ void loop() {
 
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
   bleScanTick(fyPromiscPaused);
+#endif
+
+#if defined(USE_M5BASIC)
+  {
+    int btn = m5basicButtonTick();
+    if (btn == 1) {
+      // A: force SPIFFS session save
+      fySaveSession();
+      Serial.println("[flockyou] Manual save (Btn A)");
+    } else if (btn == 3) {
+      // C: force immediate channel hop + return to scanning screen
+      customChannelIndex = (customChannelIndex + 1) % customChannelCount;
+      currentChannel = customChannels[customChannelIndex];
+      esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
+      lastHop = millis();
+      Serial.printf("[flockyou] Manual ch hop -> %u (Btn C)\n", currentChannel);
+    }
+    // btn==2 (brightness) is handled inside m5basicButtonTick() itself
+  }
 #endif
 
   delay(1);
