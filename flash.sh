@@ -3,7 +3,7 @@
 # flash.sh — Unified Flock-You flasher
 #
 # Supported devices (you are always prompted to identify each one):
-#   /dev/cu.usbserial-*  → Atom Lite / Atom Echo / Atom Voice (FTDI)
+#   /dev/cu.usbserial-*  → Atom Lite / Echo / Voice / Basic / Core2 / StickC (FTDI or CH9102)
 #   /dev/cu.usbmodem*    → Atom VoiceS3R (ESP32-S3 native USB CDC)
 #
 # Usage:
@@ -321,17 +321,20 @@ while true; do
     echo "🔌 Device detected at $PORT  [$PORT_TYPE]"
     echo ""
     echo "   What device is this?"
-    echo "   1) Atom Lite + BLE  — LED + BLE scan                (FTDI/usbserial)"
-    echo "   2) Atom Echo + BLE  — speaker + BLE scan            (FTDI/usbserial)"
-    echo "   3) Atom Voice + BLE — LED + I²S speaker + BLE scan  (FTDI/usbserial)"
-    echo "   4) Atom VoiceS3R    — native USB, ES8311 codec      (ESP32-S3, usbmodem)"
-    echo "   5) Atom Echo S3R    — native USB, I²S speaker       (ESP32-S3, usbmodem)"
+    echo "   1) Atom Lite + BLE        — SK6812 RGB LED + BLE scan        (FTDI/usbserial)"
+    echo "   2) Atom Echo + BLE        — speaker + BLE scan               (FTDI/usbserial)"
+    echo "   3) Atom Voice + BLE       — RGB LED + I²S speaker + BLE scan (FTDI/usbserial)"
+    echo "   4) Atom VoiceS3R          — native USB, ES8311 codec         (ESP32-S3, usbmodem)"
+    echo "   5) Atom Echo S3R          — native USB, I²S speaker          (ESP32-S3, usbmodem)"
+    echo "   6) Basic Core v2.7 + BLE  — 2.0\" IPS display + speaker      (CH9102/usbserial)"
+    echo "   7) Core2 For AWS + BLE    — 2.0\" touch + I2S + PSRAM        (CH9102/usbserial)"
+    echo "   8) StickC Plus SE + BLE   — 1.14\" display + buzzer          (FTDI/usbserial)"
     echo ""
     echo "   ℹ️  Options 4/5 (ESP32-S3 / Atom VoiceS3R or Echo S3R):"
     echo "      Flashing is fully automatic — no button-hold required."
     echo "      If all 3 attempts fail, unplug + re-plug the device and try again."
     echo ""
-    read -r -p "   Enter 1, 2, 3, 4, or 5: " VARIANT
+    read -r -p "   Enter 1–8 (default: 1): " VARIANT
 
     case "$VARIANT" in
         1)
@@ -358,6 +361,21 @@ while true; do
             ENV="m5atom-voices3r"
             LABEL="Atom Echo S3R (native USB)"
             EXPECTED_PORT_TYPE="usbmodem"
+            ;;
+        6)
+            ENV="m5stack-basic-ble"
+            LABEL="M5Stack Basic Core v2.7 + BLE"
+            EXPECTED_PORT_TYPE="usbserial"
+            ;;
+        7)
+            ENV="m5stack-core2-aws-ble"
+            LABEL="M5Stack Core2 For AWS + BLE"
+            EXPECTED_PORT_TYPE="usbserial"
+            ;;
+        8)
+            ENV="m5stickc-plus-se-ble"
+            LABEL="M5StickC Plus SE + BLE"
+            EXPECTED_PORT_TYPE="usbserial"
             ;;
         *)
             ENV="m5atom-lite-ble"

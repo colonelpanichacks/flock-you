@@ -49,6 +49,9 @@ jobs:
           -e m5atom-lite-ble
           -e m5atom-echo-ble
           -e m5atom-voice-ble
+          -e m5stack-basic-ble
+          -e m5stack-core2-aws-ble
+          -e m5stickc-plus-se-ble
 
       # Verify required build artifacts
       - name: Verify build artifacts
@@ -59,7 +62,7 @@ jobs:
           ls -la .pio/build/ 2>/dev/null || echo "WARNING: .pio/build missing or empty"
 
           # Required envs - failure here blocks deploy
-          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble; do
+          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble m5stack-basic-ble m5stack-core2-aws-ble m5stickc-plus-se-ble; do
             if [ -f ".pio/build/$env/firmware.bin" ]; then
               echo "OK $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
             else
@@ -89,7 +92,7 @@ jobs:
           fi
           echo "Found boot_app0.bin at: $BOOT_APP0"
 
-          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble; do
+          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5stack-basic-ble m5stack-core2-aws-ble m5stickc-plus-se-ble; do
             mkdir -p site/firmware/$env
             cp .pio/build/$env/firmware.bin   site/firmware/$env/
             cp .pio/build/$env/bootloader.bin site/firmware/$env/
@@ -143,10 +146,13 @@ jobs:
           MANIFEST
           }
 
-          gen_esp32_manifest "esp32dev-ble"      "Flock You - Generic ESP32 DevKit (BLE)"
-          gen_esp32_manifest "m5atom-lite-ble"   "Flock You - M5Atom Lite (BLE)"
-          gen_esp32_manifest "m5atom-echo-ble"   "Flock You - M5Atom Echo (BLE)"
-          gen_esp32_manifest "m5atom-voice-ble"  "Flock You - M5Atom Voice (BLE)"
+          gen_esp32_manifest "esp32dev-ble"          "Flock You - Generic ESP32 DevKit (BLE)"
+          gen_esp32_manifest "m5atom-lite-ble"       "Flock You - M5Atom Lite (BLE)"
+          gen_esp32_manifest "m5atom-echo-ble"       "Flock You - M5Atom Echo (BLE)"
+          gen_esp32_manifest "m5atom-voice-ble"      "Flock You - M5Atom Voice (BLE)"
+          gen_esp32_manifest "m5stack-basic-ble"     "Flock You - M5Stack Basic Core v2.7 (BLE)"
+          gen_esp32_manifest "m5stack-core2-aws-ble" "Flock You - M5Stack Core2 For AWS (BLE)"
+          gen_esp32_manifest "m5stickc-plus-se-ble"  "Flock You - M5StickC Plus SE (BLE)"
 
           cat > site/manifest-m5atom-voices3r-ble.json << MANIFEST
           {
