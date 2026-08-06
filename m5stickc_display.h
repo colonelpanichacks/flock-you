@@ -53,6 +53,12 @@ static uint8_t msc_brightness   = 128;
 static bool    msc_needsRedraw  = true;
 static int     msc_lastDetCount = -1;
 static uint8_t msc_lastCh       = 255;
+static unsigned long msc_lastDrawMs  = 0;
+static unsigned long msc_lastAlertMs = 0;
+// How long a detection alert stays on screen before the periodic live
+// refresh (below) is allowed to repaint the scanning view over it.
+static constexpr unsigned long MSC_ALERT_HOLD_MS = 4000;
+
 
 // Cached last-detection data
 static char    msc_lastMac[18]   = {0};
@@ -189,13 +195,20 @@ static void m5stickcInit() {
 }
 
 // ── Scanning / idle screen ────────────────────────────────────────────────────
-// Call from printHeartbeat().
+// Call every loop() iteration — internally throttled so it's cheap:
+//   - skipped entirely while a detection alert is still fresh (MSC_ALERT_HOLD_MS)
+//   - otherwise forced to redraw at least 1x/sec so the Runtime clock visibly
+//     ticks, so the screen never looks frozen even with zero detections.
 static void m5stickcScanning(uint8_t ch, const char* mode, int detCount,
                                unsigned long runtimeMs, bool spiffsOk,
                                int ouiHi, int ouiMfr) {
-    bool chg = (ch != msc_lastCh) || (detCount != msc_lastDetCount) || msc_needsRedraw;
+    if (msc_lastAlertMs != 0 && (millis() - msc_lastAlertMs) < MSC_ALERT_HOLD_MS) return;
+    bool stale = (millis() - msc_lastDrawMs) >= 1000;
+    bool chg = (ch != msc_lastCh) || (detCount != msc_lastDetCount) || msc_needsRedraw || stale;
     if (!chg) return;
+    msc_lastDrawMs = millis();
     msc_lastCh = ch; msc_lastDetCount = detCount; msc_needsRedraw = false;
+
     // Red LED: on when at least one target has been detected
     msc_setLED(detCount > 0);
 
@@ -265,6 +278,8 @@ static void m5stickcDetection(const char* method, const char* mac,
     ssid = ssid ? ssid : "";
     strncpy(msc_lastSsid, ssid, 33); msc_lastSsid[33] = '\0';
     msc_lastConf = conf; msc_lastRssi = rssi; msc_needsRedraw = true;
+    msc_lastAlertMs = millis();
+
 
     uint16_t hdrBg = (conf >= 60) ? MSC_DARK_RED :
                      (conf >= 30) ? MSC_DARK_AMB : 0x0010;

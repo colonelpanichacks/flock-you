@@ -57,6 +57,11 @@ static bool    mb_needsRedraw   = true;
 static int     mb_lastDetCount  = -1;
 static uint8_t mb_lastCh        = 255;
 static bool    mb_inAlert       = false;
+static unsigned long mb_lastDrawMs  = 0;
+static unsigned long mb_lastAlertMs = 0;
+// How long a detection alert stays on screen before the periodic live
+// refresh (below) is allowed to repaint the scanning view over it.
+static constexpr unsigned long MB_ALERT_HOLD_MS = 4000;
 
 // Cached last-detection data (for scanning screen summary)
 static char    mb_lastMac[18]   = {0};
@@ -257,8 +262,11 @@ static void m5basicInit() {
 static void m5basicScanning(uint8_t ch, const char* modeName, int detCount,
                               unsigned long runtimeMs, bool spiffsOk,
                               int ouiHighCnt, int ouiMfrCnt) {
-    bool changed = (ch != mb_lastCh) || (detCount != mb_lastDetCount) || mb_needsRedraw;
+    if (mb_lastAlertMs != 0 && (millis() - mb_lastAlertMs) < MB_ALERT_HOLD_MS) return;
+    bool stale = (millis() - mb_lastDrawMs) >= 1000;
+    bool changed = (ch != mb_lastCh) || (detCount != mb_lastDetCount) || mb_needsRedraw || stale;
     if (!changed) return;
+    mb_lastDrawMs = millis();
     mb_lastCh = ch; mb_lastDetCount = detCount;
     mb_needsRedraw = false;
     mb_inAlert = false;
@@ -354,6 +362,7 @@ static void m5basicDetection(const char* method, const char* mac,
     strncpy(mb_lastSsid, ssid, 33); mb_lastSsid[33] = '\0';
     mb_lastConf = confidence; mb_lastRssi = rssi; mb_lastChan = ch;
     mb_inAlert = true; mb_needsRedraw = true;
+    mb_lastAlertMs = millis();
 
     // Header
     uint16_t hdrBg = (confidence >= 60) ? MB_DARK_RED :
