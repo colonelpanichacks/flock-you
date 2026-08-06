@@ -129,6 +129,11 @@ static void m5basicInit() {
 
     M5.Speaker.setVolume(200);
 
+    // Core2 For AWS: short startup vibration to confirm hardware is working
+#if defined(USE_M5CORE2_AWS)
+    M5.Power.setVibration(180); delay(150); M5.Power.setVibration(0);
+#endif
+
     M5.Display.setBrightness(mb_brightness);
     M5.Display.fillScreen(MB_BLACK);
 
@@ -341,6 +346,14 @@ static void m5basicDetection(const char* method, const char* mac,
         M5.Display.print("LOW -- possible false positive");
 
     mb_btnBar("SAVE", "BRIGHT", "CLEAR");
+
+    // Core2 For AWS: vibrate on high-confidence detection (tactile alert)
+#if defined(USE_M5CORE2_AWS)
+    if (confidence >= 30) {
+        M5.Power.setVibration(220); delay(200); M5.Power.setVibration(0);
+        if (confidence >= 60) { delay(80); M5.Power.setVibration(220); delay(200); M5.Power.setVibration(0); }
+    }
+#endif
 }
 
 // ── Button tick ───────────────────────────────────────────────────────────────

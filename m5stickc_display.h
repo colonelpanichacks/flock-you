@@ -99,6 +99,14 @@ static void msc_bar(int x, int y, int w, int h, uint8_t pct,
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+// ── Red LED (G10, active LOW) ──────────────────────────────────────────────
+// The StickC Plus SE has a red status LED on GPIO10.  Low = on.
+static bool msc_ledInit = false;
+static void msc_setLED(bool on) {
+    if (!msc_ledInit) { pinMode(10, OUTPUT); msc_ledInit = true; }
+    digitalWrite(10, on ? LOW : HIGH);  // active LOW
+}
+
 // Called once from setup()
 static void m5stickcInit() {
     auto cfg = M5.config();
@@ -106,6 +114,9 @@ static void m5stickcInit() {
     cfg.internal_rtc = false;
     cfg.internal_spk = false;   // SE has passive buzzer G2, NOT NS4168 I2S — prevent GPIO2 conflict
     M5.begin(cfg);
+
+    // Init red LED — brief blink to confirm hardware
+    msc_setLED(true); delay(120); msc_setLED(false);
 
     M5.Display.setRotation(3);   // landscape: 240w × 135h
     M5.Display.setBrightness(msc_brightness);
@@ -132,6 +143,8 @@ static void m5stickcScanning(uint8_t ch, const char* mode, int detCount,
     bool chg = (ch != msc_lastCh) || (detCount != msc_lastDetCount) || msc_needsRedraw;
     if (!chg) return;
     msc_lastCh = ch; msc_lastDetCount = detCount; msc_needsRedraw = false;
+    // Red LED: on when at least one target has been detected
+    msc_setLED(detCount > 0);
 
     char hdrR[22];
     snprintf(hdrR, sizeof(hdrR), "Ch:%-2u  Det:%-3d", (unsigned)ch, detCount);
@@ -255,6 +268,17 @@ static void m5stickcDetection(const char* method, const char* mac,
     msc_bar(3, y, 200, 8, conf, barFill, MSC_DK_GREY);
     M5.Display.setTextColor(MSC_WHITE, MSC_BLACK);
     M5.Display.setCursor(207, y); M5.Display.printf("%u%%", (unsigned)conf);
+
+    // Red LED: on for high-confidence detections, brief flash for low
+    if (conf >= 60) {
+        msc_setLED(true);   // solid red — definite camera
+    } else if (conf >= 30) {
+        // Fast double-blink for probable detection
+        msc_setLED(true); delay(80); msc_setLED(false); delay(60);
+        msc_setLED(true); delay(80); msc_setLED(false);
+    } else {
+        msc_setLED(false);  // low confidence — no LED
+    }
 
     msc_btnBar("SAVE", "CLEAR");
 }
