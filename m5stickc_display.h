@@ -97,6 +97,35 @@ static void msc_bar(int x, int y, int w, int h, uint8_t pct,
     if (f < w) M5.Display.fillRect(x + f, y, w - f, h, empty);
 }
 
+// Compact RSSI helpers for 240×135 display
+static const char* msc_rssiLabel(int8_t r){
+    if(r>-55)return"STRONG"; if(r>-65)return"GOOD"; if(r>-75)return"FAIR"; if(r>-85)return"WEAK"; return"POOR";
+}
+static uint16_t msc_rssiColor(int8_t r){
+    if(r>-55)return MSC_GREEN; if(r>-65)return 0x37E0; if(r>-75)return MSC_YELLOW; if(r>-85)return MSC_ORANGE; return MSC_RED;
+}
+static int msc_rssiBars(int8_t r){
+    if(r>-55)return 5; if(r>-65)return 4; if(r>-75)return 3; if(r>-85)return 2; return 1;
+}
+// Compact 5-bar WiFi signal + label (height 15px, width ~125px)
+static void msc_drawSig(int x, int y, int8_t rssi) {
+    int nb=msc_rssiBars(rssi); uint16_t col=msc_rssiColor(rssi);
+    for(int i=0;i<5;i++){int bh=(i+1)*3;int bx=x+i*6;int by=y+(15-bh);M5.Display.fillRect(bx,by,5,bh,(i<nb)?col:MSC_DK_GREY);}
+    M5.Display.setTextSize(1); M5.Display.setTextColor(col,MSC_BLACK);
+    M5.Display.setCursor(x+34,y+4); M5.Display.print(msc_rssiLabel(rssi));
+    M5.Display.setTextColor(MSC_LT_GREY,MSC_BLACK);
+    M5.Display.setCursor(x+34+6*6,y+4); M5.Display.printf(" %ddBm",(int)rssi);
+}
+// RSSI trend (last 4 readings)
+#define MSC_HIST 4
+static int8_t msc_rH[MSC_HIST]={0}; static uint8_t msc_rI=0; static bool msc_rF=false;
+static void msc_rPush(int8_t r){msc_rH[msc_rI]=r;msc_rI=(msc_rI+1)%MSC_HIST;if(msc_rI==0)msc_rF=true;}
+static int  msc_rTrend(){
+    int c=msc_rF?MSC_HIST:(int)msc_rI; if(c<2)return 0;
+    int d=(int)msc_rH[(msc_rI+MSC_HIST-1)%MSC_HIST]-(int)msc_rH[(msc_rI+MSC_HIST-c)%MSC_HIST];
+    return(d>=4)?1:(d<=-4)?-1:0;
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 // ── Red LED (G10, active LOW) ──────────────────────────────────────────────
@@ -236,10 +265,17 @@ static void m5stickcDetection(const char* method, const char* mac,
     M5.Display.setCursor(3, y);
     M5.Display.printf("MAC: %s", mac ? mac : "??:??:??:??:??:??");
     y += 11;
-    M5.Display.setCursor(3, y);
-    M5.Display.printf("RSSI: %d dBm  Ch: %u  Det: %d",
-                      (int)rssi, (unsigned)ch, detCount);
-    y += 11;
+    // Compact signal bars + trend
+    msc_rPush(rssi);
+    msc_drawSig(3, y, rssi);
+    {
+        int tr=msc_rTrend();
+        const char* ta=(tr>0)?"\xe2\x86\x91":(tr<0)?"\xe2\x86\x93":"\xe2\x86\x92";
+        uint16_t tc=(tr>0)?MSC_RED:(tr<0)?MSC_GREEN:MSC_GREY;
+        M5.Display.setTextColor(tc,MSC_BLACK);
+        M5.Display.setCursor(3+126,y+4); M5.Display.printf("%s Ch:%u", ta, (unsigned)ch);
+    }
+    y += 17;
     if (ssid && ssid[0]) {
         M5.Display.setTextColor(MSC_CYAN, MSC_BLACK);
         M5.Display.setCursor(3, y);

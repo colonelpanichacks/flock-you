@@ -118,6 +118,70 @@ static void mb_btnBar(const char* a, const char* b, const char* c) {
     M5.Display.setCursor(212, MB_BTN_Y + 9); M5.Display.print(buf);
 }
 
+// ── RSSI signal-strength helpers ──────────────────────────────────────────────
+
+static const char* mb_rssiLabel(int8_t r) {
+    if (r > -55) return "STRONG";
+    if (r > -65) return "GOOD";
+    if (r > -75) return "FAIR";
+    if (r > -85) return "WEAK";
+    return "POOR";
+}
+static uint16_t mb_rssiColor(int8_t r) {
+    if (r > -55) return MB_GREEN;
+    if (r > -65) return 0x37E0;  // lime
+    if (r > -75) return MB_YELLOW;
+    if (r > -85) return MB_ORANGE;
+    return MB_RED;
+}
+static int mb_rssiBars(int8_t r) {
+    if (r > -55) return 5;
+    if (r > -65) return 4;
+    if (r > -75) return 3;
+    if (r > -85) return 2;
+    return 1;
+}
+
+// Draw 5 WiFi-style bars + strength label + dBm value at (x, y)
+// Total width ≈ 40px bars + 100px text = 140px; height = 22px
+static void mb_drawSignal(int x, int y, int8_t rssi) {
+    int nbars = mb_rssiBars(rssi);
+    uint16_t col = mb_rssiColor(rssi);
+    for (int i = 0; i < 5; i++) {
+        int bh = (i + 1) * 4;           // 4,8,12,16,20px
+        int bx = x + i * 8;
+        int by = y + (22 - bh);
+        M5.Display.fillRect(bx, by, 6, bh, (i < nbars) ? col : MB_DK_GREY);
+    }
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(col, MB_BLACK);
+    M5.Display.setCursor(x + 46, y + 8);
+    M5.Display.print(mb_rssiLabel(rssi));
+    M5.Display.setTextColor(MB_LT_GREY, MB_BLACK);
+    M5.Display.setCursor(x + 46 + 7 * 6, y + 8);
+    M5.Display.printf("  %d dBm", (int)rssi);
+}
+
+// RSSI history for approach/recede trend (last 6 readings)
+#define MB_HIST 6
+static int8_t  mb_rHist[MB_HIST] = {0};
+static uint8_t mb_rIdx = 0;
+static bool    mb_rFull = false;
+static void mb_rPush(int8_t r) {
+    mb_rHist[mb_rIdx] = r;
+    mb_rIdx = (mb_rIdx + 1) % MB_HIST;
+    if (mb_rIdx == 0) mb_rFull = true;
+}
+// Returns: +1=approaching, -1=receding, 0=stable
+static int mb_rTrend() {
+    int cnt = mb_rFull ? MB_HIST : (int)mb_rIdx;
+    if (cnt < 3) return 0;
+    int8_t oldest = mb_rHist[(mb_rIdx + MB_HIST - cnt) % MB_HIST];
+    int8_t newest = mb_rHist[(mb_rIdx + MB_HIST - 1) % MB_HIST];
+    int d = (int)newest - (int)oldest;
+    return (d >= 5) ? 1 : (d <= -5) ? -1 : 0;
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 // Called once in setup() — initialises M5Unified, screen, and speaker
@@ -129,9 +193,9 @@ static void m5basicInit() {
 
     M5.Speaker.setVolume(200);
 
-    // Core2 For AWS: short startup vibration to confirm hardware is working
+    // Core2 For AWS: 3 quick startup pulses to confirm vibration motor
 #if defined(USE_M5CORE2_AWS)
-    M5.Power.setVibration(180); delay(150); M5.Power.setVibration(0);
+    for (int i=0;i<3;i++){M5.Power.setVibration(200);delay(120);M5.Power.setVibration(0);delay(80);}
 #endif
 
     M5.Display.setBrightness(mb_brightness);
@@ -280,78 +344,99 @@ static void m5basicDetection(const char* method, const char* mac,
     M5.Display.setTextColor(MB_YELLOW, MB_BLACK);
     M5.Display.setCursor(8, y);
     M5.Display.print(method ? method : "unknown");
-    y += 26;
+    y += 24;
 
-    // MAC
+    // MAC + channel
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.setCursor(8, y);
-    M5.Display.printf("MAC:    %s", mac ? mac : "??:??:??:??:??:??");
-    y += 13;
-
-    // RSSI + channel
-    M5.Display.setCursor(8, y);
-    M5.Display.printf("RSSI:   %d dBm        Channel: %u",
-                      (int)rssi, (unsigned)ch);
-    y += 13;
+    M5.Display.printf("MAC: %s  Ch:%-2u", mac ? mac : "??:??:??:??:??:??", (unsigned)ch);
+    y += 12;
 
     // SSID
     if (ssid && ssid[0]) {
         M5.Display.setTextColor(MB_CYAN, MB_BLACK);
         M5.Display.setCursor(8, y);
-        char s[32]; strncpy(s, ssid, 31); s[31] = '\0';
-        M5.Display.printf("SSID:   \"%s\"", s);
-        y += 13;
+        char s[34]; strncpy(s, ssid, 33); s[33] = '\0';
+        M5.Display.printf("SSID: \"%s\"", s);
+        y += 12;
     }
 
-    mb_hline(y); y += 7;
+    mb_hline(y); y += 5;
+
+    // ── Signal strength visualisation ─────────────────────────────────────────
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MB_GREY, MB_BLACK);
+    M5.Display.setCursor(8, y); M5.Display.print("SIGNAL");
+    y += 10;
+
+    mb_rPush(rssi);
+    mb_drawSignal(8, y, rssi);
+
+    // Trend arrow + label
+    {
+        int trend = mb_rTrend();
+        const char* tArrow = (trend > 0) ? "\xe2\x86\x91" : (trend < 0) ? "\xe2\x86\x93" : "\xe2\x86\x92";
+        const char* tLabel = (trend > 0) ? "APPROACHING" : (trend < 0) ? "RECEDING" : "STABLE";
+        uint16_t tCol = (trend > 0) ? MB_RED : (trend < 0) ? MB_GREEN : MB_GREY;
+        M5.Display.setTextColor(tCol, MB_BLACK);
+        M5.Display.setCursor(200, y + 8);
+        M5.Display.printf("%s %s", tArrow, tLabel);
+    }
+    y += 26;
+
+    mb_hline(y); y += 5;
 
     // Time since detection
+    M5.Display.setTextSize(1);
     M5.Display.setTextColor(MB_LT_GREY, MB_BLACK);
     M5.Display.setCursor(8, y);
     if (lastSeenMs < 3000) {
         M5.Display.setTextColor(MB_RED, MB_BLACK);
-        M5.Display.print("JUST DETECTED  \xe2\x86\x90 NOW");
+        M5.Display.print("!!! JUST DETECTED !!!");
     } else {
         char el[12]; mb_fmtMs(lastSeenMs, el, sizeof(el));
-        M5.Display.printf("Last seen: %s ago", el);
+        M5.Display.printf("Last seen: %s ago   Session: %d det.", el, detCount);
     }
-    y += 13;
-
-    // Session total
-    M5.Display.setTextColor(MB_LT_GREY, MB_BLACK);
-    M5.Display.setCursor(8, y);
-    M5.Display.printf("Session: %d detection(s) total", detCount);
-    y += 16;
+    y += 12;
 
     // Confidence bar
-    mb_hline(y); y += 7;
+    mb_hline(y); y += 5;
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MB_GREY, MB_BLACK);
+    M5.Display.setCursor(8, y); M5.Display.print("CONFIDENCE");
+    y += 10;
+
     uint16_t barFill = (confidence >= 60) ? MB_RED :
                        (confidence >= 30) ? MB_ORANGE : MB_BLUE;
-    mb_bar(8, y, 282, 14, confidence, barFill, MB_DK_GREY);
-    // Percentage text on the right
+    mb_bar(8, y, 274, 12, confidence, barFill, MB_DK_GREY);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
-    M5.Display.setCursor(295, y + 3);
+    M5.Display.setCursor(286, y + 2);
     M5.Display.printf("%u%%", (unsigned)confidence);
-    y += 20;
+    y += 16;
 
-    // Confidence label
+    // Confidence label with icons
     M5.Display.setTextColor(barFill, MB_BLACK);
     M5.Display.setCursor(8, y);
     if (confidence >= 60)
-        M5.Display.print("HIGH CONFIDENCE -- definite Flock camera");
+        M5.Display.print("!!! HIGH — definite Flock Safety camera !!!");
     else if (confidence >= 30)
-        M5.Display.print("PROBABLE -- worth investigating");
+        M5.Display.print("PROBABLE — worth investigating");
     else
-        M5.Display.print("LOW -- possible false positive");
+        M5.Display.print("LOW — possible false positive");
 
     mb_btnBar("SAVE", "BRIGHT", "CLEAR");
 
-    // Core2 For AWS: vibrate on high-confidence detection (tactile alert)
+    // Core2 For AWS: vibration alert — longer pulses for better tactile feel
 #if defined(USE_M5CORE2_AWS)
-    if (confidence >= 30) {
-        M5.Power.setVibration(220); delay(200); M5.Power.setVibration(0);
-        if (confidence >= 60) { delay(80); M5.Power.setVibration(220); delay(200); M5.Power.setVibration(0); }
+    if (confidence >= 60) {
+        // High confidence: three strong pulses (definite camera)
+        for (int _i=0;_i<3;_i++){M5.Power.setVibration(255);delay(500);M5.Power.setVibration(0);delay(150);}
+    } else if (confidence >= 30) {
+        // Probable: two medium pulses
+        M5.Power.setVibration(200);delay(400);M5.Power.setVibration(0);
+        delay(150);
+        M5.Power.setVibration(200);delay(400);M5.Power.setVibration(0);
     }
 #endif
 }
