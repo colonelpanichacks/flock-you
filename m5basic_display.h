@@ -71,7 +71,59 @@ static uint8_t mb_lastConf      = 0;
 static int8_t  mb_lastRssi      = 0;
 static uint8_t mb_lastChan      = 0;
 
+// ── Core2 For AWS: non-blocking vibration state machine ───────────────────────
+// Previously the alert vibration used delay() directly inside
+// m5basicDetection(), which blocks the ENTIRE loop() — button polling, screen
+// redraws, WiFi channel hopping — for up to ~2s per high-confidence detection.
+// During a burst of detections (drainAlertQueue() can process several back to
+// back) this compounded into multi-second freezes of the whole device, which
+// is almost certainly what was still being observed as a "frozen screen"
+// even after the 1Hz redraw fix.  This tick-based state machine reproduces
+// the identical on/off pulse pattern using millis() timing instead of
+// delay(), so m5basicVibrationTick() (called every loop() iteration) never
+// blocks anything.
+#if defined(USE_M5CORE2_AWS)
+static uint8_t       mb_vibPattern  = 0;      // 0=idle 1=high(3x strong) 2=probable(2x med)
+static uint8_t       mb_vibStep     = 0;      // pulse index within the pattern
+static bool          mb_vibOn       = false;  // true while motor is currently energised
+static unsigned long mb_vibNextMs   = 0;      // millis() timestamp of next state change
+#endif
+
+// ── Serial-mirror log strip ───────────────────────────────────────────────────
+// Shows the last few lines of the same text that goes out over Serial/Serial1,
+// directly on the screen — so an operator can see live [flockyou] activity
+// without a USB-serial console attached.  Fed by mb_logAdd(), called from
+// dualPrintf()/dualPrintln() in main.cpp.  Purely additive: it only draws in
+// a small reserved strip just above the button bar and never touches any
+// other on-screen state.
+#define MB_LOG_LINES    3
+#define MB_LOG_LINE_LEN 53   // ~320px / 6px-per-char at text size 1
+static char mb_logBuf[MB_LOG_LINES][MB_LOG_LINE_LEN];
+
+// Appends text to the on-screen log ring buffer.  Splits on embedded '\n' so
+// a single dualPrintf()/dualPrintln() call — which may itself end in '\n' or
+// contain several lines — becomes one or more ring entries, newest first.
+static void mb_logAdd(const char* text) {
+    if (!text || !text[0]) return;
+    const char* p = text;
+    while (*p) {
+        const char* nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len > 0) {
+            size_t n = (len < (size_t)(MB_LOG_LINE_LEN - 1)) ? len : (size_t)(MB_LOG_LINE_LEN - 1);
+            for (int i = MB_LOG_LINES - 1; i > 0; i--)
+                memcpy(mb_logBuf[i], mb_logBuf[i - 1], MB_LOG_LINE_LEN);
+            memcpy(mb_logBuf[0], p, n);
+            mb_logBuf[0][n] = '\0';
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+}
+
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
 
 // Format elapsed milliseconds as "[H:]MM:SS"
 static void mb_fmtMs(unsigned long ms, char* buf, size_t len) {
@@ -216,6 +268,24 @@ static void mb_drawRange(int x, int y, int8_t rssi) {
     M5.Display.print(buf);
 }
 
+// Draws the reserved on-screen serial-mirror log strip.  Called just before
+// the button bar in both m5basicScanning() and m5basicDetection() — the
+// region is 24px tall, ending exactly at MB_BTN_Y, so it never overlaps the
+// button bar.
+static void mb_drawLogStrip() {
+    int y0 = MB_BTN_Y - 24;
+    M5.Display.fillRect(0, y0, MB_W, 24, MB_BLACK);
+    mb_hline(y0, MB_DK_GREY);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(0x4A69, MB_BLACK);   // dim slate — doesn't compete with primary content
+    int ly = y0 + 3;
+    for (int i = MB_LOG_LINES - 1; i >= 0; i--) {
+        M5.Display.setCursor(2, ly);
+        M5.Display.print(mb_logBuf[i]);
+        ly += 7;
+    }
+}
+
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -228,9 +298,14 @@ static void m5basicInit() {
 
     M5.Speaker.setVolume(200);
 
-    // Core2 For AWS: 3 quick startup pulses to confirm vibration motor
+    // Core2 For AWS: 3 quick startup pulses to confirm vibration motor, and
+    // configure the touchscreen "virtual button" strip so M5Unified maps
+    // taps in the bottom MB_BTN_H px into BtnA/BtnB/BtnC — without this call
+    // M5Unified's internal touch-button height defaults to 0 and touches in
+    // the [A][B][C] bar never register as button presses at all.
 #if defined(USE_M5CORE2_AWS)
     for (int i=0;i<3;i++){M5.Power.setVibration(200);delay(120);M5.Power.setVibration(0);delay(80);}
+    M5.setTouchButtonHeight(MB_BTN_H);
 #endif
 
     M5.Display.setBrightness(mb_brightness);
@@ -337,7 +412,7 @@ static void m5basicScanning(uint8_t ch, const char* modeName, int detCount,
     }
 
     // Runtime + SPIFFS
-    int ry = MB_BTN_Y - 28;
+    int ry = MB_BTN_Y - 40;
     mb_hline(ry); ry += 6;
     char el[12];
     mb_fmtMs(runtimeMs, el, sizeof(el));
@@ -345,6 +420,7 @@ static void m5basicScanning(uint8_t ch, const char* modeName, int detCount,
     M5.Display.setCursor(8, ry);
     M5.Display.printf("Runtime: %-10s  SPIFFS: %s", el, spiffsOk ? "OK" : "ERR");
 
+    mb_drawLogStrip();
     mb_btnBar("SAVE", "BRIGHT", "HOP CH");
 }
 
@@ -469,18 +545,18 @@ static void m5basicDetection(const char* method, const char* mac,
     else
         M5.Display.print("LOW — possible false positive");
 
+    mb_drawLogStrip();
     mb_btnBar("SAVE", "BRIGHT", "CLEAR");
 
-    // Core2 For AWS: vibration alert — longer pulses for better tactile feel
+    // Core2 For AWS: vibration alert — non-blocking. Triggers the pattern;
+    // m5basicVibrationTick() (called every loop() iteration) steps it using
+    // millis() timing instead of delay(), so this never blocks button
+    // polling, screen redraws, or WiFi channel hopping.
 #if defined(USE_M5CORE2_AWS)
     if (confidence >= 60) {
-        // High confidence: three strong pulses (definite camera)
-        for (int _i=0;_i<3;_i++){M5.Power.setVibration(255);delay(500);M5.Power.setVibration(0);delay(150);}
+        mb_vibPattern = 1; mb_vibStep = 0; mb_vibOn = false; mb_vibNextMs = millis();
     } else if (confidence >= 30) {
-        // Probable: two medium pulses
-        M5.Power.setVibration(200);delay(400);M5.Power.setVibration(0);
-        delay(150);
-        M5.Power.setVibration(200);delay(400);M5.Power.setVibration(0);
+        mb_vibPattern = 2; mb_vibStep = 0; mb_vibOn = false; mb_vibNextMs = millis();
     }
 #endif
 }
@@ -504,6 +580,35 @@ static int m5basicButtonTick() {
     }
     return 0;
 }
+
+#if defined(USE_M5CORE2_AWS)
+// ── Vibration tick ────────────────────────────────────────────────────────────
+// Call every loop() iteration (Core2 only). Steps the vibration pattern set
+// by m5basicDetection() using millis()-based timing instead of delay(), so
+// the rest of loop() (buttons, screen, WiFi) never blocks.
+static void m5basicVibrationTick() {
+    if (mb_vibPattern == 0) return;
+    unsigned long now = millis();
+    if ((long)(now - mb_vibNextMs) < 0) return;
+
+    const int totalPulses = (mb_vibPattern == 1) ? 3 : 2;
+    const uint8_t vibLevel = (mb_vibPattern == 1) ? 255 : 200;
+    const unsigned long onMs  = (mb_vibPattern == 1) ? 500 : 400;
+    const unsigned long offMs = 150;
+
+    if (!mb_vibOn) {
+        if (mb_vibStep >= totalPulses) { mb_vibPattern = 0; M5.Power.setVibration(0); return; }
+        M5.Power.setVibration(vibLevel);
+        mb_vibOn = true;
+        mb_vibNextMs = now + onMs;
+    } else {
+        M5.Power.setVibration(0);
+        mb_vibOn = false;
+        mb_vibStep++;
+        mb_vibNextMs = now + offMs;
+    }
+}
+#endif
 
 // ── Audio helpers (replace tone()/noTone() for Basic speaker) ─────────────────
 static inline void m5basicBeep(uint32_t hz, uint32_t ms) {

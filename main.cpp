@@ -786,6 +786,9 @@ static void dualPrintf(const char* fmt, ...) {
 #if MIRROR_SERIAL && !defined(USE_M5ATOM_VOICES3R)
     Serial1.write(_dualBuf, n);
 #endif
+#if defined(USE_M5BASIC)
+    mb_logAdd(_dualBuf);
+#endif
   }
 }
 
@@ -794,7 +797,11 @@ static void dualPrintln(const char* str) {
 #if MIRROR_SERIAL && !defined(USE_M5ATOM_VOICES3R)
   Serial1.println(str);
 #endif
+#if defined(USE_M5BASIC)
+  mb_logAdd(str);
+#endif
 }
+
 
 static inline void ledSet(bool on) {
 #if USE_LED
@@ -2000,7 +2007,11 @@ void loop() {
     }
   }
 #endif
+#if defined(USE_M5CORE2_AWS)
+  m5basicVibrationTick();
+#endif
 #if defined(USE_M5STICKC_PLUS_SE)
+
   {
     int btn = m5stickcButtonTick();
     if (btn == 1) {
