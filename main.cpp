@@ -63,10 +63,6 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 // Flock's burst-sleep gap would mean false chirps; longer means you'd miss
 // a drive-away/return. 30 s is a good middle ground.
 #define REDISCOVER_MS          30000
-#define NEW_CHIRP_LO_HZ        1200
-#define NEW_CHIRP_HI_HZ        2000
-#define NEW_CHIRP_NOTE_MS      55
-#define NEW_CHIRP_GAP_MS       25
 #define HB_BEEP_HZ             1500
 #define HB_BEEP_NOTE_MS        70
 #define HB_BEEP_GAP_MS         70
@@ -331,9 +327,17 @@ static void buzzerBeep(unsigned int ms) {
 // Two fast ascending beeps — played on the FIRST sighting of a MAC.
 static void newDetectChirp() {
 #if USE_BUZZER
-  tone(BUZZER_PIN, NEW_CHIRP_LO_HZ); delay(NEW_CHIRP_NOTE_MS); noTone(BUZZER_PIN);
-  delay(NEW_CHIRP_GAP_MS);
-  tone(BUZZER_PIN, NEW_CHIRP_HI_HZ); delay(NEW_CHIRP_NOTE_MS); noTone(BUZZER_PIN);
+  // Keep with the theme, and play the SMB 1-up tone on detection
+  static const uint16_t detectNotes[6] = {
+    659, 784, 1319, 1047, 1175, 1568
+  };
+
+  for (int i = 0; i < 6; i++) {
+    tone(BUZZER_PIN, detectNotes[i]);
+    delay((i == 5) ? 160 : 95);
+    noTone(BUZZER_PIN);
+    if (i < 5) delay(22);
+  }
 #endif
 }
 
