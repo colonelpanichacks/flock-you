@@ -52,11 +52,20 @@ A Flask-based web dashboard for real-time monitoring and analysis of Flock Safet
 5. **Export data** using the export buttons
 
 ### GPS Setup
+The GPS header row has a **source** dropdown with two options:
+
+**Serial NMEA** (USB GPS dongle)
 1. **Connect GPS dongle** to your computer via USB
 2. **Select GPS port** from the dropdown in the header
 3. **Click "Connect"** to establish GPS connection
 4. **Monitor GPS status** via the status indicator
 5. **Detections will automatically include GPS data** when available
+
+**gpsd** (shared GPS via the gpsd daemon)
+1. **Start gpsd** on the host (`gpsd -N /dev/ttyUSB0`, or any working `gpsd` setup)
+2. **Pick "gpsd"** from the source dropdown
+3. **Enter host and port** (default `localhost:2947`)
+4. **Click "Connect"** — the dashboard speaks gpsd's line-delimited JSON protocol directly, no extra Python client required. Handy when several tools already share the same GPS via gpsd.
 
 ### Data Export
 - **CSV Export**: Downloads a CSV file with all detection data
@@ -72,8 +81,11 @@ A Flask-based web dashboard for real-time monitoring and analysis of Flock Safet
 
 ### GPS Management
 - `GET /api/gps/ports` - Get available serial ports
-- `POST /api/gps/connect` - Connect to GPS dongle
-- `POST /api/gps/disconnect` - Disconnect GPS dongle
+- `POST /api/gps/connect` - Connect a GPS source. Body:
+  - `{"source": "serial", "port": "/dev/tty.usbserial-XXX"}` — opens an NMEA reader at 9600 baud
+  - `{"source": "gpsd", "host": "localhost", "port": 2947}` — connects to a running gpsd daemon
+  - Legacy body `{"port": "..."}` still works and is treated as serial
+- `POST /api/gps/disconnect` - Disconnect whichever GPS source is active
 
 ### Data Export
 - `GET /api/export/csv` - Export detections as CSV
