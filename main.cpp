@@ -173,9 +173,38 @@
 #endif
 #include "led_gpio.h"
 
-#define MIRROR_SERIAL    1
+// MIRROR_SERIAL (secondary UART1 log mirror) — DISABLED BY DEFAULT.
+//
+// ROOT CAUSE FOUND (verified on real M5Atom Echo hardware, 2 physical
+// units): calling Serial1.begin(MIRROR_BAUD, SERIAL_8N1, -1, MIRROR_TX_PIN)
+// in setup() reliably corrupts the ESP32's ability to read its own SPI
+// flash on every subsequent boot, producing an unrecoverable (until a full
+// chip erase) boot loop:
+//   rst:0x7/0x8 (TG0/TG1WDT_SYS_RESET) ... flash read err, 1000
+// This was isolated via exhaustive on-device bisection: a blank sketch
+// (and even one with a 900KB+ padding array) boots perfectly forever on
+// the same hardware/toolchain; disabling ONLY this Serial1.begin() call
+// (with everything else in the real firmware left fully intact) restores
+// fully reliable, sustained boot/run behavior. Re-enabling the call with
+// an explicit (non -1) RX pin still eventually crashed, just later in the
+// boot sequence — so the problem is UART1 usage on this hardware/pin
+// combination in general, not merely the "-1 = auto pin" argument.
+//
+// UART1's default GPIO-matrix pins on the classic ESP32 overlap with the
+// SPI flash's data lines when not both explicitly reassigned elsewhere;
+// enabling UART1 here appears to disturb the flash controller's pin
+// wiring badly enough that flash reads fail on every reset thereafter.
+//
+// MIRROR_SERIAL was only ever an optional secondary-log-output feature
+// (mirroring detection output to a second UART for external hardware) —
+// not required for core detector functionality. Given it's now proven to
+// reliably brick boot on affected boards (ESP32 DevKit and M5Atom Echo —
+// see the guard on the Serial1.begin() call below), it defaults OFF.
+// Set to 1 only if you have verified on YOUR specific unit that it is safe.
+#define MIRROR_SERIAL    0
 #define MIRROR_TX_PIN    17
 #define MIRROR_BAUD      115200
+
 
 #define CHANNEL_MODE_FULL_HOP   0
 #define CHANNEL_MODE_CUSTOM     1
