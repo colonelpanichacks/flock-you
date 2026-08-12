@@ -207,8 +207,36 @@ flash_device() {
             0xe000  "$BOOT0" \
             0x10000 .pio/build/m5atom-voices3r/firmware.bin || rc=$?
     else
-        # Atom Lite / Atom Echo / Atom Voice — pio handles everything
+        # Atom Lite / Atom Echo / Atom Voice — pio handles everything.
+        #
+        # Baud-rate reliability on these boards' USB-serial bridges
+        # (CH9102/CP210x, varies by production batch) does NOT scale simply
+        # with speed — on some units the board-default 1500000 baud upload
+        # completes but silently corrupts the bootloader/app image (boot
+        # loop of "flash read err, 1000" on next boot), while other units
+        # fail to even sustain a *lower* rate like 921600 at all ("Unable to
+        # verify flash chip connection"). Neither direction is universally
+        # safer, so rather than hard-coding a single "fixed" speed in
+        # platformio.ini (which only trades one failure mode for another),
+        # retry with a full flash erase + a different, conservative fallback
+        # baud (460800) if the first attempt fails.
         pio run -e "$env" -t upload --upload-port "$port" || rc=$?
+
+        if [[ $rc -ne 0 ]]; then
+            echo ""
+            echo "⚠️  Upload failed at the default baud rate."
+            echo "   Retrying: full flash erase, then upload at 460800 baud..."
+            rc=0
+            pio run -e "$env" -t erase --upload-port "$port" 2>&1 | tail -5 || true
+            sleep 0.5
+            PLATFORMIO_UPLOAD_SPEED=460800 pio run -e "$env" -t upload --upload-port "$port" || rc=$?
+            if [[ $rc -ne 0 ]]; then
+                echo ""
+                echo "   Still failing. Try a different USB cable/port, or flash"
+                echo "   manually at an even lower rate, e.g.:"
+                echo "     PLATFORMIO_UPLOAD_SPEED=115200 pio run -e $env -t upload --upload-port $port"
+            fi
+        fi
     fi
 
     echo ""
