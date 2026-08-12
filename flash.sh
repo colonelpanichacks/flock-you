@@ -129,6 +129,33 @@ show_boot_output() {
     fi
 }
 
+# Waits up to timeout_s for a usbserial port to exist, since a failed/aborted
+# esptool session can leave the device mid-reset for a moment (or, rarely,
+# cause macOS to re-enumerate it under a different device ID entirely).
+# Prints the resolved port path to stdout (possibly different from $1 if the
+# device re-enumerated) or nothing if no usbserial port reappears in time.
+wait_for_usbserial_port() {
+    local expected="$1"
+    local timeout_s="${2:-8}"
+    local deadline=$(( $(date +%s) + timeout_s ))
+    while (( $(date +%s) < deadline )); do
+        if [[ -c "$expected" ]]; then
+            echo "$expected"
+            return 0
+        fi
+        # Device may have re-enumerated under a different ID — fall back to
+        # whatever usbserial port is currently present.
+        local any
+        any=$(ls /dev/cu.usbserial-* 2>/dev/null | head -1)
+        if [[ -n "$any" ]]; then
+            echo "$any"
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
 # Returns 0 if MAC was already flashed, 1 otherwise
 mac_already_flashed() {
     local m="$1"
@@ -225,16 +252,38 @@ flash_device() {
         if [[ $rc -ne 0 ]]; then
             echo ""
             echo "⚠️  Upload failed at the default baud rate."
-            echo "   Retrying: full flash erase, then upload at 460800 baud..."
+            echo "   Waiting for device to settle before retrying..."
             rc=0
-            pio run -e "$env" -t erase --upload-port "$port" 2>&1 | tail -5 || true
-            sleep 0.5
-            PLATFORMIO_UPLOAD_SPEED=460800 pio run -e "$env" -t upload --upload-port "$port" || rc=$?
+
+            local retry_port
+            retry_port=$(wait_for_usbserial_port "$port" 8)
+            if [[ -z "$retry_port" ]]; then
+                echo "   ⚠️  Port $port did not reappear — device may have"
+                echo "      disconnected. Skipping retry."
+                rc=1
+            else
+                [[ "$retry_port" != "$port" ]] && \
+                    echo "   ℹ️  Device re-enumerated at $retry_port"
+                echo "   Retrying: full flash erase, then upload at 460800 baud..."
+                pio run -e "$env" -t erase --upload-port "$retry_port" 2>&1 | tail -5 || true
+                sleep 0.5
+                # Erase itself can also trigger a reset — re-check the port
+                # is still (or again) present right before the real upload.
+                retry_port=$(wait_for_usbserial_port "$retry_port" 5) || retry_port=""
+                if [[ -z "$retry_port" ]]; then
+                    echo "   ⚠️  Port disappeared after erase — device may have"
+                    echo "      disconnected. Skipping upload retry."
+                    rc=1
+                else
+                    PLATFORMIO_UPLOAD_SPEED=460800 pio run -e "$env" -t upload --upload-port "$retry_port" || rc=$?
+                fi
+            fi
+
             if [[ $rc -ne 0 ]]; then
                 echo ""
                 echo "   Still failing. Try a different USB cable/port, or flash"
-                echo "   manually at an even lower rate, e.g.:"
-                echo "     PLATFORMIO_UPLOAD_SPEED=115200 pio run -e $env -t upload --upload-port $port"
+                echo "   manually at an even lower rate once the device is connected, e.g.:"
+                echo "     PLATFORMIO_UPLOAD_SPEED=115200 pio run -e $env -t upload --upload-port <port>"
             fi
         fi
     fi
