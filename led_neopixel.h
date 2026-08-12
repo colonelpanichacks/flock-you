@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2024 SimeonOnSecurity <https://github.com/simeononsecurity>
 //
-// led_neopixel.h — WS2812/SK6812 NeoPixel status LED for M5Atom Lite / Voice
+// led_neopixel.h — WS2812/SK6812 NeoPixel status LED for M5Atom Lite / Voice / Echo
 //
 // WHY THIS FILE EXISTS (bug-isolation refactor):
 // Previously all board LED implementations (NeoPixel matrix AND plain GPIO)
@@ -24,12 +24,12 @@
 
 #pragma once
 
-#if defined(USE_M5ATOM_LITE) || defined(USE_M5ATOM_VOICE)
+#if defined(USE_M5ATOM_LITE) || defined(USE_M5ATOM_VOICE) || defined(USE_M5ATOM_ECHO)
 
 #include <Adafruit_NeoPixel.h>
 
 #ifndef LED_PIN
-  #define LED_PIN 27   // M5Atom Lite/Voice onboard SK6812
+  #define LED_PIN 27   // M5Atom Lite/Voice/Echo onboard SK6812
 #endif
 #ifndef NUM_LEDS
   #define NUM_LEDS 1
@@ -62,4 +62,4 @@ static inline void ledMatrixBootSequence() {
   strip.show();
 }
 
-#endif // USE_M5ATOM_LITE || USE_M5ATOM_VOICE
+#endif // USE_M5ATOM_LITE || USE_M5ATOM_VOICE || USE_M5ATOM_ECHO

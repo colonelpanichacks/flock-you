@@ -69,8 +69,25 @@
 #endif
 
 // M5Atom LED support — GPIO27 SK6812, GPIO39 button
+//
+// M5Atom Echo has the SAME onboard SK6812 addressable RGB LED on GPIO27 as
+// Atom Lite/Voice (all three share the same reference PCB — confirmed by the
+// original board-support commit, which drove Echo and Lite off one shared
+// NeoPixel `strip` object). A later refactor ("v2", commit 185abc1) flipped
+// USE_LED to 0 for Echo and a subsequent LED-modularization pass excluded it
+// from led_neopixel.h's guard entirely — an unintentional regression, not a
+// hardware limitation. Restored here.
+//
+// USE_M5ATOM (a separate flag used elsewhere to gate ledMatrixBootSequence()/
+// button pinMode() calls in setup()) intentionally stays OFF for Echo: Echo's
+// buzzer pinMode() init further down is itself gated on "!defined(USE_M5ATOM)",
+// and Echo — unlike Lite/Voice — actually uses that GPIO25 buzzer. Echo gets
+// its own explicit ledMatrixBootSequence() call in setup() instead (search
+// USE_M5ATOM_ECHO there) so its buzzer init path is left undisturbed.
 #if defined(USE_M5ATOM_LITE) || defined(USE_M5ATOM_VOICE)
   #define USE_M5ATOM 1
+#endif
+#if defined(USE_M5ATOM_LITE) || defined(USE_M5ATOM_VOICE) || defined(USE_M5ATOM_ECHO)
   #define LED_PIN 27
   #define NUM_LEDS 1
   #define BUTTON_PIN 39
@@ -78,9 +95,9 @@
 #include "led_neopixel.h"
 
 #if defined(USE_M5ATOM_ECHO)
-  #define BUTTON_PIN 39
   #define USE_M5ATOM_ECHO_BTN 1
 #endif
+
 
 
 #if defined(USE_M5ATOM_VOICES3R) || defined(USE_M5ATOM_VOICE) || defined(USE_M5BASIC)
@@ -1607,7 +1624,7 @@ void setup() {
   simpleBtnLastState = digitalRead(SIMPLE_BUTTON_PIN);
 #endif
 
-#if defined(USE_M5ATOM)
+#if defined(USE_M5ATOM) || defined(USE_M5ATOM_ECHO)
   ledMatrixBootSequence();
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 #endif
