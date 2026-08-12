@@ -39,7 +39,19 @@
   #include <NimBLEDevice.h>
   #include <NimBLEScan.h>
   #include <NimBLEAdvertisedDevice.h>
+  // NimBLE-Arduino 2.x (required for ESP32-C5, h2zero/NimBLE-Arduino@^2.1.0)
+  // renamed NimBLEAdvertisedDeviceCallbacks -> NimBLEScanCallbacks and
+  // NimBLEScan::setAdvertisedDeviceCallbacks() -> setScanCallbacks(), and the
+  // onResult() device pointer became `const`.  NIMBLE_CPP_VERSION_MAJOR is
+  // only defined starting in 2.x (via NimBLECppVersion.h, pulled in by
+  // NimBLEDevice.h) so its absence reliably signals the 1.x API.
+  #if defined(NIMBLE_CPP_VERSION_MAJOR) && (NIMBLE_CPP_VERSION_MAJOR >= 2)
+    #define FY_NIMBLE_V2 1
+  #else
+    #define FY_NIMBLE_V2 0
+  #endif
 #endif
+
 
 // T-Dongle C5 TFT display + RGB LED
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
@@ -319,65 +331,94 @@ static bool bleNameContains(const char* name, const char* needle) {
   return strstr(low, needle) != nullptr;
 }
 
-class FlockBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
-  void onResult(NimBLEAdvertisedDevice* adv) override {
-    if (!adv) return;
-    int8_t rssi = (int8_t)adv->getRSSI();
-    bool matched = false;
+// Shared onResult() logic — identical for NimBLE-Arduino 1.x and 2.x.  The
+// getters used here (getRSSI/getManufacturerData/haveServiceUUID/
+// getServiceUUID/getName/getAddress) exist with the same signatures in both
+// major versions, but NimBLE 1.x declares them non-const while 2.x declares
+// them on a `const NimBLEAdvertisedDevice*`.  This helper takes a non-const
+// pointer (the 1.x-native shape); the 2.x wrapper below const_casts its
+// `const` parameter away before calling in — safe, since the scan callback
+// never actually receives a truly-const object, only a const-qualified view.
+static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
 
-    // 1. Manufacturer ID check (Flock Safety BLE mfr-ID per Will Greenberg)
-    {
-      std::string mfr = adv->getManufacturerData();
-      if (mfr.size() >= 2) {
-        const uint8_t* m = (const uint8_t*)mfr.data();
-        // BLE mfr data is LE: low byte first
-        uint16_t mfrId = (uint16_t)m[0] | ((uint16_t)m[1] << 8);
-        if (mfrId == BLE_FLOCK_MFR_ID) matched = true;
-      }
-    }
+  if (!adv) return;
+  int8_t rssi = (int8_t)adv->getRSSI();
+  bool matched = false;
 
-    // 2. Raven / Flock BLE service UUID check — full 128-bit UUIDs (GainSec/PR#39).
-    // Iterates the device's advertised service list and delegates to fy_detect.h's
-    // hardware-independent fyCheckRavenUUIDFromStrings() for the actual comparison.
-    if (!matched && adv->haveServiceUUID()) {
-      int nsvc = adv->getServiceUUIDCount();
-      const char* strs[16];
-      std::string bufs[16];
-      int n = (nsvc < 16) ? nsvc : 16;
-      for (int si = 0; si < n; si++) {
-        bufs[si] = adv->getServiceUUID(si).toString();
-        strs[si] = bufs[si].c_str();
-      }
-      char matchedUUID[41] = {0};
-      if (fyCheckRavenUUIDFromStrings(strs, n, matchedUUID)) {
-        matched = true;
-        // Log which UUID matched (matchedUUID is populated by the helper)
-        (void)matchedUUID;
-      }
-    }
-
-    // 3. Device name match
-    if (!matched) {
-      std::string name = adv->getName();
-      if (!name.empty()) {
-        for (const char** kw = ble_flock_names; *kw; kw++) {
-          if (bleNameContains(name.c_str(), *kw)) { matched = true; break; }
-        }
-      }
-    }
-
-    if (matched) {
-      g_bleFlockLastSeen = (uint32_t)millis();
-      g_bleFlockRssi     = rssi;
-      // Log immediately from BLE task — Serial is safe here because we're not
-      // in the WiFi promiscuous callback (different task context).
-      Serial.printf("[flockyou] BLE-Flock rssi=%d addr=%s\n",
-                    (int)rssi, adv->getAddress().toString().c_str());
+  // 1. Manufacturer ID check (Flock Safety BLE mfr-ID per Will Greenberg)
+  {
+    std::string mfr = adv->getManufacturerData();
+    if (mfr.size() >= 2) {
+      const uint8_t* m = (const uint8_t*)mfr.data();
+      // BLE mfr data is LE: low byte first
+      uint16_t mfrId = (uint16_t)m[0] | ((uint16_t)m[1] << 8);
+      if (mfrId == BLE_FLOCK_MFR_ID) matched = true;
     }
   }
+
+  // 2. Raven / Flock BLE service UUID check — full 128-bit UUIDs (GainSec/PR#39).
+  // Iterates the device's advertised service list and delegates to fy_detect.h's
+  // hardware-independent fyCheckRavenUUIDFromStrings() for the actual comparison.
+  if (!matched && adv->haveServiceUUID()) {
+    int nsvc = adv->getServiceUUIDCount();
+    const char* strs[16];
+    std::string bufs[16];
+    int n = (nsvc < 16) ? nsvc : 16;
+    for (int si = 0; si < n; si++) {
+      bufs[si] = adv->getServiceUUID(si).toString();
+      strs[si] = bufs[si].c_str();
+    }
+    char matchedUUID[41] = {0};
+    if (fyCheckRavenUUIDFromStrings(strs, n, matchedUUID)) {
+      matched = true;
+      // Log which UUID matched (matchedUUID is populated by the helper)
+      (void)matchedUUID;
+    }
+  }
+
+  // 3. Device name match
+  if (!matched) {
+    std::string name = adv->getName();
+    if (!name.empty()) {
+      for (const char** kw = ble_flock_names; *kw; kw++) {
+        if (bleNameContains(name.c_str(), *kw)) { matched = true; break; }
+      }
+    }
+  }
+
+  if (matched) {
+    g_bleFlockLastSeen = (uint32_t)millis();
+    g_bleFlockRssi     = rssi;
+    // Log immediately from BLE task — Serial is safe here because we're not
+    // in the WiFi promiscuous callback (different task context).
+    Serial.printf("[flockyou] BLE-Flock rssi=%d addr=%s\n",
+                  (int)rssi, adv->getAddress().toString().c_str());
+  }
+}
+
+// Thin per-API-version wrapper class — only the base class, method name/
+// signature differ; all real logic lives in fyProcessBLEAdvertisedDevice().
+#if FY_NIMBLE_V2
+class FlockBLECallbacks : public NimBLEScanCallbacks {
+  void onResult(const NimBLEAdvertisedDevice* adv) override {
+    // 2.x hands us a const-qualified view; fyProcessBLEAdvertisedDevice()
+    // takes non-const because NimBLE 1.x's getters are non-const (see
+    // comment above the function).  Safe to cast away: the underlying
+    // object is never truly const, only the pointer type differs by API
+    // version.
+    fyProcessBLEAdvertisedDevice(const_cast<NimBLEAdvertisedDevice*>(adv));
+  }
 };
+#else
+class FlockBLECallbacks : public NimBLEAdvertisedDeviceCallbacks {
+  void onResult(NimBLEAdvertisedDevice* adv) override {
+    fyProcessBLEAdvertisedDevice(adv);
+  }
+};
+#endif
 
 static FlockBLECallbacks g_bleCallbacks;
+
 
 static void bleScanStart() {
   if (!g_pBLEScan) return;
@@ -394,13 +435,28 @@ static void bleScanStop() {
 
 static void initBLE() {
   NimBLEDevice::init("");
-  NimBLEDevice::setPower(ESP_PWR_LVL_P3);
+  // NimBLE 1.x's NimBLEDevice::setPower() ONLY has the
+  // esp_power_level_t-enum overload (setPower(esp_power_level_t, ...)) — it
+  // does NOT accept a plain int/dBm value.  NimBLE 2.x dropped that enum
+  // overload in favor of a dBm-based int overload.  Must version-gate;
+  // 3 dBm ≈ ESP_PWR_LVL_P3.
+#if FY_NIMBLE_V2
+  NimBLEDevice::setPower(3);               // dBm-based (2.x only)
+#else
+  NimBLEDevice::setPower(ESP_PWR_LVL_P3);  // enum-based (1.x only)
+#endif
   g_pBLEScan = NimBLEDevice::getScan();
+
+#if FY_NIMBLE_V2
+  g_pBLEScan->setScanCallbacks(&g_bleCallbacks, false);
+#else
   g_pBLEScan->setAdvertisedDeviceCallbacks(&g_bleCallbacks, false);
+#endif
   g_pBLEScan->setActiveScan(false);
   g_pBLEScan->setInterval(100);
   g_pBLEScan->setWindow(99);
 }
+
 
 // ── BLE_COEX_MODE=1: true simultaneous WiFi + BLE ────────────────────────────
 // When BLE_COEX_MODE is set, the ESP-IDF software coexistence scheduler
