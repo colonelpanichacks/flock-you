@@ -1642,10 +1642,21 @@ void setup() {
 
   startupBeep();
 #if USE_LED
+  // Boot-confirmation flash: briefly show red, then settle to idle (dim
+  // green on NeoPixel boards, off on plain-GPIO boards) BEFORE the slow
+  // SPIFFS/BLE/WiFi init below runs.  ledTick() — the only thing that
+  // normally clears a flash back to idle — isn't called until loop()
+  // starts, so without this explicit delay+tick the LED would sit in its
+  // "red" state for the *entire* remaining duration of setup() (BLE init
+  // alone can take the better part of a second), making it look
+  // permanently red at boot instead of promptly turning green.
   ledFlash(200);
+  delay(200);
+  ledTick();
 #endif
 
   precompileOuis();
+
   memset(dedupeTable, 0, sizeof(dedupeTable));
   memset(seqMacTable, 0, sizeof(seqMacTable));
   seqMacCount = 0;
