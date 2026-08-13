@@ -1747,20 +1747,32 @@ void setup() {
     dualPrintln("[flockyou] SPIFFS init FAILED — running without persistence");
   }
 
-#if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
-  // BLE init must happen BEFORE WiFi promiscuous start on shared-radio ESP32.
-  // NimBLE takes the radio first; we'll hand it back to WiFi after init.
-  initBLE();
-  g_bleNextScan = millis() + 5000;  // first BLE scan 5 s after boot
-  dualPrintln("[flockyou] BLE scanner init OK");
-#endif
-
+  // ------------------------------------------------------------------
+  // WiFi promiscuous init MUST happen BEFORE BLE controller init.
+  //
+  // This used to be reversed (BLE init before esp_wifi_start()) based on a
+  // comment claiming shared-radio coexistence required it. That was never
+  // verified on hardware and matches a known ESP-IDF failure mode: bringing
+  // up the BT controller before esp_wifi_start() can leave the coexistence
+  // arbiter in a state where esp_wifi_start() hangs forever. Espressif's own
+  // WiFi/BT coex examples always init+start WiFi FIRST, then bring up the BT
+  // controller. This matches a field report of the device hanging right
+  // after printing "BLE scanner init OK" and never reaching "v2 WiFi
+  // detector started" -- i.e. setup() never finishes, loop() never runs, and
+  // the LED gets stuck on its boot-flash color forever (that is NOT a
+  // separate LED bug -- ledTick()/drainAlertQueue() only run from loop()).
+  // Checkpoint prints below pinpoint exactly which call hangs if this
+  // recurs.
+  // ------------------------------------------------------------------
+  dualPrintln("[flockyou] wifi init...");
   WiFi.mode(WIFI_MODE_NULL);
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   esp_wifi_init(&cfg);
   esp_wifi_set_storage(WIFI_STORAGE_RAM);
   esp_wifi_set_mode(WIFI_MODE_NULL);
+  dualPrintln("[flockyou] wifi start...");
   esp_wifi_start();
+  dualPrintln("[flockyou] wifi start OK");
 
   applyInitialChannel();
 
@@ -1776,12 +1788,21 @@ void setup() {
   esp_wifi_set_promiscuous_filter(&filt);
   esp_wifi_set_promiscuous_rx_cb(&wifiSniffer);
   esp_wifi_set_promiscuous(true);
+  dualPrintln("[flockyou] wifi promiscuous ON");
+
+#if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
+  dualPrintln("[flockyou] BLE init...");
+  initBLE();
+  g_bleNextScan = millis() + 5000;  // first BLE scan 5 s after boot
+  dualPrintln("[flockyou] BLE scanner init OK");
+#endif
 
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN && defined(BLE_COEX_MODE) && BLE_COEX_MODE
-  // In coex mode, start the continuous BLE scan NOW — after WiFi promiscuous
+  // In coex mode, start the continuous BLE scan NOW -- after WiFi promiscuous
   // is already ON.  The ESP-IDF coexistence scheduler (SW_COEXIST) handles
   // time-sharing automatically; no application-level pause/resume needed.
   bleCoexStart();
+  dualPrintln("[flockyou] BLE coex scan started");
 #endif
 
   dualPrintln("[flockyou] v2 WiFi detector started");
