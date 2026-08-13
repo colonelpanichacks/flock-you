@@ -183,9 +183,10 @@ Voice), ESP32 DevKit, ESP32-S3 (Atom VoiceS3R) — uses a **2.4 GHz-only**
 on these parts returns `ESP_ERR_INVALID_ARG` and changes nothing.
 
 Adding channels 149 and 157 to the hop list on 2.4 GHz hardware would:
-- Waste 700 ms of capture time per full cycle (2 × 350 ms dwell)
+- Waste 500 ms of capture time per full cycle (2 × 250 ms dwell)
 - Produce zero captures
 - Reduce effective 2.4 GHz dwell time by ~18%
+
 
 **Do not add 5 GHz channels to the 2.4 GHz hop list.**
 
@@ -438,7 +439,7 @@ pio run -e esp32dev --build-flag=-DTESTING_MODE=1 -t upload
    Σ(path-loss) = 40.05 + 20*log10(dist_m).  Useful for drive-test logs.
 
 5. **Watchdog for dead OUI / no OUI cameras** — periodically emit a
-   structured `{"event":"scan_complete","channel_dwell_ms":350,...}` heartbeat
+   structured `{"event":"scan_complete","channel_dwell_ms":250,...}` heartbeat
    so the Flask app can distinguish "scanning, nothing found" from "device
    disconnected".
 
@@ -446,3 +447,39 @@ pio run -e esp32dev --build-flag=-DTESTING_MODE=1 -t upload
    is in-memory only and resets on reboot.  Persist seen MACs across reboots
    using a compact bloom filter in SPIFFS to avoid re-alerting on cameras that
    were already logged in a prior session.
+
+7. **Port upstream's "IE fingerprint" probe-request verification as an
+   ADDITIVE confidence signal (not a replacement gate)** — colonelpanichacks
+   /flock-you (the upstream project this fork is based on) added a TLV-level
+   802.11 Information-Element fingerprint check for Probe Request frames: it
+   walks the raw IE tags and builds a signature string (IE tag numbers +
+   vendor-IE tag-221 payload prefixes), then compares against a hardcoded,
+   drive-tested allowlist:
+   `"2,12,127,221:506f9a16030103,45,191,221:0050f208000000"`.  A probe
+   request whose IE structure matches this exact signature is almost
+   certainly the specific LiteOn/USI Flock-chipset firmware, not merely any
+   device sharing the same OUI. Upstream uses this to fully replace its
+   plain wildcard-probe check and to justify disabling `CHECK_ADDR1`/
+   `CHECK_ADDR3` — flock-you-esp32 should NOT copy that replacement
+   decision (our `CHECK_ADDR1`/`CHECK_ADDR3` hits already can't chirp alone
+   — see `CS_OUI_ADDR1`/`CS_OUI_ADDR3` below `CHIRP_MIN_CONFIDENCE` — so the
+   false-positive risk upstream is guarding against is already contained).
+   Instead, port the IE-signature builder as a new `CS_IE_SIG_MATCH` bonus
+   (~+15–20) added on top of the existing `ALERT_WILDCARD_PROBE` score when
+   the signature matches, which should reduce OUI-collision false positives
+   ("alerts where I don't see a Flock") without reducing recall. Left as
+   future work because it requires porting a nontrivial TLV-parsing helper
+   chain (`fyBuildFlockIeSigFromProbeBody()` and friends) with the same
+   defensive "phantom overflow" / "TLV resync" handling upstream added for
+   malformed/truncated ESP32 promiscuous captures.
+
+8. **Cross-reference `jbohack/nyanBOX`'s Flock detector** (August 2026
+   research) — nyanBOX is a commercial multi-tool ESP32 gadget whose Flock
+   detector traces back to this same upstream codebase. Its OUI list
+   (`mac_prefixes[]`) is a strict subset of `fy_oui_high[]` already (no new
+   OUIs to add), and its scan design is *less* continuous than ours: it
+   fully stops the WiFi radio (`esp_wifi_stop()`) for an 8 s BLE phase every
+   ~16–30 s cycle, versus our 5 s/60 s (or continuous coex) time-sharing.
+   Nothing worth porting from nyanBOX beyond confirming our OUI coverage is
+   already ahead of it.
+

@@ -228,13 +228,35 @@
 #define CHANNEL_MODE_SINGLE     2
 
 #define CHANNEL_MODE CHANNEL_MODE_CUSTOM
-#define CHANNEL_DWELL_MS 350
+// ── Dwell time + hop DIRECTION (August 2026 field-reliability fix) ─────────
+// Root-caused a user-reported "hit and miss" pattern (beeps while driving
+// through an area but silence while stopped right next to a confirmed
+// camera; some cameras only alert while dwelling at a stop light, never on
+// a drive-by) against colonelpanichacks/flock-you upstream, which carries
+// this exact fix credited to field observation by nsm_barri: Flock cameras
+// themselves hop 1 → 6 → 11 (ASCENDING) at ~125 ms per channel. The old
+// defaults here — ASCENDING scan order + a slower 350 ms dwell — meant our
+// scanner and a camera's hop cycle could fall into a persistent "lockstep"
+// phase relationship where their dwell windows never overlap, for as long
+// as both keep repeating the same fixed-length cycle (which is exactly the
+// "silent while stationary" scenario). Reversing our scan to DESCENDING
+// (11 → 6 → 1) makes the two radios sweep toward each other each cycle
+// instead of chasing each other in the same direction, which converges on
+// an overlap far more reliably regardless of starting phase. Dwell is
+// dropped to 250 ms (2 x the camera's observed ~125 ms hop) to also shrink
+// the worst-case time-to-overlap. Both changes are direct, low-risk ports
+// of upstream's already field-tested fix — see also DETECTION_IMPROVEMENTS.md.
+#define CHANNEL_DWELL_MS 250
 #define SINGLE_CHANNEL 1
 
 // ── 2.4 GHz channels — always scanned ──────────────────────────────────────
 // Flock primaries: 1, 6, 11.  "Flock Camera net." observed on ch.1 (2.4 GHz).
-static const uint8_t customChannels[]   = {1, 6, 11};
+// NOTE: order is intentionally DESCENDING (11, 6, 1) — see the
+// CHANNEL_DWELL_MS comment above for why. Do not "fix" this back to
+// ascending order without re-reading that comment.
+static const uint8_t customChannels[]   = {11, 6, 1};
 static const size_t  customChannelCount = sizeof(customChannels) / sizeof(customChannels[0]);
+
 
 static const uint8_t fullHopChannels[]  = {1,2,3,4,5,6,7,8,9,10,11};
 static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(fullHopChannels[0]);
