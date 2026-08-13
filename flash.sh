@@ -63,6 +63,7 @@ FLASHED_MACS=()   # indexed array — works on macOS default bash 3.2
 show_boot_output() {
     local port="$1"
     local timeout_s="${2:-35}"   # 35 s — covers 30 s heartbeat interval if startup lines missed
+    local env="${3:-}"           # optional: selects which "booted OK" marker to watch for
 
     # For usbmodem ports that might still be reappearing after the flash hard-reset,
     # wait up to 5 s for the node to exist before giving up.
@@ -96,9 +97,24 @@ show_boot_output() {
     # raw     : pass all bytes through; bash read splits on \n
     stty -f "$port" 115200 raw cs8 -cstopb -parenb clocal -hupcl 2>/dev/null
 
+    # Different firmware images print different "fully booted" log lines, so
+    # pick the right marker set based on which environment was just flashed.
+    # Real detector (main.cpp): tag "[flockyou]", done once we see the
+    # "OUIs:" startup-banner line (or later, the periodic "scanning" heartbeat).
+    # Beacon tester (beacon_test.cpp): tag "[beacon]", done once we see the
+    # "ready — N scenarios..." line printed at the very end of its setup().
+    local tag="[flockyou]"
+    local banner_pat="[flockyou] OUIs:"
+    local heartbeat_pat="scanning"
+    if [[ "$env" == "m5atom-lite-beacon" ]]; then
+        tag="[beacon]"
+        banner_pat="[beacon] ready"
+        heartbeat_pat="ready"
+    fi
+
     local start_ts
     start_ts=$(date +%s)
-    local seen_flockyou=0
+    local seen_tag=0
 
     while (( $(date +%s) - start_ts < timeout_s )); do
         # read -t 2: block up to 2 s waiting for a newline from the device
@@ -106,14 +122,14 @@ show_boot_output() {
             line="${line%$'\r'}"     # strip ESP32 Serial.println() trailing \r
             [[ -n "$line" ]] && printf "   \033[2m%s\033[0m\n" "$line"
             # Track that we've heard from this firmware
-            [[ "$line" == *"[flockyou]"* ]] && seen_flockyou=1
-            # "[flockyou] OUIs:" is the last startup banner line — firmware fully
-            # initialized and about to start scanning.  Also accepted: the
-            # "[flockyou] scanning" heartbeat (every 30 s, HEARTBEAT_MS=30000).
-            if [[ "$line" == *"[flockyou] OUIs:"* ]] || \
-               [[ $seen_flockyou -eq 1 && "$line" == *"scanning"* ]]; then
+            [[ "$line" == *"$tag"* ]] && seen_tag=1
+            # banner_pat is the definitive "fully initialized" line for this
+            # firmware. heartbeat_pat is a fallback (periodic re-print) in
+            # case the banner line itself was missed by the reader.
+            if [[ "$line" == *"$banner_pat"* ]] || \
+               [[ $seen_tag -eq 1 && "$line" == *"$heartbeat_pat"* ]]; then
                 echo "────────────────────────────────────────────────────────────────"
-                echo "✅ Firmware confirmed running — device is scanning."
+                echo "✅ Firmware confirmed running."
                 exec 3>&- 2>/dev/null
                 return
             fi
@@ -122,7 +138,7 @@ show_boot_output() {
 
     exec 3>&- 2>/dev/null
     echo "────────────────────────────────────────────────────────────────"
-    if [[ $seen_flockyou -eq 1 ]]; then
+    if [[ $seen_tag -eq 1 ]]; then
         echo "✅ Firmware running."
     else
         echo "⚠️  No firmware output seen in ${timeout_s}s — check baud rate or reboot manually."
@@ -406,12 +422,18 @@ while true; do
     echo "   6) Basic Core v2.7 + BLE  — 2.0\" IPS display + speaker      (CH9102/usbserial)"
     echo "   7) Core2 For AWS + BLE    — 2.0\" touch + I2S + PSRAM        (CH9102/usbserial)"
     echo "   8) StickC Plus SE + BLE   — 1.14\" display + buzzer          (FTDI/usbserial)"
+    echo "   9) Beacon Tester (Atom Lite) — broadcasts fake Flock signals (FTDI/usbserial)"
     echo ""
     echo "   ℹ️  Options 4/5 (ESP32-S3 / Atom VoiceS3R or Echo S3R):"
     echo "      Flashing is fully automatic — no button-hold required."
     echo "      If all 3 attempts fail, unplug + re-plug the device and try again."
     echo ""
-    read -r -p "   Enter 1–8 (default: 1): " VARIANT
+    echo "   ℹ️  Option 9 (Beacon Tester) is NOT a real detector — it's a"
+    echo "      standalone tool that broadcasts fake Flock WiFi/BLE signals"
+    echo "      so you can verify a SEPARATE real detector is alerting"
+    echo "      correctly. See beacon_test.cpp for scenario details."
+    echo ""
+    read -r -p "   Enter 1–9 (default: 1): " VARIANT
 
     case "$VARIANT" in
         1)
@@ -452,6 +474,11 @@ while true; do
         8)
             ENV="m5stickc-plus-se-ble"
             LABEL="M5StickC Plus SE + BLE"
+            EXPECTED_PORT_TYPE="usbserial"
+            ;;
+        9)
+            ENV="m5atom-lite-beacon"
+            LABEL="Beacon Tester (Atom Lite, fake Flock signal broadcaster)"
             EXPECTED_PORT_TYPE="usbserial"
             ;;
         *)
@@ -518,7 +545,7 @@ while true; do
     fi
 
     # ── Stream boot output until firmware heartbeat (or 15 s timeout) ────────
-    show_boot_output "${BOOT_PORT:-$PORT}"
+    show_boot_output "${BOOT_PORT:-$PORT}" "" "$ENV"
 
     if $LOOP; then
         echo ""
