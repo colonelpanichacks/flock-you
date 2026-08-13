@@ -184,59 +184,59 @@
   <div class="wizard-step" id="step2">
     <div class="step-num" id="sn2">2</div>
     <div class="step-body">
-      <div class="step-title">Select Firmware</div>
-      <div class="step-desc">Choose the variant that matches your hardware.</div>
+      <div class="step-title">Select Your Board</div>
+      <div class="step-desc">Choose the hardware you're flashing.</div>
       <div class="board-grid">
 
-        <button class="board-btn selected" onclick="selectFW(this,'manifest-esp32dev-ble.json')">
+        <button class="board-btn selected" onclick="selectBoard(this,'esp32dev')">
           <span class="board-chip">ESP32</span>
           <span class="board-name">Generic ESP32 DevKit</span>
           <span class="board-desc">WROOM / WROVER &mdash; most common boards &amp; breakouts</span>
         </button>
 
-        <button class="board-btn" onclick="selectFW(this,'manifest-m5atom-lite-ble.json')">
+        <button class="board-btn" onclick="selectBoard(this,'m5atom-lite')">
           <span class="board-chip">ESP32</span>
           <span class="board-name">M5Stack ATOM Lite</span>
           <span class="board-desc">Compact ATOM with RGB LED &amp; Grove port</span>
         </button>
 
-        <button class="board-btn" onclick="selectFW(this,'manifest-m5atom-echo-ble.json')">
+        <button class="board-btn" onclick="selectBoard(this,'m5atom-echo')">
           <span class="board-chip">ESP32</span>
           <span class="board-name">M5Stack ATOM Echo</span>
           <span class="board-desc">ATOM with speaker &amp; microphone</span>
         </button>
 
-        <button class="board-btn" onclick="selectFW(this,'manifest-m5atom-voice-ble.json')">
+        <button class="board-btn" onclick="selectBoard(this,'m5atom-voice')">
           <span class="board-chip">ESP32</span>
           <span class="board-name">M5Stack ATOM Voice</span>
           <span class="board-desc">ATOM Voice with I2S audio</span>
         </button>
 
-        <button class="board-btn" onclick="selectFW(this,'manifest-m5atom-voices3r-ble.json')">
+        <button class="board-btn" onclick="selectBoard(this,'m5atom-voices3r')">
           <span class="board-chip">ESP32-S3</span>
           <span class="board-name">M5Atom VoiceS3R</span>
           <span class="board-desc">S3-based ATOM Voice with extended BLE range</span>
         </button>
 
-        <button class="board-btn" onclick="selectFW(this,'manifest-m5stack-basic-ble.json')">
+        <button class="board-btn" onclick="selectBoard(this,'m5stack-basic')">
           <span class="board-chip">ESP32</span>
           <span class="board-name">M5Stack Basic Core v2.7</span>
           <span class="board-desc">2.0&quot; IPS 320×240 display · speaker · 3 buttons · 16 MB flash</span>
         </button>
 
-        <button class="board-btn" onclick="selectFW(this,'manifest-m5stack-core2-aws-ble.json')">
+        <button class="board-btn" onclick="selectBoard(this,'m5stack-core2-aws')">
           <span class="board-chip">ESP32 · 8 MB PSRAM</span>
           <span class="board-name">M5Stack Core2 For AWS</span>
           <span class="board-desc">2.0&quot; capacitive touch IPS · I²S speaker · ATECC608 crypto</span>
         </button>
 
-        <button class="board-btn" onclick="selectFW(this,'manifest-m5stickc-plus-se-ble.json')">
+        <button class="board-btn" onclick="selectBoard(this,'m5stickc-plus-se')">
           <span class="board-chip">ESP32</span>
           <span class="board-name">M5StickC Plus SE</span>
           <span class="board-desc">1.14&quot; ST7789v2 135×240 · passive buzzer · 2 buttons · orange case</span>
         </button>
 
-        <button class="board-btn board-experimental" onclick="selectFW(this,'manifest-lilygo-t-dongle-c5-ble.json')">
+        <button class="board-btn board-experimental" onclick="selectBoard(this,'lilygo-t-dongle-c5')">
           <span class="board-chip">ESP32-C5 · Experimental</span>
           <span class="board-name">LILYGO T-Dongle C5</span>
           <span class="board-desc">USB-dongle with TFT display &amp; RGB LED</span>
@@ -246,9 +246,19 @@
     </div>
   </div>
 
-  <!-- Step 3: Flash -->
+  <!-- Step 3: Select firmware variant (populated by JS based on chosen board) -->
   <div class="wizard-step" id="step3">
     <div class="step-num" id="sn3">3</div>
+    <div class="step-body">
+      <div class="step-title">Select Firmware</div>
+      <div class="step-desc" id="fw-step-desc">Choose which firmware to run on this board.</div>
+      <div class="board-grid" id="fw-variant-grid"></div>
+    </div>
+  </div>
+
+  <!-- Step 4: Flash -->
+  <div class="wizard-step" id="step4">
+    <div class="step-num" id="sn4">4</div>
     <div class="step-body">
       <div class="step-title">Flash Firmware</div>
       <div class="step-desc">Click <strong>Install</strong>, select your device's serial port, and wait ~60 s for flashing to complete.</div>
@@ -368,16 +378,110 @@ function switchTab(t){
 // Init flash tab visible
 document.getElementById('pane-flash').classList.add('active');
 
-// ── Firmware selector ──
-function selectFW(el, manifest){
-  document.querySelectorAll('.board-btn').forEach(b=>b.classList.remove('selected'));
+// ── Board → firmware-variant data ──
+// Each board maps to its default "Detector (WiFi + BLE)" manifest, plus an
+// optional array of extra variants (currently only the M5Atom Lite's beacon
+// tester). The variant step (step 3) is rebuilt whenever the board changes,
+// and always defaults back to the normal detector — the beacon tester (or
+// any other alt firmware) must be explicitly opted into every time a board
+// is (re)selected, so nobody accidentally flashes a non-detector firmware.
+const BOARDS = {
+  'esp32dev': {
+    name:'Generic ESP32 DevKit', chip:'ESP32',
+    normal:{manifest:'manifest-esp32dev-ble.json'}
+  },
+  'm5atom-lite': {
+    name:'M5Stack ATOM Lite', chip:'ESP32',
+    normal:{manifest:'manifest-m5atom-lite-ble.json'},
+    extra:[{
+      id:'beacon', manifest:'manifest-m5atom-lite-beacon.json',
+      label:'🧪 Beacon Tester', chip:'ESP32 · Test Tool',
+      desc:'Broadcasts fake Flock WiFi/BLE signals so you can verify a SEPARATE real detector at home — no need to go find an actual camera. Not a detector itself.'
+    }]
+  },
+  'm5atom-echo': {
+    name:'M5Stack ATOM Echo', chip:'ESP32',
+    normal:{manifest:'manifest-m5atom-echo-ble.json'}
+  },
+  'm5atom-voice': {
+    name:'M5Stack ATOM Voice', chip:'ESP32',
+    normal:{manifest:'manifest-m5atom-voice-ble.json'}
+  },
+  'm5atom-voices3r': {
+    name:'M5Atom VoiceS3R', chip:'ESP32-S3',
+    normal:{manifest:'manifest-m5atom-voices3r-ble.json'}
+  },
+  'm5stack-basic': {
+    name:'M5Stack Basic Core v2.7', chip:'ESP32',
+    normal:{manifest:'manifest-m5stack-basic-ble.json'}
+  },
+  'm5stack-core2-aws': {
+    name:'M5Stack Core2 For AWS', chip:'ESP32 · 8 MB PSRAM',
+    normal:{manifest:'manifest-m5stack-core2-aws-ble.json'}
+  },
+  'm5stickc-plus-se': {
+    name:'M5StickC Plus SE', chip:'ESP32',
+    normal:{manifest:'manifest-m5stickc-plus-se-ble.json'}
+  },
+  'lilygo-t-dongle-c5': {
+    name:'LILYGO T-Dongle C5', chip:'ESP32-C5 · Experimental',
+    normal:{manifest:'manifest-lilygo-t-dongle-c5-ble.json'}
+  },
+};
+
+// ── Step 2: board selector ──
+function selectBoard(el, boardId){
+  document.querySelectorAll('#step2 .board-btn').forEach(b=>b.classList.remove('selected'));
   el.classList.add('selected');
-  document.getElementById('install-btn').setAttribute('manifest', manifest);
-  // highlight step 3
   document.getElementById('step2').classList.remove('active-step');
   document.getElementById('step3').classList.add('active-step');
   document.getElementById('sn2').classList.add('done');
+  renderFirmwareVariants(boardId);
 }
+
+// ── Step 3: firmware-variant selector (rebuilt per board) ──
+function renderFirmwareVariants(boardId){
+  const board = BOARDS[boardId];
+  const grid = document.getElementById('fw-variant-grid');
+  grid.innerHTML = '';
+
+  const normalBtn = document.createElement('button');
+  normalBtn.className = 'board-btn selected';
+  normalBtn.innerHTML =
+    `<span class="board-chip">${board.chip}</span>`+
+    `<span class="board-name">Detector (WiFi + BLE)</span>`+
+    `<span class="board-desc">Passively scans for Flock cameras &amp; BLE trackers. Recommended default.</span>`;
+  normalBtn.onclick = () => selectFirmwareVariant(normalBtn, board.normal.manifest);
+  grid.appendChild(normalBtn);
+
+  (board.extra||[]).forEach(v=>{
+    const btn = document.createElement('button');
+    btn.className = 'board-btn';
+    btn.innerHTML =
+      `<span class="board-chip">${v.chip}</span>`+
+      `<span class="board-name">${v.label}</span>`+
+      `<span class="board-desc">${v.desc}</span>`;
+    btn.onclick = () => selectFirmwareVariant(btn, v.manifest);
+    grid.appendChild(btn);
+  });
+
+  // Default: always the normal detector, for the reason noted above.
+  document.getElementById('install-btn').setAttribute('manifest', board.normal.manifest);
+}
+
+function selectFirmwareVariant(el, manifest){
+  document.querySelectorAll('#fw-variant-grid .board-btn').forEach(b=>b.classList.remove('selected'));
+  el.classList.add('selected');
+  document.getElementById('install-btn').setAttribute('manifest', manifest);
+  document.getElementById('step3').classList.remove('active-step');
+  document.getElementById('step4').classList.add('active-step');
+  document.getElementById('sn3').classList.add('done');
+}
+
+// Populate step 3 for the default board (Generic ESP32 DevKit) on page load,
+// since the wizard steps are all visible at once (not a modal flow).
+renderFirmwareVariants('esp32dev');
+
 
 // ── Open Serial Monitor ──
 // USB CDC devices (e.g. ESP32-S3 native USB) briefly re-enumerate when DTR is

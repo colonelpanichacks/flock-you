@@ -52,6 +52,7 @@ jobs:
           -e m5stack-basic-ble
           -e m5stack-core2-aws-ble
           -e m5stickc-plus-se-ble
+          -e m5atom-lite-beacon
 
       # Verify required build artifacts
       - name: Verify build artifacts
@@ -62,7 +63,7 @@ jobs:
           ls -la .pio/build/ 2>/dev/null || echo "WARNING: .pio/build missing or empty"
 
           # Required envs - failure here blocks deploy
-          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble m5stack-basic-ble m5stack-core2-aws-ble m5stickc-plus-se-ble; do
+          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble m5stack-basic-ble m5stack-core2-aws-ble m5stickc-plus-se-ble m5atom-lite-beacon; do
             if [ -f ".pio/build/$env/firmware.bin" ]; then
               echo "OK $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
             else
@@ -92,7 +93,7 @@ jobs:
           fi
           echo "Found boot_app0.bin at: $BOOT_APP0"
 
-          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5stack-basic-ble m5stack-core2-aws-ble m5stickc-plus-se-ble; do
+          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5stack-basic-ble m5stack-core2-aws-ble m5stickc-plus-se-ble m5atom-lite-beacon; do
             mkdir -p site/firmware/$env
             cp .pio/build/$env/firmware.bin   site/firmware/$env/
             cp .pio/build/$env/bootloader.bin site/firmware/$env/
@@ -153,6 +154,7 @@ jobs:
           gen_esp32_manifest "m5stack-basic-ble"     "Flock You - M5Stack Basic Core v2.7 (BLE)"
           gen_esp32_manifest "m5stack-core2-aws-ble" "Flock You - M5Stack Core2 For AWS (BLE)"
           gen_esp32_manifest "m5stickc-plus-se-ble"  "Flock You - M5StickC Plus SE (BLE)"
+          gen_esp32_manifest "m5atom-lite-beacon"    "Flock You - Beacon Tester (M5Atom Lite)"
 
           cat > site/manifest-m5atom-voices3r-ble.json << MANIFEST
           {
