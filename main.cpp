@@ -283,6 +283,12 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 #define HB_BEEP_NOTE_MS        70
 #define HB_BEEP_GAP_MS         70
 
+// ui_task.h — decoupled UI/display FreeRTOS task (see file for full
+// rationale). Included here, right after the audio/heartbeat macros it
+// needs (NEW_CHIRP_*/HB_BEEP_*), and before AlertType/board display headers
+// use its publish functions.
+#include "ui_task.h"
+
 // SSID detection — all patterns known to appear on Flock cameras.
 // ENABLE_SSID_MATCH must be 1 for the SSID check in the promiscuous callback
 // to run.  It is ON by default now because "Flock Camera net." is our only
@@ -790,6 +796,12 @@ static void newDetectChirp() {
   tone(BUZZER_PIN, NEW_CHIRP_LO_HZ); delay(NEW_CHIRP_NOTE_MS); noTone(BUZZER_PIN);
   delay(NEW_CHIRP_GAP_MS);
   tone(BUZZER_PIN, NEW_CHIRP_HI_HZ); delay(NEW_CHIRP_NOTE_MS); noTone(BUZZER_PIN);
+#elif defined(USE_M5BASIC)
+  // M5.Speaker shares the M5Unified singleton the UI task (ui_task.h) now
+  // exclusively owns for display access — never call it directly from the
+  // scan/main task. Hand off instead; the UI task plays the identical
+  // tone/delay/tone sequence itself, off the WiFi/BLE-scanning critical path.
+  uiRequestAudio(1);
 #elif defined(USE_M5_SPEAKER) && USE_M5_SPEAKER
   M5.Speaker.tone(NEW_CHIRP_LO_HZ, NEW_CHIRP_NOTE_MS);
   delay(NEW_CHIRP_NOTE_MS + NEW_CHIRP_GAP_MS);
@@ -804,6 +816,10 @@ static void heartbeatBeep() {
   tone(BUZZER_PIN, HB_BEEP_HZ); delay(HB_BEEP_NOTE_MS); noTone(BUZZER_PIN);
   delay(HB_BEEP_GAP_MS);
   tone(BUZZER_PIN, HB_BEEP_HZ); delay(HB_BEEP_NOTE_MS); noTone(BUZZER_PIN);
+#elif defined(USE_M5BASIC)
+  // See newDetectChirp() above — hand off to the UI task instead of
+  // touching M5.Speaker directly from the scan/main task.
+  uiRequestAudio(2);
 #elif defined(USE_M5_SPEAKER) && USE_M5_SPEAKER
   M5.Speaker.tone(HB_BEEP_HZ, HB_BEEP_NOTE_MS);
   delay(HB_BEEP_NOTE_MS + HB_BEEP_GAP_MS);
@@ -953,9 +969,8 @@ static void printHeartbeat() {
     dualPrintf("[flockyou] scanning (ch=%u mode=%s det=%d)\n",
                   currentChannel, channelModeName(), fyDetCount);
     lastHeartbeat = millis();
-#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
-    c5DisplayScanning(currentChannel, fyDetCount);
-#endif
+    // C5's periodic scanning-screen redraw now happens inside the UI task's
+    // own HEARTBEAT_MS gate (ui_task.h) — no direct display call here.
   }
 }
 
@@ -968,16 +983,11 @@ static void printHeartbeat() {
 // makes the screen redraw several times per second in real time instead of
 // once every 30 s.
 static void screenTick() {
-#if defined(USE_M5BASIC)
-  m5basicScanning(currentChannel, channelModeName(), fyDetCount,
-                  millis(), fySpiffsReady,
-                  (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
-#endif
-#if defined(USE_M5STICKC_PLUS_SE)
-  m5stickcScanning(currentChannel, channelModeName(), fyDetCount,
-                   millis(), fySpiffsReady,
-                   (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
-#endif
+  // Publish the current scanning status to the UI task (ui_task.h) instead
+  // of calling m5basicScanning()/m5stickcScanning() directly — those touch
+  // M5Unified, which only the UI task may access now. Cheap even on boards
+  // with no display (Atom/esp32dev) since nothing ever reads it there.
+  uiPublishScan(currentChannel, channelModeName(), fyDetCount, fySpiffsReady);
 }
 
 // Confidence weights, OUI byte tables, sequential-MAC tracking, and
@@ -1555,27 +1565,21 @@ static void drainAlertQueue() {
     if (e.confidence >= CHIRP_MIN_CONFIDENCE) {
       ledFlash(LED_FLASH_MS);
     }
-#if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
+    // Publish this detection to the UI task (ui_task.h) instead of calling
+    // c5DisplayDetection()/m5basicDetection()/m5stickcDetection() directly —
+    // those touch M5Unified/the C5 display object, which only the UI task
+    // may access now. The UI task renders the alert screen on its next poll
+    // (~50 ms), independent of WiFi/BLE scanning.
     {
-      const char* dt = (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
-                       ? "SSID" : "OUI";
-      c5DisplayDetection(dt, macStr, e.confidence, e.rssi, e.channel);
-    }
-#endif
-#if defined(USE_M5BASIC)
-    m5basicDetection(method, macStr, e.confidence, e.rssi, e.channel,
-                     (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
-                       ? e.ssid : "",
+      const char* dispType = (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
+                             ? "SSID" : "OUI";
+      const char* ssidArg  = (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
+                             ? e.ssid : "";
+      uiPublishAlert(method, macStr, e.confidence, e.rssi, e.channel, ssidArg,
                      fyDetCount,
-                     (fyLastTargetSeen > 0) ? millis() - fyLastTargetSeen : 0UL);
-#endif
-#if defined(USE_M5STICKC_PLUS_SE)
-    m5stickcDetection(method, macStr, e.confidence, e.rssi, e.channel,
-                      (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
-                        ? e.ssid : "",
-                      fyDetCount,
-                      (fyLastTargetSeen > 0) ? millis() - fyLastTargetSeen : 0UL);
-#endif
+                     (fyLastTargetSeen > 0) ? millis() - fyLastTargetSeen : 0UL,
+                     dispType);
+    }
 
 #if STOP_ON_OUI_HIT
     if (e.type != ALERT_SSID && e.type != ALERT_LAA_SSID) stopSniffing("OUI hit");
@@ -1794,6 +1798,13 @@ void setup() {
                    millis(), fySpiffsReady,
                    (int)FY_OUI_HIGH_COUNT, (int)FY_OUI_MFR_COUNT);
 #endif
+
+  // Start the decoupled UI/display task (ui_task.h) now that every
+  // board/display header it depends on has been initialised above. From
+  // this point on, M5Unified/display-object access (drawing, M5.update(),
+  // button reads, vibration, M5.Speaker on M5Basic) happens ONLY on that
+  // task — never again from loop()/scan code.
+  startUiTask();
 }
 
 void loop() {
@@ -1810,35 +1821,24 @@ void loop() {
 #endif
 
 
-#if defined(USE_M5BASIC)
+#if defined(USE_M5BASIC) || defined(USE_M5STICKC_PLUS_SE)
+  // Button presses are now detected on the UI task (ui_task.h) — it is the
+  // only task allowed to touch M5Unified (M5.update()/M5.BtnX) since that
+  // object is shared with the display and is not thread-safe. loop() just
+  // consumes whichever action (if any) the UI task recorded since the last
+  // check. Action codes: 1 = Btn A (save session), 3 = Btn C/B (force
+  // channel hop). M5Basic's brightness cycle (Btn B) and Core2's vibration
+  // tick are handled entirely inside the UI task and need no feedback here.
   {
-    int btn = m5basicButtonTick();
+    uint8_t btn = uiTakeButtonAction();
     if (btn == 1) {
-      fySaveSession(); Serial.println("[flockyou] Manual save (Btn A)");
+      fySaveSession(); Serial.println("[flockyou] Manual save (button)");
     } else if (btn == 3) {
       customChannelIndex = (customChannelIndex + 1) % customChannelCount;
       currentChannel = customChannels[customChannelIndex];
       esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
       lastHop = millis();
-      Serial.printf("[flockyou] Manual ch hop -> %u (Btn C)\n", currentChannel);
-    }
-  }
-#endif
-#if defined(USE_M5CORE2_AWS)
-  m5basicVibrationTick();
-#endif
-#if defined(USE_M5STICKC_PLUS_SE)
-
-  {
-    int btn = m5stickcButtonTick();
-    if (btn == 1) {
-      fySaveSession(); Serial.println("[flockyou] Manual save (Btn A)");
-    } else if (btn == 3) {
-      customChannelIndex = (customChannelIndex + 1) % customChannelCount;
-      currentChannel = customChannels[customChannelIndex];
-      esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
-      lastHop = millis();
-      Serial.printf("[flockyou] Manual ch hop -> %u (Btn B)\n", currentChannel);
+      Serial.printf("[flockyou] Manual ch hop -> %u (button)\n", currentChannel);
     }
   }
 #endif
@@ -1862,7 +1862,7 @@ void loop() {
     ledFlash(400);
 #endif
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
-    c5DisplayScanning(currentChannel, fyDetCount);
+    uiForceC5Redraw();
 #endif
   }
 #endif

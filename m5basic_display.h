@@ -99,6 +99,12 @@ static unsigned long mb_vibNextMs   = 0;      // millis() timestamp of next stat
 #define MB_LOG_LINES    3
 #define MB_LOG_LINE_LEN 53   // ~320px / 6px-per-char at text size 1
 static char mb_logBuf[MB_LOG_LINES][MB_LOG_LINE_LEN];
+// Guards mb_logBuf: mb_logAdd() is called from the scan/main task (via
+// dualPrintf()/dualPrintln()) while mb_drawLogStrip() is called from the
+// dedicated UI task (ui_task.h) — two different FreeRTOS tasks touching the
+// same buffer. Without this, a redraw racing a concurrent shift/memcpy could
+// read a torn/partial row. Mirrors eye-spy's mbe_logMux fix.
+static portMUX_TYPE mb_logMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Appends text to the on-screen log ring buffer.  Splits on embedded '\n' so
 // a single dualPrintf()/dualPrintln() call — which may itself end in '\n' or
@@ -111,15 +117,18 @@ static void mb_logAdd(const char* text) {
         size_t len = nl ? (size_t)(nl - p) : strlen(p);
         if (len > 0) {
             size_t n = (len < (size_t)(MB_LOG_LINE_LEN - 1)) ? len : (size_t)(MB_LOG_LINE_LEN - 1);
+            portENTER_CRITICAL(&mb_logMux);
             for (int i = MB_LOG_LINES - 1; i > 0; i--)
                 memcpy(mb_logBuf[i], mb_logBuf[i - 1], MB_LOG_LINE_LEN);
             memcpy(mb_logBuf[0], p, n);
             mb_logBuf[0][n] = '\0';
+            portEXIT_CRITICAL(&mb_logMux);
         }
         if (!nl) break;
         p = nl + 1;
     }
 }
+
 
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -273,6 +282,16 @@ static void mb_drawRange(int x, int y, int8_t rssi) {
 // region is 24px tall, ending exactly at MB_BTN_Y, so it never overlaps the
 // button bar.
 static void mb_drawLogStrip() {
+    // Snapshot the shared ring buffer under the lock, then do all the
+    // (slow, SPI-bound) drawing from the local copy outside it — this
+    // function only ever runs on the UI task now, but mb_logAdd() can still
+    // be called concurrently from the scan/main task via dualPrintf()/
+    // dualPrintln(), so the buffer itself must stay mutex-protected.
+    char localBuf[MB_LOG_LINES][MB_LOG_LINE_LEN];
+    portENTER_CRITICAL(&mb_logMux);
+    memcpy(localBuf, mb_logBuf, sizeof(mb_logBuf));
+    portEXIT_CRITICAL(&mb_logMux);
+
     int y0 = MB_BTN_Y - 24;
     M5.Display.fillRect(0, y0, MB_W, 24, MB_BLACK);
     mb_hline(y0, MB_DK_GREY);
@@ -281,7 +300,7 @@ static void mb_drawLogStrip() {
     int ly = y0 + 3;
     for (int i = MB_LOG_LINES - 1; i >= 0; i--) {
         M5.Display.setCursor(2, ly);
-        M5.Display.print(mb_logBuf[i]);
+        M5.Display.print(localBuf[i]);
         ly += 7;
     }
 }
