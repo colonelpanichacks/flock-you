@@ -1308,9 +1308,15 @@ static void emitDetectionJSON(const char* mac, const char* method,
   // Locally-administered MAC: OUI field is meaningless, tag it clearly
   const char* ouiStr = (mbytes[0] & 0x02) ? "laa" : oui;
 
+  // BLE-only detections (method starts with "ble_") have no WiFi channel/
+  // frequency/OUI concept — tag detection_method/protocol/oui accordingly
+  // instead of the misleading "wifi_ble_..." / "wifi_unknown" the WiFi-
+  // oriented format below would otherwise produce for them.
+  bool isBle = (strncmp(method, "ble_", 4) == 0);
+
   dualPrintf(
       "{\"event\":\"detection\","
-      "\"detection_method\":\"wifi_%s\","
+      "\"detection_method\":\"%s%s\","
       "\"protocol\":\"%s\","
       "\"mac_address\":\"%s\","
       "\"oui\":\"%s\","
@@ -1320,10 +1326,13 @@ static void emitDetectionJSON(const char* mac, const char* method,
       "\"frequency\":%u,"
       "\"ssid\":\"%s\","
       "\"confidence\":%u}\n",
-      method, channelBand(ch), mac, ouiStr, rssi,
+      isBle ? "" : "wifi_", method,
+      isBle ? "ble" : channelBand(ch),
+      mac, isBle ? "n/a" : ouiStr, rssi,
       (unsigned)ch, (unsigned)channelFreqMhz(ch),
       ssidEsc, (unsigned)confidence);
 }
+
 
 // ============================================================
 // PROMISCUOUS CALLBACK  — keep it fast, no Serial, no malloc
