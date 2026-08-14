@@ -74,8 +74,22 @@
 #define SWEEP_CHANNELS_COUNT   3
 static const uint8_t sweepChannels[SWEEP_CHANNELS_COUNT] = {1, 6, 11};
 #define BURST_FRAMES_PER_CH    4        // frames sent per channel per pass
-#define SWEEP_PASSES           2        // repeat the {1,6,11} sweep this many times
+// SWEEP_PASSES: was 2 (total burst ~192ms: 2 passes x 3 channels x 4 frames x
+// 8ms gap). Cross-device testing against a real detector showed many
+// scenarios were simply never received -- root-caused to a timing mismatch,
+// not a matching-logic bug: the real detector's WiFi channel-hop dwell
+// (CHANNEL_DWELL_MS in main.cpp) means a full {11,6,1} rotation takes far
+// longer than this burst lasted, so if the burst's brief per-channel window
+// didn't land while the detector happened to be dwelling on that exact
+// channel, the whole scenario was missed with no second chance (a different
+// scenario/MAC fires SCENARIO_INTERVAL_MS later). Raised to 6 passes
+// (~576ms total burst) -- combined with main.cpp's faster 100ms dwell (300ms
+// full rotation), the burst duration now comfortably exceeds a full detector
+// hop cycle, so it's virtually guaranteed to overlap on every scenario
+// instead of leaving it to chance. See .clinerules/02-test-before-commit.md.
+#define SWEEP_PASSES           6        // repeat the {1,6,11} sweep this many times
 #define BURST_GAP_MS           8        // gap between individual frame sends
+
 
 #define NUM_SCENARIOS 12
 

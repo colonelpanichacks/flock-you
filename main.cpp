@@ -246,8 +246,25 @@
 // dropped to 250 ms (2 x the camera's observed ~125 ms hop) to also shrink
 // the worst-case time-to-overlap. Both changes are direct, low-risk ports
 // of upstream's already field-tested fix — see also DETECTION_IMPROVEMENTS.md.
-#define CHANNEL_DWELL_MS 250
+// FURTHER SPEEDUP (found via beacon_test.cpp cross-device validation — see
+// .clinerules/02-test-before-commit.md): a 250 ms dwell means a full
+// {11,6,1} rotation takes 750 ms. Any transmission shorter than 750 ms
+// that starts while we're dwelling on a non-matching channel is missed
+// ENTIRELY for that hop cycle -- there's no second chance until the
+// emitter transmits again. beacon_test.cpp's per-scenario WiFi burst
+// (txSweep(): SWEEP_PASSES x 3 channels x BURST_FRAMES_PER_CH frames) is
+// well under 750 ms, so a meaningful fraction of scenarios were being
+// missed purely due to this timing mismatch, not a matching-logic bug --
+// confirmed by cross-device testing showing correct matches for bursts
+// that DID land inside a dwell window, and total silence for the rest.
+// Dropping dwell to 100 ms shrinks a full rotation to 300 ms, greatly
+// increasing the odds any given short-lived transmission lands inside a
+// dwell window on the right channel. Still well above the per-channel
+// esp_wifi_set_channel() overhead (a few ms), so channel-switch cost
+// stays a small fraction of total dwell time.
+#define CHANNEL_DWELL_MS 100
 #define SINGLE_CHANNEL 1
+
 
 // ── 2.4 GHz channels — always scanned ──────────────────────────────────────
 // Flock primaries: 1, 6, 11.  "Flock Camera net." observed on ch.1 (2.4 GHz).
@@ -768,6 +785,7 @@ static void bleScanTick(bool& promiscPaused) {
 
 #endif  // BLE_COEX_MODE
 
+
 #endif  // ENABLE_BLE_SCAN
 
 // ============================================================
@@ -819,9 +837,28 @@ static unsigned long fyLastHeartbeatAt = 0;
 // Tracks whether promiscuous mode is currently paused for BLE
 static bool fyPromiscPaused = false;
 
+// ── CHANNEL LOCK ─────────────────────────────────────────────────────────────
+// Once a confident (chirp-worthy, i.e. confidence >= CHIRP_MIN_CONFIDENCE)
+// WiFi detection lands, stop hopping and stay tuned to that exact channel
+// instead of continuing the {11,6,1} rotation. Rationale: a confirmed camera
+// is actively transmitting RIGHT NOW on a known channel -- spending 2/3 of
+// our dwell time hopping to other channels where (by definition) nothing
+// confirmed is happening wastes capture opportunities on the one channel we
+// KNOW matters, and risks missing subsequent frames/RSSI updates from the
+// same camera. The lock releases automatically (resuming normal hopping)
+// after CHANNEL_LOCK_TIMEOUT_MS with no fresh confident hit on that channel
+// -- i.e. once the camera is no longer detectable. BLE detections do NOT
+// trigger this (they have no WiFi channel concept -- e.channel is always 0
+// for them -- and BLE_COEX_MODE's scan runs independently of currentChannel
+// anyway, so there'd be nothing meaningful to lock to).
+static bool          channelLockActive    = false;
+static unsigned long channelLockLastHitAt = 0;
+#define CHANNEL_LOCK_TIMEOUT_MS 5000UL
+
 // ============================================================
 // SIMPLE SINGLE-GPIO BUTTON  (Atom Lite/Echo/Voice/VoiceS3R + T-Dongle C5)
 // ============================================================
+
 // These boards have exactly one bare GPIO button with no M5Unified
 // Button_Class helper.  BUTTON_PIN / C5_BTN_PIN were previously #defined
 // but never actually read anywhere — the button did nothing.  This adds a
@@ -1069,7 +1106,20 @@ static void applyInitialChannel() {
 }
 
 static void updateChannelMode() {
+
   if (sniffingStopped || fyPromiscPaused) return;
+
+  // Channel lock takes priority over both SINGLE and hop modes: while
+  // locked, skip everything below and just keep sitting on currentChannel.
+  // Release (and fall through to normal hop/single logic) once the target
+  // has been quiet for CHANNEL_LOCK_TIMEOUT_MS.
+  if (channelLockActive) {
+    if (millis() - channelLockLastHitAt < CHANNEL_LOCK_TIMEOUT_MS) return;
+    channelLockActive = false;
+    dualPrintf("[flockyou] channel lock released (ch=%u quiet %lus) -- resuming hop\n",
+               currentChannel, (unsigned long)(CHANNEL_LOCK_TIMEOUT_MS / 1000));
+  }
+
 #if CHANNEL_MODE == CHANNEL_MODE_SINGLE
   if (currentChannel != SINGLE_CHANNEL) {
     currentChannel = SINGLE_CHANNEL;
@@ -1078,6 +1128,7 @@ static void updateChannelMode() {
   return;
 #else
   if (millis() - lastHop < CHANNEL_DWELL_MS) return;
+
   #if CHANNEL_MODE == CHANNEL_MODE_CUSTOM
     customChannelIndex = (customChannelIndex + 1) % customChannelCount;
     currentChannel = customChannels[customChannelIndex];
@@ -1125,9 +1176,34 @@ static void screenTick() {
 // visible to the preprocessor at this point in the file.
 #include "fy_confidence.h"
 
+// Called from drainAlertQueue() whenever a chirp-worthy (confidence >=
+// CHIRP_MIN_CONFIDENCE) alert is processed. See the CHANNEL LOCK comment
+// in the STATE section above for the full rationale. Defined here (after
+// fy_confidence.h) because it references CHIRP_MIN_CONFIDENCE, which is
+// only visible to the preprocessor from this point in the file onward.
+static void maybeLockChannel(const AlertEntry& e) {
+  bool isBleAlert = (e.type == ALERT_BLE_MFR_ID || e.type == ALERT_BLE_RAVEN_UUID ||
+                     e.type == ALERT_BLE_NAME);
+  if (isBleAlert) return;                          // no WiFi channel to lock to
+  if (e.confidence < CHIRP_MIN_CONFIDENCE) return;  // only confident hits lock
+
+  if (!channelLockActive) {
+    dualPrintf("[flockyou] channel LOCKED to ch=%u (confident hit, conf=%u) -- "
+               "holding until camera goes quiet\n",
+               (unsigned)e.channel, (unsigned)e.confidence);
+  }
+  if (currentChannel != e.channel) {
+    currentChannel = e.channel;
+    esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
+  }
+  channelLockActive    = true;
+  channelLockLastHitAt = millis();
+}
+
 // ============================================================
 // DETECTION TABLE OPS
 // ============================================================
+
 
 static const char* alertTypeToMethod(AlertType t) {
   switch (t) {
@@ -1711,7 +1787,9 @@ static void drainAlertQueue() {
     }
     if (e.confidence >= CHIRP_MIN_CONFIDENCE) {
       ledFlash(LED_FLASH_MS);
+      maybeLockChannel(e);   // hold this channel while the camera is still audible
     }
+
     // Publish this detection to the UI task (ui_task.h) instead of calling
     // c5DisplayDetection()/m5basicDetection()/m5stickcDetection() directly —
     // those touch M5Unified/the C5 display object, which only the UI task
