@@ -471,6 +471,10 @@ static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rs
 #define CS_BLE_UUID_STANDALONE   45
 #define CS_BLE_NAME_STANDALONE   35
 
+#if defined(BLE_SELF_TEST) && BLE_SELF_TEST
+static NimBLEAdvertising* g_pBLEAdv = nullptr;
+#endif
+
 // Raven UUIDs are checked via fyCheckRavenUUIDFromStrings() from fy_detect.h
 // using full 128-bit UUID strings.  The old short-form defines are gone.
 
@@ -632,8 +636,14 @@ static void bleScanStart() {
   if (!g_pBLEScan) return;
   if (g_pBLEScan->isScanning()) return;
   g_pBLEScan->clearResults();
-  // Passive (false = no scan-request packets — avoids alerting the camera)
-  g_pBLEScan->start((uint32_t)(BLE_SCAN_DWELL_MS / 1000), false);
+  // Passive (false = no scan-request packets — avoids alerting the camera).
+  // NOTE: passing (uint32_t, bool) here would resolve to NimBLEScan's
+  // BLOCKING overload — NimBLEScanResults start(uint32_t, bool) — which
+  // parks the calling task in ulTaskNotifyTake(portMAX_DELAY) until stop()
+  // or the internal duration-complete event fires. Passing an explicit
+  // (possibly-null) callback forces resolution to the intended ASYNC
+  // overload: bool start(uint32_t, void(*)(NimBLEScanResults), bool).
+  g_pBLEScan->start((uint32_t)(BLE_SCAN_DWELL_MS / 1000), (void (*)(NimBLEScanResults))nullptr, false);
 }
 
 static void bleScanStop() {
@@ -663,7 +673,13 @@ static void initBLE() {
   g_pBLEScan->setActiveScan(false);
   g_pBLEScan->setInterval(100);
   g_pBLEScan->setWindow(99);
+
+#if defined(BLE_SELF_TEST) && BLE_SELF_TEST
+  g_pBLEAdv = NimBLEDevice::getAdvertising();
+#endif
 }
+
+#include "ble_selftest.h"
 
 
 // ── BLE_COEX_MODE=1: true simultaneous WiFi + BLE ────────────────────────────
@@ -688,12 +704,27 @@ static void initBLE() {
 #if defined(BLE_COEX_MODE) && BLE_COEX_MODE
 
 // Single-shot: called from setup() after esp_wifi_set_promiscuous(true)
+//
+// CRITICAL FIX: g_pBLEScan->start(0, false) — an (int, bool) argument
+// list — resolves to NimBLEScan's BLOCKING overload:
+//   NimBLEScanResults start(uint32_t duration, bool is_continue = false);
+// NOT the intended async one:
+//   bool start(uint32_t duration, void(*scanCompleteCB)(NimBLEScanResults), bool is_continue = false);
+// With duration=0 (== BLE_HS_FOREVER internally), the blocking overload
+// parks the CALLING task in ulTaskNotifyTake(pdTRUE, portMAX_DELAY) and
+// never returns unless something else calls stop(). Since this is called
+// directly from setup(), setup() hung FOREVER here on every single
+// BLE_COEX_MODE build in the project — loop() never ran, so nothing
+// downstream (drainAlertQueue/ledTick/bleScanTick/self-test) ever executed.
+// This silently explained the original "BLE-only Flock detections never
+// alert" bug report AND the self-test freeze — both were actually this.
+// Fix: pass an explicit typed null callback to force the async overload.
 static void bleCoexStart() {
   if (!g_pBLEScan) return;
   if (g_pBLEScan->isScanning()) return;
   g_pBLEScan->clearResults();
   // duration = 0 → scan runs indefinitely until stop() is called
-  g_pBLEScan->start(0, false);
+  g_pBLEScan->start(0, (void (*)(NimBLEScanResults))nullptr);
   Serial.println("[flockyou] BLE coex-scan started (continuous, promisc always ON)");
 }
 
@@ -702,9 +733,10 @@ static void bleCoexStart() {
 static void bleScanTick(bool& /*promiscPaused*/) {
   if (!g_pBLEScan) return;
   if (!g_pBLEScan->isScanning()) {
-    // Scan stopped unexpectedly (BLE stack reset, etc.) — restart it
+    // Scan stopped unexpectedly (BLE stack reset, etc.) — restart it.
+    // Same overload-resolution fix as bleCoexStart() above.
     g_pBLEScan->clearResults();
-    g_pBLEScan->start(0, false);
+    g_pBLEScan->start(0, (void (*)(NimBLEScanResults))nullptr);
     Serial.println("[flockyou] BLE coex-scan restarted");
   }
 }
@@ -1889,6 +1921,9 @@ void setup() {
   initBLE();
   g_bleNextScan = millis() + 5000;  // first BLE scan 5 s after boot
   dualPrintln("[flockyou] BLE scanner init OK");
+#if defined(BLE_SELF_TEST) && BLE_SELF_TEST
+  bleSelfTestInit();
+#endif
 #endif
 
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN && defined(BLE_COEX_MODE) && BLE_COEX_MODE
@@ -1955,6 +1990,9 @@ void loop() {
 
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
   bleScanTick(fyPromiscPaused);
+#if defined(BLE_SELF_TEST) && BLE_SELF_TEST
+  bleSelfTestTick(g_pBLEAdv);
+#endif
 #endif
 
 
