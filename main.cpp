@@ -354,8 +354,86 @@ static const char* ssid_exact_flock_cam_net = "Flock Camera net.";
 // defined — see the "CONFIDENCE SCORE COMPUTATION" section).
 
 // ============================================================
+// ALERT QUEUE  (callback → loop, avoids Serial in WiFi task)
+// ============================================================
+//
+// NOTE: this section was moved here — ahead of the BLE section below — so
+// that BLE-only detections (fyProcessBLEAdvertisedDevice()) can enqueue
+// real alerts directly. Previously, a BLE-only match (mfr-ID/Raven-UUID/
+// name, with no corroborating WiFi frame within BLE_CORR_WINDOW_MS) only
+// recorded a timestamp for later WiFi-hit correlation and NEVER called
+// enqueueAlert() — meaning it was completely invisible: no LED flash, no
+// chirp, no detection-table entry, no JSON/dashboard emission. That is
+// root-caused and fixed below (see ALERT_BLE_* enum values and the
+// standalone confidence tiers defined in the BLE section).
+
+#define ALERT_QUEUE_SIZE 32
+
+typedef enum : uint8_t {
+  ALERT_OUI_ADDR2       = 0,
+  ALERT_OUI_ADDR1       = 1,
+  ALERT_OUI_ADDR3       = 2,
+  ALERT_SSID            = 3,
+  ALERT_WILDCARD_PROBE  = 4,
+  // Locally-administered MAC + Flock SSID (issue-#43 "Flock Camera net." class).
+  // These cameras will never match any OUI — SSID is the only WiFi handle.
+  ALERT_LAA_SSID        = 5,
+  // PR#39: contract-manufacturer OUI (Liteon/USI) — lower confidence, no chirp alone.
+  // Score CS_OUI_MFR=20 < CHIRP_MIN_CONFIDENCE=30 → logged but silent.
+  ALERT_OUI_MFR         = 6,
+  // PR#39: SoundThinking/ShotSpotter acoustic sensor co-deployed with Flock cameras.
+  // Score CS_SOUNDTHINKING=35 ≥ CHIRP_MIN_CONFIDENCE → audible alert, "soundthinking" method.
+  ALERT_SOUNDTHINKING   = 7,
+  // BLE-only Flock signal types — standalone alerts, no corroborating WiFi
+  // frame required. See the note above this enum for why these exist.
+  ALERT_BLE_MFR_ID      = 8,   // BLE mfr-ID 0x09C8 (XUNTONG / Flock)
+  ALERT_BLE_RAVEN_UUID  = 9,   // Raven/Flock 128-bit BLE service UUID
+  ALERT_BLE_NAME        = 10,  // BLE device-name substring match
+} AlertType;
+
+typedef struct {
+  AlertType type;
+  uint8_t   mac[6];
+  int8_t    rssi;
+  uint8_t   channel;
+  char      ssid[33];
+  char      frameKind[12];
+  uint8_t   confidence;   // 0–100 computed in callback, emitted in JSON
+} AlertEntry;
+
+static volatile AlertEntry alertQueue[ALERT_QUEUE_SIZE];
+static volatile size_t alertHead = 0;
+static volatile size_t alertTail = 0;
+static portMUX_TYPE    queueMux  = portMUX_INITIALIZER_UNLOCKED;
+
+static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rssi,
+                                    uint8_t ch, const char* ssid, const char* kind,
+                                    uint8_t confidence) {
+  portENTER_CRITICAL_ISR(&queueMux);
+  size_t next = (alertHead + 1) % ALERT_QUEUE_SIZE;
+  if (next == alertTail) { portEXIT_CRITICAL_ISR(&queueMux); return; }
+
+  AlertEntry* e = (AlertEntry*)&alertQueue[alertHead];
+  e->type       = type;
+  e->rssi       = rssi;
+  e->channel    = ch;
+  e->confidence = confidence;
+  memcpy((void*)e->mac, mac, 6);
+
+  if (ssid) { strncpy((char*)e->ssid,      ssid, 32); ((char*)e->ssid)[32] = '\0'; }
+  else       { ((char*)e->ssid)[0] = '\0'; }
+
+  if (kind) { strncpy((char*)e->frameKind, kind, 11); ((char*)e->frameKind)[11] = '\0'; }
+  else       { ((char*)e->frameKind)[0] = '\0'; }
+
+  alertHead = next;
+  portEXIT_CRITICAL_ISR(&queueMux);
+}
+
+// ============================================================
 // BLE CROSS-CORRELATION STATE
 // ============================================================
+
 //
 // When ENABLE_BLE_SCAN=1, a periodic BLE scan runs.  It looks for:
 //   1. Manufacturer-specific data with Flock's BLE mfr-ID (Will Greenberg)
@@ -380,6 +458,18 @@ static const char* ssid_exact_flock_cam_net = "Flock Camera net.";
 // PR#39 correction: 0x09C8 is the XUNTONG BT company ID per wgreenberg/flock-you.
 // Pre-PR#39 firmware used 0x05A7 (incorrect — that ID belongs to Assa Abloy).
 #define BLE_FLOCK_MFR_ID       0x09C8   // XUNTONG Technology Co., Ltd
+
+// Standalone BLE-only confidence tiers (fix: these previously never fired —
+// a BLE-only match only recorded a timestamp for later WiFi correlation and
+// NEVER produced a real alert on its own). All three are set above
+// CHIRP_MIN_CONFIDENCE=30 so a lone BLE match now chirps/flashes/logs just
+// like a WiFi OUI hit does, mirroring that existing tiered-confidence design.
+// Kept in sync with fy_confidence.h; duplicated here because
+// fyProcessBLEAdvertisedDevice() below is compiled before fy_confidence.h is
+// #include-d later in this file (re-#define-ing an identical macro is legal).
+#define CS_BLE_MFR_ID_STANDALONE 45
+#define CS_BLE_UUID_STANDALONE   45
+#define CS_BLE_NAME_STANDALONE   35
 
 // Raven UUIDs are checked via fyCheckRavenUUIDFromStrings() from fy_detect.h
 // using full 128-bit UUID strings.  The old short-form defines are gone.
@@ -417,7 +507,9 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
 
   if (!adv) return;
   int8_t rssi = (int8_t)adv->getRSSI();
-  bool matched = false;
+  bool      matched       = false;
+  AlertType bleAlertType  = ALERT_BLE_NAME;   // overwritten below once matched
+  uint8_t   bleConfidence = 0;
 
   // 1. Manufacturer ID check (Flock Safety BLE mfr-ID per Will Greenberg)
   {
@@ -426,7 +518,11 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
       const uint8_t* m = (const uint8_t*)mfr.data();
       // BLE mfr data is LE: low byte first
       uint16_t mfrId = (uint16_t)m[0] | ((uint16_t)m[1] << 8);
-      if (mfrId == BLE_FLOCK_MFR_ID) matched = true;
+      if (mfrId == BLE_FLOCK_MFR_ID) {
+        matched       = true;
+        bleAlertType  = ALERT_BLE_MFR_ID;
+        bleConfidence = CS_BLE_MFR_ID_STANDALONE;
+      }
     }
   }
 
@@ -444,7 +540,9 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
     }
     char matchedUUID[41] = {0};
     if (fyCheckRavenUUIDFromStrings(strs, n, matchedUUID)) {
-      matched = true;
+      matched       = true;
+      bleAlertType  = ALERT_BLE_RAVEN_UUID;
+      bleConfidence = CS_BLE_UUID_STANDALONE;
       // Log which UUID matched (matchedUUID is populated by the helper)
       (void)matchedUUID;
     }
@@ -455,7 +553,12 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
     std::string name = adv->getName();
     if (!name.empty()) {
       for (const char** kw = ble_flock_names; *kw; kw++) {
-        if (bleNameContains(name.c_str(), *kw)) { matched = true; break; }
+        if (bleNameContains(name.c_str(), *kw)) {
+          matched       = true;
+          bleAlertType  = ALERT_BLE_NAME;
+          bleConfidence = CS_BLE_NAME_STANDALONE;
+          break;
+        }
       }
     }
   }
@@ -463,6 +566,37 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
   if (matched) {
     g_bleFlockLastSeen = (uint32_t)millis();
     g_bleFlockRssi     = rssi;
+
+    // FIX (root cause of "it still isn't alerting"): a BLE-only match used
+    // to stop here — it only recorded the timestamp above as a confidence
+    // *booster* for a later, separate WiFi-frame hit within
+    // BLE_CORR_WINDOW_MS. If no corroborating WiFi frame ever showed up
+    // (exactly what happens with the beacon tester's 3 BLE-only test
+    // scenarios, and with any real BLE-only device), NOTHING further ever
+    // happened: no enqueueAlert() call meant no LED flash, no chirp, no
+    // detection-table entry, no JSON/dashboard emission. Push a real,
+    // standalone alert through the exact same pipeline WiFi detections use.
+
+    // Strong-RSSI bonus, mirroring fy_confidence.h's CS_STRONG_RSSI
+    // philosophy (RSSI > -70 dBm => device is physically close).
+    int conf = (int)bleConfidence;
+    if (rssi > -70) conf += 5;
+    if (conf > 100) conf = 100;
+
+    // Parse the BLE device's own MAC out of its string form (distinct from
+    // any WiFi MAC) so it can go through the identical enqueueAlert()/
+    // AlertEntry/drainAlertQueue() pipeline as WiFi detections.
+    uint8_t mac[6] = {0};
+    std::string addrStr = adv->getAddress().toString();
+    sscanf(addrStr.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+           &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+
+    // channel=0 (meaningless for BLE — emitDetectionJSON()/drainAlertQueue()
+    // both special-case protocol=="ble" methods and omit/ignore it); ssid=
+    // nullptr (BLE has no SSID concept); kind=nullptr (method name alone,
+    // derived from bleAlertType via alertTypeToMethod(), is enough context).
+    enqueueAlert(bleAlertType, mac, rssi, 0, nullptr, nullptr, (uint8_t)conf);
+
     // Log immediately from BLE task — Serial is safe here because we're not
     // in the WiFi promiscuous callback (different task context).
     Serial.printf("[flockyou] BLE-Flock rssi=%d addr=%s\n",
@@ -603,68 +737,6 @@ static void bleScanTick(bool& promiscPaused) {
 #endif  // BLE_COEX_MODE
 
 #endif  // ENABLE_BLE_SCAN
-
-// ============================================================
-// ALERT QUEUE  (callback → loop, avoids Serial in WiFi task)
-// ============================================================
-
-#define ALERT_QUEUE_SIZE 32
-
-typedef enum : uint8_t {
-  ALERT_OUI_ADDR2       = 0,
-  ALERT_OUI_ADDR1       = 1,
-  ALERT_OUI_ADDR3       = 2,
-  ALERT_SSID            = 3,
-  ALERT_WILDCARD_PROBE  = 4,
-  // Locally-administered MAC + Flock SSID (issue-#43 "Flock Camera net." class).
-  // These cameras will never match any OUI — SSID is the only WiFi handle.
-  ALERT_LAA_SSID        = 5,
-  // PR#39: contract-manufacturer OUI (Liteon/USI) — lower confidence, no chirp alone.
-  // Score CS_OUI_MFR=20 < CHIRP_MIN_CONFIDENCE=30 → logged but silent.
-  ALERT_OUI_MFR         = 6,
-  // PR#39: SoundThinking/ShotSpotter acoustic sensor co-deployed with Flock cameras.
-  // Score CS_SOUNDTHINKING=35 ≥ CHIRP_MIN_CONFIDENCE → audible alert, "soundthinking" method.
-  ALERT_SOUNDTHINKING   = 7,
-} AlertType;
-
-typedef struct {
-  AlertType type;
-  uint8_t   mac[6];
-  int8_t    rssi;
-  uint8_t   channel;
-  char      ssid[33];
-  char      frameKind[12];
-  uint8_t   confidence;   // 0–100 computed in callback, emitted in JSON
-} AlertEntry;
-
-static volatile AlertEntry alertQueue[ALERT_QUEUE_SIZE];
-static volatile size_t alertHead = 0;
-static volatile size_t alertTail = 0;
-static portMUX_TYPE    queueMux  = portMUX_INITIALIZER_UNLOCKED;
-
-static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rssi,
-                                    uint8_t ch, const char* ssid, const char* kind,
-                                    uint8_t confidence) {
-  portENTER_CRITICAL_ISR(&queueMux);
-  size_t next = (alertHead + 1) % ALERT_QUEUE_SIZE;
-  if (next == alertTail) { portEXIT_CRITICAL_ISR(&queueMux); return; }
-
-  AlertEntry* e = (AlertEntry*)&alertQueue[alertHead];
-  e->type       = type;
-  e->rssi       = rssi;
-  e->channel    = ch;
-  e->confidence = confidence;
-  memcpy((void*)e->mac, mac, 6);
-
-  if (ssid) { strncpy((char*)e->ssid,      ssid, 32); ((char*)e->ssid)[32] = '\0'; }
-  else       { ((char*)e->ssid)[0] = '\0'; }
-
-  if (kind) { strncpy((char*)e->frameKind, kind, 11); ((char*)e->frameKind)[11] = '\0'; }
-  else       { ((char*)e->frameKind)[0] = '\0'; }
-
-  alertHead = next;
-  portEXIT_CRITICAL_ISR(&queueMux);
-}
 
 // ============================================================
 // DETECTION TABLE  (on-device storage, persisted to SPIFFS)
@@ -1035,6 +1107,9 @@ static const char* alertTypeToMethod(AlertType t) {
     case ALERT_LAA_SSID:       return "laa_ssid";
     case ALERT_OUI_MFR:        return "oui_mfr";       // PR#39 contract-mfr
     case ALERT_SOUNDTHINKING:  return "soundthinking";  // PR#39 SoundThinking
+    case ALERT_BLE_MFR_ID:     return "ble_mfr_id";      // standalone BLE mfr-ID
+    case ALERT_BLE_RAVEN_UUID: return "ble_raven_uuid";  // standalone Raven UUID
+    case ALERT_BLE_NAME:       return "ble_name";        // standalone BLE name
     default:                   return "unknown";
   }
 }
@@ -1567,10 +1642,19 @@ static void drainAlertQueue() {
     ouiFromMac(e.mac, oui, sizeof(oui));
 
     // Human-readable line
+    bool isBleAlert = (e.type == ALERT_BLE_MFR_ID || e.type == ALERT_BLE_RAVEN_UUID ||
+                       e.type == ALERT_BLE_NAME);
     if (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID) {
       const char* tag = (e.type == ALERT_LAA_SSID) ? "DETECT-LAA-SSID" : "DETECT-SSID";
       dualPrintf("[flockyou] %s type=%s mac=%s ssid=\"%s\" rssi=%d ch=%u conf=%u count=%d\n",
                  tag, e.frameKind, macStr, e.ssid, e.rssi, e.channel,
+                 (unsigned)e.confidence,
+                 (idx >= 0) ? (int)fyDet[idx].count : 0);
+    } else if (isBleAlert) {
+      // Dedicated BLE log line -- omits the meaningless WiFi channel field
+      // (BLE has no 802.11 channel concept) and labels the method plainly.
+      dualPrintf("[flockyou] DETECT-BLE method=%s addr=%s rssi=%d conf=%u count=%d\n",
+                 method, macStr, e.rssi,
                  (unsigned)e.confidence,
                  (idx >= 0) ? (int)fyDet[idx].count : 0);
     } else {
@@ -1603,7 +1687,8 @@ static void drainAlertQueue() {
     // (~50 ms), independent of WiFi/BLE scanning.
     {
       const char* dispType = (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
-                             ? "SSID" : "OUI";
+                             ? "SSID"
+                             : (isBleAlert ? "BLE" : "OUI");
       const char* ssidArg  = (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
                              ? e.ssid : "";
       uiPublishAlert(method, macStr, e.confidence, e.rssi, e.channel, ssidArg,

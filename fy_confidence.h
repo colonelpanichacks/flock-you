@@ -76,6 +76,18 @@
 #define CS_SOUNDTHINKING        35  // SoundThinking/ShotSpotter OUI — separate
                                     //   device class, still warrants alert
 
+// Standalone BLE-only confidence tiers (fix: these previously never fired —
+// a BLE-only match only recorded a timestamp for later WiFi correlation and
+// NEVER produced a real alert on its own). All three are set above
+// CHIRP_MIN_CONFIDENCE=30 so a lone BLE match now chirps/flashes/logs just
+// like a WiFi OUI hit does, mirroring that existing tiered-confidence design.
+#define CS_BLE_MFR_ID_STANDALONE 45  // BLE mfr-ID 0x09C8 (XUNTONG/Flock) — high
+                                    //   confidence, this ID is Flock-specific
+#define CS_BLE_UUID_STANDALONE   45  // Raven/Flock 128-bit service UUID — high
+                                    //   confidence, GainSec-confirmed UUIDs
+#define CS_BLE_NAME_STANDALONE   35  // BLE device-name substring — good but
+                                    //   slightly less specific than mfr-ID/UUID
+
 // Minimum confidence for a detection to trigger the chirp/beep + LED flash.
 // Detections below this threshold are still logged and emitted in JSON.
 // OUI_MFR alone scores 20 (< 30) → silent log only.
@@ -325,6 +337,18 @@ static uint8_t IRAM_ATTR computeConfidence(AlertType type, const uint8_t* mac,
     case ALERT_SOUNDTHINKING:
       // SoundThinking/ShotSpotter acoustic sensor
       score += CS_SOUNDTHINKING;
+      break;
+    case ALERT_BLE_MFR_ID:
+      // Standalone BLE mfr-ID match — no corroborating WiFi frame needed.
+      score += CS_BLE_MFR_ID_STANDALONE;
+      break;
+    case ALERT_BLE_RAVEN_UUID:
+      // Standalone Raven/Flock 128-bit BLE service UUID match.
+      score += CS_BLE_UUID_STANDALONE;
+      break;
+    case ALERT_BLE_NAME:
+      // Standalone BLE device-name substring match.
+      score += CS_BLE_NAME_STANDALONE;
       break;
     default:
       break;
