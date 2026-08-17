@@ -311,8 +311,6 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 #define RSSI_MIN        -95
 #define ALERT_COOLDOWN_MS 5000
 
-#define HB_DEVICE_ACTIVE_MS    120000  // keep beeping for 2 min after last detection
-#define HB_BEEP_INTERVAL_MS    10000
 #define REDISCOVER_MS          30000
 #define NEW_CHIRP_LO_HZ        2000
 #define NEW_CHIRP_HI_HZ        2800
@@ -832,7 +830,6 @@ static size_t dedupeIdx = 0;
 static volatile unsigned long ledOffAt = 0;
 
 static unsigned long fyLastTargetSeen  = 0;
-static unsigned long fyLastHeartbeatAt = 0;
 
 // Tracks whether promiscuous mode is currently paused for BLE
 static bool fyPromiscPaused = false;
@@ -1781,10 +1778,19 @@ static void drainAlertQueue() {
 
     // PR#39: only chirp and LED flash for detections at or above CHIRP_MIN_CONFIDENCE.
     // Contract-mfr OUI alone (conf=20 < 30) logs silently — no audible/visual noise.
+    //
+    // Audio feedback fires ONLY here, on a genuine new-detection event. A
+    // periodic "still tracking" idle heartbeat beep (heartbeatTick(), fired
+    // every 10s while any target had been seen within the last 2 min,
+    // independent of a fresh hit) used to also run from loop() and was
+    // removed per user feedback — it produced confusing beeps with no
+    // corresponding new detection. heartbeatBeep() itself is kept (still
+    // used as a button-press acknowledgement sound, see HAS_SIMPLE_BUTTON
+    // in loop()), only its unconditional periodic trigger was deleted.
     if (chirpWorthy && e.confidence >= CHIRP_MIN_CONFIDENCE) {
       newDetectChirp();
-      fyLastHeartbeatAt = millis();
     }
+
     if (e.confidence >= CHIRP_MIN_CONFIDENCE) {
       ledFlash(LED_FLASH_MS);
       maybeLockChannel(e);   // hold this channel while the camera is still audible
@@ -1826,14 +1832,11 @@ static void autosaveTick() {
   fySaveSession();
 }
 
-static void heartbeatTick() {
-  if (fyLastTargetSeen == 0) return;
-  unsigned long now = millis();
-  if (now - fyLastTargetSeen > HB_DEVICE_ACTIVE_MS) return;
-  if (now - fyLastHeartbeatAt < HB_BEEP_INTERVAL_MS) return;
-  heartbeatBeep();
-  fyLastHeartbeatAt = now;
-}
+// heartbeatTick() (periodic "still tracking" idle beep, fired every 10s
+// while any target had been seen within the last 2 min, independent of a
+// fresh hit) was removed here per user feedback -- audio should only fire
+// on genuine new-detection events (see the chirp block in
+// drainAlertQueue() for where that now happens exclusively).
 
 // ============================================================
 // SETUP / LOOP
@@ -2061,7 +2064,6 @@ void loop() {
   updateChannelMode();
   drainAlertQueue();
   autosaveTick();
-  heartbeatTick();
   ledTick();
   printHeartbeat();
   screenTick();

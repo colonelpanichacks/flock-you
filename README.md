@@ -217,11 +217,9 @@ All **38 tests pass** against the current `fy_detect.h`.  The test suite covers:
 **Two fast ascending beeps** (2000 Hz → 2800 Hz)
 - First time seeing a camera MAC
 - Or camera reappears after 30+ seconds
-
-### Heartbeat
-**Two monotone beeps** (1500 Hz), every 10 seconds
-- At least one camera detected in last 3 seconds
-- Confirms active tracking
+- This is the **only** runtime audio alert — the firmware does not emit
+  any periodic/idle "still tracking" beep. Audio fires exclusively on a
+  genuine new-detection event (`confidence >= CHIRP_MIN_CONFIDENCE`).
 
 ### Visual
 **Onboard LED flashes** on every detection
