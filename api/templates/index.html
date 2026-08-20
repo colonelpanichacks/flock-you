@@ -4,10 +4,60 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Flock You - Detection Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
+
+        /* ============================================================
+           Design tokens — dark professional.
+           Neutral graphite surfaces, one restrained steel-blue accent,
+           semantic colours reserved for state (ok / warn / danger) and
+           for detection confidence tiers. No glow, no neon.
+           ============================================================ */
+        :root {
+            /* Surfaces carry a slight violet cast so the purple/pink accents
+               sit in the same family as the background instead of on top of it. */
+            --bg:          #0d0a14;
+            --surface:     #14101d;
+            --surface-2:   #1a1526;
+            --surface-3:   #221b31;
+            --border:      #2c2340;
+            --border-2:    #3d3155;
+            --text:        #f0ecf7;
+            --text-dim:    #b3a8c9;
+            --text-faint:  #8578a0;
+
+            --accent:      #a855f7;   /* purple */
+            --accent-2:    #f472b6;   /* pink   */
+            --accent-deep: #7c3aed;
+            --accent-soft: #d8b4fe;
+            --lime:        #a3e635;
+            --blue:        #38bdf8;
+
+            --ok:          #a3e635;
+            --ok-deep:     #65a30d;
+            --warn:        #fbbf24;
+            --danger:      #fb7185;
+            --danger-deep: #be123c;
+            --shadow:      rgba(0,0,0,.5);
+
+            /* Detection confidence tiers. Lime is the strongest evidence and
+               reads brightest; purple and pink are the broad OUI echoes. */
+            --tier-4: #a3e635;   /* lime   — IE fingerprint  */
+            --tier-3: #38bdf8;   /* blue   — wildcard probe  */
+            --tier-2: #f472b6;   /* pink   — OUI transmitter */
+            --tier-1: #a855f7;   /* purple — OUI echo        */
+            --tier-0: #6d5f88;   /* muted  — SSID keyword    */
+
+            --font-ui:   'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+            --radius:    8px;
+            --radius-lg: 14px;
+        }
         * {
             margin: 0;
             padding: 0;
@@ -15,26 +65,32 @@
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #2d1b69 0%, #1a1033 50%, #4a1b69 100%);
-            color: #e0e0e0;
+            font-family: var(--font-ui);
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+            font-size: 16px;
+            line-height: 1.5;
         }
 
         .header {
-            background: rgba(26, 16, 51, 0.95);
-            color: #e0e0e0;
+            background: rgba(17, 22, 29, 0.95);
+            color: var(--text);
             padding: 1rem;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-            border-bottom: 2px solid #8b5cf6;
+            border-bottom: 2px solid var(--accent);
         }
 
         .header-content {
             display: grid;
-            grid-template-areas: 
+            grid-template-areas:
                 "title controls buttons";
             grid-template-columns: auto 1fr auto;
-            gap: 1rem;
+            gap: 1.25rem;
+            /* Single row: wordmark, device controls and panel buttons all sit
+               on one baseline. The Filter select moved into the Detections
+               panel, which is what freed up the width to do this. */
             align-items: center;
             width: 100%;
         }
@@ -60,6 +116,47 @@
             align-items: center;
         }
 
+        /* Keep the device controls on one line with the wordmark and buttons;
+           only wrap once the viewport genuinely can't hold them.
+           margin-right pulls the cluster off the Audio/Terminal/OUI/Map buttons
+           so the two groups read as separate, and the wider gap separates the
+           Sniffer group from the GPS group. */
+        .header-controls {
+            flex-wrap: nowrap;
+            justify-content: flex-end;
+            gap: 2.5rem;
+            margin-right: 2.5rem;
+        }
+
+        /* Vertical hairline between the Sniffer and GPS groups. */
+        .header-controls .device-control-group + .device-control-group {
+            padding-left: 2.5rem;
+            border-left: 1px solid var(--border);
+        }
+
+        .header-buttons { flex-shrink: 0; }
+
+        @media (max-width: 1100px) {
+            .header-content {
+                grid-template-areas: "title buttons" "controls controls";
+                grid-template-columns: auto 1fr;
+                row-gap: 0.75rem;
+            }
+            .header-controls { flex-wrap: wrap; justify-content: flex-start; }
+            .header-buttons { justify-content: flex-end; }
+        }
+
+        /* Filter now lives in the Detections panel header. */
+        .filter-group { display: flex; align-items: center; gap: .5rem; }
+
+        .filter-group label {
+            color: var(--text-faint);
+            font-size: .76rem;
+            font-weight: 600;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+        }
+
         .header h1 {
             font-size: 1.6rem;
             margin: 0;
@@ -68,10 +165,12 @@
 
         .flock-you-title {
             font-family: 'Orbitron', 'Courier New', monospace;
-            font-size: 1.4rem;
+            font-size: 1.75rem;
             font-weight: 700;
-            color: #ec4899;
-            text-shadow: 0 0 10px rgba(236, 72, 153, 0.5);
+            background: linear-gradient(100deg, var(--blue) 0%, var(--accent) 45%, var(--accent-2) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
             letter-spacing: 2px;
             margin: 0;
             white-space: nowrap;
@@ -113,10 +212,10 @@
         }
 
         .refresh-btn {
-            background: linear-gradient(135deg, #6b7280 0%, #9ca3af 100%);
+            background: linear-gradient(135deg, var(--surface-3) 0%, var(--text-dim) 100%);
             color: white;
             font-weight: 600;
-            border: 1px solid #4b5563;
+            border: 1px solid var(--border-2);
             padding: 0.3rem 0.5rem;
             font-size: 0.8rem;
             min-width: auto;
@@ -128,9 +227,9 @@
         }
 
         .refresh-btn:hover {
-            background: linear-gradient(135deg, #9ca3af 0%, #d1d5db 100%);
+            background: linear-gradient(135deg, var(--text-dim) 0%, var(--text-dim) 100%);
             transform: translateY(-1px);
-            box-shadow: 0 2px 8px rgba(107, 114, 128, 0.4);
+            box-shadow: 0 2px 8px rgba(110, 125, 140, 0.4);
         }
 
         .refresh-btn:active {
@@ -148,7 +247,7 @@
 
         .control-group label {
             font-weight: 600;
-            color: #e0e0e0;
+            color: var(--text);
             font-size: 0.75rem;
             white-space: nowrap;
             min-width: fit-content;
@@ -164,9 +263,9 @@
         }
 
         select {
-            background: #2d1b69;
-            color: #e0e0e0;
-            border: 1px solid #8b5cf6;
+            background: var(--surface-2);
+            color: var(--text);
+            border: 1px solid var(--accent);
             min-width: 100px;
             max-width: 140px;
             font-size: 0.75rem;
@@ -174,29 +273,29 @@
 
         select:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
+            border-color: var(--accent-soft);
+            box-shadow: 0 0 0 2px rgba(75, 143, 214, 0.3);
         }
 
         button {
-            background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent) 100%);
             color: white;
             font-weight: 600;
-            border: 1px solid #7c3aed;
+            border: 1px solid var(--accent-deep);
         }
 
         button:hover {
-            background: linear-gradient(135deg, #a855f7 0%, #c084fc 100%);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-soft) 100%);
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+            box-shadow: 0 4px 12px rgba(75, 143, 214, 0.4);
         }
 
         button.danger {
-            background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+            background: linear-gradient(135deg, var(--danger-deep) 0%, var(--danger) 100%);
         }
 
         button.danger:hover {
-            background: linear-gradient(135deg, #ef4444 0%, #f87171 100%);
+            background: linear-gradient(135deg, var(--danger) 0%, var(--danger) 100%);
         }
 
         .status {
@@ -212,63 +311,63 @@
         }
 
         .serial-terminal-btn {
-            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+            background: linear-gradient(135deg, var(--ok-deep) 0%, var(--ok) 100%);
             color: white;
             font-weight: 600;
-            border: 1px solid #047857;
+            border: 1px solid var(--ok-deep);
             padding: 0.3rem 0.6rem;
             font-size: 0.75rem;
         }
 
         .serial-terminal-btn:hover {
-            background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
+            background: linear-gradient(135deg, var(--ok) 0%, var(--ok) 100%);
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+            box-shadow: 0 4px 12px rgba(63, 166, 106, 0.4);
         }
 
         .oui-search-btn {
-            background: linear-gradient(135deg, #7c3aed 0%, #8b5cf6 100%);
+            background: linear-gradient(135deg, var(--accent-deep) 0%, var(--accent) 100%);
             color: white;
             font-weight: 600;
-            border: 1px solid #6d28d9;
+            border: 1px solid var(--accent-deep);
             padding: 0.3rem 0.6rem;
             font-size: 0.75rem;
         }
 
         .oui-search-btn:hover {
-            background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent) 100%);
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4);
+            box-shadow: 0 4px 12px rgba(47, 107, 168, 0.4);
         }
 
         .map-btn {
-            background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%);
+            background: linear-gradient(135deg, var(--accent-deep) 0%, var(--accent) 100%);
             color: white;
             font-weight: 600;
-            border: 1px solid #0e7490;
+            border: 1px solid var(--accent-deep);
             padding: 0.3rem 0.6rem;
             font-size: 0.75rem;
         }
 
         .map-btn:hover {
-            background: linear-gradient(135deg, #06b6d4 0%, #22d3ee 100%);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(8, 145, 178, 0.4);
+            box-shadow: 0 4px 12px rgba(47, 107, 168, 0.4);
         }
 
         .serial-terminal-container {
-            background: rgba(45, 27, 105, 0.8);
-            border: 1px solid #8b5cf6;
+            background: rgba(22, 29, 38, 0.8);
+            border: 1px solid var(--accent);
             border-radius: 12px;
             margin-top: 1rem;
             overflow: hidden;
-            box-shadow: 0 8px 32px rgba(139, 92, 246, 0.3);
+            box-shadow: 0 8px 32px rgba(75, 143, 214, 0.3);
         }
 
         .serial-terminal-header {
-            background: rgba(45, 27, 105, 0.9);
+            background: rgba(22, 29, 38, 0.9);
             padding: 1rem 1.5rem;
-            border-bottom: 1px solid #8b5cf6;
+            border-bottom: 1px solid var(--accent);
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -277,7 +376,7 @@
         }
 
         .serial-terminal-header h2 {
-            color: #c084fc;
+            color: var(--accent-soft);
             font-size: 1.2rem;
             font-weight: 600;
             margin: 0;
@@ -297,16 +396,16 @@
         }
 
         .terminal-filter-group label {
-            color: #c084fc;
+            color: var(--accent-soft);
             font-size: 0.85rem;
             font-weight: 600;
         }
 
         .terminal-filter-select {
-            background: rgba(15, 10, 26, 0.95);
-            border: 1px solid #8b5cf6;
+            background: rgba(11, 15, 20, 0.95);
+            border: 1px solid var(--accent);
             border-radius: 4px;
-            color: #e0e0e0;
+            color: var(--text);
             padding: 0.3rem 0.6rem;
             font-size: 0.8rem;
             min-width: 100px;
@@ -314,18 +413,18 @@
 
         .terminal-filter-select:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
+            border-color: var(--accent-soft);
+            box-shadow: 0 0 0 2px rgba(75, 143, 214, 0.3);
         }
 
         .serial-status {
-            color: #a855f7;
+            color: var(--accent);
             font-size: 0.9rem;
             font-weight: 500;
         }
 
         .clear-terminal-btn {
-            background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+            background: linear-gradient(135deg, var(--danger-deep) 0%, var(--danger) 100%);
             color: white;
             font-size: 0.8rem;
             padding: 0.3rem 0.8rem;
@@ -336,23 +435,23 @@
         }
 
         .clear-terminal-btn:hover {
-            background: linear-gradient(135deg, #ef4444 0%, #f87171 100%);
+            background: linear-gradient(135deg, var(--danger) 0%, var(--danger) 100%);
             transform: translateY(-1px);
         }
 
         .serial-terminal-content {
-            background: rgba(15, 10, 26, 0.95);
+            background: rgba(11, 15, 20, 0.95);
             padding: 1rem;
             height: 300px;
             overflow-y: auto;
             font-family: 'Courier New', monospace;
             font-size: 13px;
             line-height: 1.4;
-            color: #e0e0e0;
+            color: var(--text);
             white-space: pre-wrap;
             word-wrap: break-word;
             scrollbar-width: thin;
-            scrollbar-color: #8b5cf6 #2d1b69;
+            scrollbar-color: var(--accent) var(--surface-2);
         }
 
         .serial-terminal-content::-webkit-scrollbar {
@@ -360,21 +459,21 @@
         }
 
         .serial-terminal-content::-webkit-scrollbar-track {
-            background: #2d1b69;
+            background: var(--surface-2);
             border-radius: 4px;
         }
 
         .serial-terminal-content::-webkit-scrollbar-thumb {
-            background: #8b5cf6;
+            background: var(--accent);
             border-radius: 4px;
         }
 
         .serial-terminal-content::-webkit-scrollbar-thumb:hover {
-            background: #a855f7;
+            background: var(--accent);
         }
 
         .terminal-placeholder {
-            color: #6b7280;
+            color: var(--surface-3);
             font-style: italic;
             text-align: center;
             margin-top: 2rem;
@@ -386,46 +485,46 @@
         }
 
         .serial-line.detection {
-            color: #c084fc;
+            color: var(--accent-soft);
             font-weight: 600;
         }
 
         .serial-line.error {
-            color: #f87171;
+            color: var(--danger);
         }
 
         .serial-line.info {
-            color: #60a5fa;
+            color: var(--accent-2);
         }
 
         .serial-line.success {
-            color: #34d399;
+            color: var(--ok);
         }
 
         .serial-line.warning {
-            color: #fbbf24;
+            color: var(--warn);
         }
 
         .oui-search-container {
-            background: rgba(45, 27, 105, 0.8);
-            border: 1px solid #8b5cf6;
+            background: rgba(22, 29, 38, 0.8);
+            border: 1px solid var(--accent);
             border-radius: 12px;
             margin-top: 1rem;
             overflow: hidden;
-            box-shadow: 0 8px 32px rgba(139, 92, 246, 0.3);
+            box-shadow: 0 8px 32px rgba(75, 143, 214, 0.3);
         }
 
         .oui-search-header {
-            background: rgba(45, 27, 105, 0.9);
+            background: rgba(22, 29, 38, 0.9);
             padding: 1rem 1.5rem;
-            border-bottom: 1px solid #8b5cf6;
+            border-bottom: 1px solid var(--accent);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         .oui-search-header h2 {
-            color: #c084fc;
+            color: var(--accent-soft);
             font-size: 1.2rem;
             font-weight: 600;
             margin: 0;
@@ -438,13 +537,13 @@
         }
 
         .oui-status {
-            color: #a855f7;
+            color: var(--accent);
             font-size: 0.9rem;
             font-weight: 500;
         }
 
         .view-all-btn {
-            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+            background: linear-gradient(135deg, var(--ok-deep) 0%, var(--ok) 100%);
             color: white;
             font-size: 0.8rem;
             padding: 0.3rem 0.8rem;
@@ -455,12 +554,12 @@
         }
 
         .view-all-btn:hover {
-            background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
+            background: linear-gradient(135deg, var(--ok) 0%, var(--ok) 100%);
             transform: translateY(-1px);
         }
 
         .refresh-db-btn {
-            background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%);
+            background: linear-gradient(135deg, var(--warn) 0%, var(--warn) 100%);
             color: white;
             font-size: 0.8rem;
             padding: 0.3rem 0.8rem;
@@ -471,12 +570,12 @@
         }
 
         .refresh-db-btn:hover {
-            background: linear-gradient(135deg, #fbbf24 0%, #fcd34d 100%);
+            background: linear-gradient(135deg, var(--warn) 0%, var(--warn) 100%);
             transform: translateY(-1px);
         }
 
         .clear-oui-btn {
-            background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+            background: linear-gradient(135deg, var(--danger-deep) 0%, var(--danger) 100%);
             color: white;
             font-size: 0.8rem;
             padding: 0.3rem 0.8rem;
@@ -487,7 +586,7 @@
         }
 
         .clear-oui-btn:hover {
-            background: linear-gradient(135deg, #ef4444 0%, #f87171 100%);
+            background: linear-gradient(135deg, var(--danger) 0%, var(--danger) 100%);
             transform: translateY(-1px);
         }
 
@@ -503,28 +602,28 @@
 
         .oui-search-input {
             flex: 1;
-            background: rgba(15, 10, 26, 0.95);
-            border: 1px solid #8b5cf6;
+            background: rgba(11, 15, 20, 0.95);
+            border: 1px solid var(--accent);
             border-radius: 6px;
-            color: #e0e0e0;
+            color: var(--text);
             padding: 0.5rem;
             font-size: 0.9rem;
         }
 
         .oui-search-input:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
-            background: rgba(15, 10, 26, 0.95);
-            color: #e0e0e0;
+            border-color: var(--accent-soft);
+            box-shadow: 0 0 0 2px rgba(75, 143, 214, 0.3);
+            background: rgba(11, 15, 20, 0.95);
+            color: var(--text);
         }
 
         .oui-search-input::placeholder {
-            color: #6b7280;
+            color: var(--surface-3);
         }
 
         .search-btn {
-            background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent) 100%);
             color: white;
             font-size: 0.9rem;
             padding: 0.5rem 1rem;
@@ -535,19 +634,19 @@
         }
 
         .search-btn:hover {
-            background: linear-gradient(135deg, #a855f7 0%, #c084fc 100%);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-soft) 100%);
             transform: translateY(-1px);
         }
 
         .search-results {
-            background: rgba(15, 10, 26, 0.95);
-            border: 1px solid #8b5cf6;
+            background: rgba(11, 15, 20, 0.95);
+            border: 1px solid var(--accent);
             border-radius: 6px;
             padding: 1rem;
             max-height: 400px;
             overflow-y: auto;
             scrollbar-width: thin;
-            scrollbar-color: #8b5cf6 #2d1b69;
+            scrollbar-color: var(--accent) var(--surface-2);
         }
 
         .oui-results-grid {
@@ -559,8 +658,8 @@
         }
 
         .oui-result-item {
-            background: rgba(45, 27, 105, 0.5);
-            border: 1px solid #8b5cf6;
+            background: rgba(22, 29, 38, 0.5);
+            border: 1px solid var(--accent);
             border-radius: 4px;
             padding: 0.3rem;
             margin-bottom: 0;
@@ -573,14 +672,14 @@
         }
 
         .oui-mac {
-            color: #c084fc;
+            color: var(--accent-soft);
             font-weight: 600;
             font-family: 'Courier New', monospace;
             font-size: 0.75rem;
         }
 
         .oui-manufacturer {
-            color: #e0e0e0;
+            color: var(--text);
             margin-top: 0.25rem;
             font-size: 0.7rem;
             line-height: 1.2;
@@ -592,29 +691,29 @@
         }
 
         .search-results::-webkit-scrollbar-track {
-            background: #2d1b69;
+            background: var(--surface-2);
             border-radius: 4px;
         }
 
         .search-results::-webkit-scrollbar-thumb {
-            background: #8b5cf6;
+            background: var(--accent);
             border-radius: 4px;
         }
 
         .search-results::-webkit-scrollbar-thumb:hover {
-            background: #a855f7;
+            background: var(--accent);
         }
 
         .search-placeholder {
-            color: #6b7280;
+            color: var(--surface-3);
             font-style: italic;
             text-align: center;
             margin-top: 2rem;
         }
 
         .oui-result-item {
-            background: rgba(45, 27, 105, 0.5);
-            border: 1px solid #8b5cf6;
+            background: rgba(22, 29, 38, 0.5);
+            border: 1px solid var(--accent);
             border-radius: 6px;
             padding: 0.75rem;
             margin-bottom: 0.5rem;
@@ -625,13 +724,13 @@
         }
 
         .oui-mac {
-            color: #c084fc;
+            color: var(--accent-soft);
             font-weight: 600;
             font-family: 'Courier New', monospace;
         }
 
         .oui-manufacturer {
-            color: #e0e0e0;
+            color: var(--text);
             margin-top: 0.25rem;
         }
 
@@ -641,29 +740,29 @@
             border-radius: 4px;
             display: inline-block;
             min-width: 100px;
-            background: #1e40af;
-            border: 1px solid #3b82f6;
-            color: #93c5fd;
+            background: var(--accent-deep);
+            border: 1px solid var(--accent);
+            color: var(--accent-soft);
             font-weight: 600;
             font-size: 0.85rem;
         }
 
         .alias-display:hover {
-            background: #2563eb;
-            border-color: #60a5fa;
+            background: var(--accent-deep);
+            border-color: var(--accent-2);
             color: white;
         }
 
         .alias-display em {
-            color: #6b7280;
+            color: var(--surface-3);
             font-style: italic;
         }
 
         .alias-input {
-            background: rgba(45, 27, 105, 0.8);
-            border: 1px solid #8b5cf6;
+            background: rgba(22, 29, 38, 0.8);
+            border: 1px solid var(--accent);
             border-radius: 4px;
-            color: #e0e0e0;
+            color: var(--text);
             padding: 2px 6px;
             font-size: 0.9rem;
             width: 120px;
@@ -671,27 +770,27 @@
 
         .alias-input:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
+            border-color: var(--accent-soft);
+            box-shadow: 0 0 0 2px rgba(75, 143, 214, 0.3);
         }
 
         .status-indicator {
             width: 12px;
             height: 12px;
             border-radius: 50%;
-            background: #dc2626;
+            background: var(--danger-deep);
             animation: pulse 2s infinite;
-            box-shadow: 0 0 8px rgba(220, 38, 38, 0.6);
+            box-shadow: 0 0 8px rgba(208, 90, 82, 0.6);
         }
 
         .status-indicator.active {
-            background: #10b981;
-            box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+            background: var(--ok);
+            box-shadow: 0 0 8px rgba(63, 166, 106, 0.6);
         }
 
         .device-info {
             font-size: 0.8rem;
-            color: #d1d5db;
+            color: var(--text-dim);
             margin-top: 0.25rem;
         }
 
@@ -721,53 +820,53 @@
         }
 
         .stat-card {
-            background: rgba(45, 27, 105, 0.8);
+            background: rgba(22, 29, 38, 0.8);
             padding: 1.5rem;
             border-radius: 12px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
             text-align: center;
-            border: 1px solid #8b5cf6;
+            border: 1px solid var(--accent);
             backdrop-filter: blur(10px);
         }
 
         .stat-number {
             font-size: 2rem;
             font-weight: bold;
-            color: #c084fc;
+            color: var(--accent-soft);
         }
 
         .stat-label {
-            color: #d1d5db;
+            color: var(--text-dim);
             margin-top: 0.5rem;
         }
 
         .stat-hint {
-            color: #9ca3af;
+            color: var(--text-dim);
             font-size: 0.7rem;
             margin-top: 0.25rem;
             font-style: italic;
         }
 
         .detections-container {
-            background: rgba(45, 27, 105, 0.8);
+            background: rgba(22, 29, 38, 0.8);
             border-radius: 12px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
             overflow: hidden;
-            border: 1px solid #8b5cf6;
+            border: 1px solid var(--accent);
             backdrop-filter: blur(10px);
         }
 
         .detections-header {
-            background: rgba(26, 16, 51, 0.9);
+            background: rgba(17, 22, 29, 0.9);
             padding: 1rem;
-            border-bottom: 1px solid #8b5cf6;
+            border-bottom: 1px solid var(--accent);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         .detections-header h2 {
-            color: #c084fc;
+            color: var(--accent-soft);
             font-size: 1.2rem;
             font-weight: 600;
             margin: 0;
@@ -777,7 +876,7 @@
             max-height: 600px;
             overflow-y: auto;
             scrollbar-width: thin;
-            scrollbar-color: #8b5cf6 #2d1b69;
+            scrollbar-color: var(--accent) var(--surface-2);
         }
 
         .detections-list::-webkit-scrollbar {
@@ -785,22 +884,22 @@
         }
 
         .detections-list::-webkit-scrollbar-track {
-            background: #2d1b69;
+            background: var(--surface-2);
             border-radius: 4px;
         }
 
         .detections-list::-webkit-scrollbar-thumb {
-            background: #8b5cf6;
+            background: var(--accent);
             border-radius: 4px;
         }
 
         .detections-list::-webkit-scrollbar-thumb:hover {
-            background: #a855f7;
+            background: var(--accent);
         }
 
         .detection-item {
-            background: #1e3a8a;
-            border: 1px solid #3b82f6;
+            background: var(--accent-deep);
+            border: 1px solid var(--accent);
             border-radius: 6px;
             padding: 0.5rem;
             margin-bottom: 0.5rem;
@@ -809,8 +908,8 @@
         }
 
         .detection-item:hover {
-            background: #1e40af;
-            border-color: #60a5fa;
+            background: var(--accent-deep);
+            border-color: var(--accent-2);
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
         }
 
@@ -828,19 +927,19 @@
         }
 
         .gps-link {
-            color: #93c5fd;
+            color: var(--accent-soft);
             font-size: 0.8rem;
             font-weight: 600;
             text-decoration: none;
             padding: 0.1rem 0.3rem;
             border-radius: 3px;
-            background: rgba(147, 197, 253, 0.1);
-            border: 1px solid #3b82f6;
+            background: rgba(168, 200, 232, 0.1);
+            border: 1px solid var(--accent);
             transition: all 0.2s ease;
         }
 
         .gps-link:hover {
-            background: #3b82f6;
+            background: var(--accent);
             color: white;
             text-decoration: none;
         }
@@ -852,7 +951,7 @@
         }
 
         .detection-type {
-            background: #2563eb;
+            background: var(--accent-deep);
             color: white;
             padding: 0.25rem 0.6rem;
             border-radius: 4px;
@@ -863,7 +962,7 @@
         }
 
         .gps-tag {
-            background: #22c55e;
+            background: var(--ok);
             color: white;
             padding: 0.15rem 0.4rem;
             border-radius: 3px;
@@ -874,7 +973,7 @@
         }
 
         .detection-count {
-            background: #059669;
+            background: var(--ok-deep);
             color: white;
             padding: 0.2rem 0.5rem;
             border-radius: 4px;
@@ -885,7 +984,7 @@
         }
 
         .detection-time {
-            color: #93c5fd;
+            color: var(--accent-soft);
             font-size: 0.9rem;
             font-weight: 600;
         }
@@ -906,7 +1005,7 @@
 
         .detail-label {
             font-weight: 700;
-            color: #93c5fd;
+            color: var(--accent-soft);
             font-size: 0.9rem;
             margin-right: 0.5rem;
         }
@@ -919,8 +1018,8 @@
 
         .detection-timing {
             grid-column: 1 / -1;
-            background: rgba(16, 185, 129, 0.1);
-            border: 1px solid rgba(16, 185, 129, 0.2);
+            background: rgba(63, 166, 106, 0.1);
+            border: 1px solid rgba(63, 166, 106, 0.2);
             border-radius: 4px;
             padding: 0.2rem;
             margin-top: 0.15rem;
@@ -932,7 +1031,7 @@
         .no-detections {
             text-align: center;
             padding: 3rem;
-            color: #d1d5db;
+            color: var(--text-dim);
         }
 
         .export-buttons {
@@ -947,10 +1046,10 @@
         }
 
         .detection-search-input {
-            background: rgba(15, 10, 26, 0.95);
-            border: 1px solid #8b5cf6;
+            background: rgba(11, 15, 20, 0.95);
+            border: 1px solid var(--accent);
             border-radius: 6px;
-            color: #e0e0e0;
+            color: var(--text);
             padding: 0.4rem 0.8rem;
             font-size: 0.8rem;
             width: 200px;
@@ -958,34 +1057,34 @@
 
         .detection-search-input:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
-            background: rgba(15, 10, 26, 0.95);
-            color: #e0e0e0;
+            border-color: var(--accent-soft);
+            box-shadow: 0 0 0 2px rgba(75, 143, 214, 0.3);
+            background: rgba(11, 15, 20, 0.95);
+            color: var(--text);
         }
 
         .detection-search-input::placeholder {
-            color: #6b7280;
+            color: var(--surface-3);
         }
 
         .export-btn {
-            background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%);
-            border: 1px solid #7c3aed;
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent) 100%);
+            border: 1px solid var(--accent-deep);
         }
 
         .export-btn:hover {
-            background: linear-gradient(135deg, #a855f7 0%, #c084fc 100%);
-            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-soft) 100%);
+            box-shadow: 0 4px 12px rgba(75, 143, 214, 0.4);
         }
 
         .clear-btn {
-            background: linear-gradient(135deg, #ec4899 0%, #f472b6 100%);
-            border: 1px solid #db2777;
+            background: linear-gradient(135deg, var(--accent-2) 0%, var(--accent-soft) 100%);
+            border: 1px solid var(--accent-deep);
         }
 
         .clear-btn:hover {
-            background: linear-gradient(135deg, #f472b6 0%, #f9a8d4 100%);
-            box-shadow: 0 4px 12px rgba(236, 72, 153, 0.4);
+            background: linear-gradient(135deg, var(--accent-soft) 0%, var(--accent-soft) 100%);
+            box-shadow: 0 4px 12px rgba(111, 168, 224, 0.4);
         }
 
         .export-dropdown {
@@ -997,16 +1096,16 @@
             display: none;
             position: absolute;
             right: 0;
-            background: rgba(45, 27, 105, 0.95);
+            background: rgba(22, 29, 38, 0.95);
             min-width: 160px;
             box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
-            border: 1px solid #8b5cf6;
+            border: 1px solid var(--accent);
             border-radius: 6px;
             z-index: 1000;
         }
 
         .export-dropdown-content a {
-            color: #e0e0e0;
+            color: var(--text);
             padding: 8px 12px;
             text-decoration: none;
             display: block;
@@ -1015,7 +1114,7 @@
         }
 
         .export-dropdown-content a:hover {
-            background: rgba(139, 92, 246, 0.3);
+            background: rgba(75, 143, 214, 0.3);
         }
 
         .dropdown-toggle {
@@ -1023,18 +1122,18 @@
         }
 
         .map-container {
-            background: rgba(45, 27, 105, 0.8);
-            border: 1px solid #8b5cf6;
+            background: rgba(22, 29, 38, 0.8);
+            border: 1px solid var(--accent);
             border-radius: 12px;
             margin-top: 1rem;
             overflow: hidden;
-            box-shadow: 0 8px 32px rgba(139, 92, 246, 0.3);
+            box-shadow: 0 8px 32px rgba(75, 143, 214, 0.3);
         }
 
         .map-header {
-            background: rgba(45, 27, 105, 0.9);
+            background: rgba(22, 29, 38, 0.9);
             padding: 1rem 1.5rem;
-            border-bottom: 1px solid #8b5cf6;
+            border-bottom: 1px solid var(--accent);
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -1043,7 +1142,7 @@
         }
 
         .map-header h2 {
-            color: #c084fc;
+            color: var(--accent-soft);
             font-size: 1.2rem;
             font-weight: 600;
             margin: 0;
@@ -1065,17 +1164,17 @@
 
         .map-layer-group label,
         .map-filter-group label {
-            color: #c084fc;
+            color: var(--accent-soft);
             font-size: 0.85rem;
             font-weight: 600;
         }
 
         .map-layer-select,
         .map-filter-select {
-            background: rgba(15, 10, 26, 0.95);
-            border: 1px solid #8b5cf6;
+            background: rgba(11, 15, 20, 0.95);
+            border: 1px solid var(--accent);
             border-radius: 4px;
-            color: #e0e0e0;
+            color: var(--text);
             padding: 0.3rem 0.6rem;
             font-size: 0.8rem;
             min-width: 120px;
@@ -1084,18 +1183,18 @@
         .map-layer-select:focus,
         .map-filter-select:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
+            border-color: var(--accent-soft);
+            box-shadow: 0 0 0 2px rgba(75, 143, 214, 0.3);
         }
 
         .map-status {
-            color: #a855f7;
+            color: var(--accent);
             font-size: 0.9rem;
             font-weight: 500;
         }
 
         .clear-map-btn {
-            background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+            background: linear-gradient(135deg, var(--danger-deep) 0%, var(--danger) 100%);
             color: white;
             font-size: 0.8rem;
             padding: 0.3rem 0.8rem;
@@ -1106,7 +1205,7 @@
         }
 
         .clear-map-btn:hover {
-            background: linear-gradient(135deg, #ef4444 0%, #f87171 100%);
+            background: linear-gradient(135deg, var(--danger) 0%, var(--danger) 100%);
             transform: translateY(-1px);
         }
 
@@ -1115,18 +1214,18 @@
         }
 
         .leaflet-popup-content {
-            color: #333;
+            color: var(--border);
             font-size: 0.9rem;
         }
 
         .leaflet-popup-content h3 {
             margin: 0 0 0.5rem 0;
-            color: #ec4899;
+            color: var(--accent-2);
         }
 
         .map-legend {
-            background: rgba(15, 10, 26, 0.9);
-            border: 1px solid #8b5cf6;
+            background: rgba(11, 15, 20, 0.9);
+            border: 1px solid var(--accent);
             border-radius: 6px;
             padding: 0.5rem;
             margin-top: 0.5rem;
@@ -1138,7 +1237,7 @@
         }
 
         .legend-title {
-            color: #c084fc;
+            color: var(--accent-soft);
             margin: 0;
             font-size: 0.85rem;
             font-weight: 600;
@@ -1166,10 +1265,12 @@
             border: 2px solid;
         }
 
-        .wifi-session { background: #ef4444; border-color: #22c55e; }
-        .wifi-cumulative { background: #ef4444; border-color: #f59e0b; }
-        .ble-session { background: #3b82f6; border-color: #22c55e; }
-        .ble-cumulative { background: #3b82f6; border-color: #f59e0b; }
+        .tier-marker-3 { background: var(--tier-3); border-color: var(--tier-3); }
+        .tier-marker-2 { background: var(--tier-2); border-color: var(--tier-2); }
+        .marker-session { background: var(--text-faint); border-color: var(--text); }
+        .marker-cumulative { background: var(--text-faint); border-color: var(--text-faint); }
+        .tier-marker-4 { background: var(--tier-4); border-color: var(--tier-4); }
+        .tier-marker-1 { background: var(--tier-1); border-color: var(--tier-1); }
 
         @media (max-width: 1200px) {
             .header-content {
@@ -1275,6 +1376,870 @@
                 font-size: 0.7rem;
             }
         }
+        /* ============================================================
+           Professional refinement pass
+           Flattens the leftover gradients and glow into calm surfaces,
+           then styles the tier badges and the audio panel.
+           Loaded last so it wins over the older rules above.
+           ============================================================ */
+
+        .header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            box-shadow: none;
+        }
+
+        .stat-card,
+        .detections-container,
+        .serial-terminal-container,
+        .oui-search-container,
+        .map-container,
+        .beep-panel-container {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: 0 1px 2px var(--shadow);
+        }
+
+        .detection-item {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: none;
+            transition: border-color .12s ease, background .12s ease;
+        }
+
+        .detection-item:hover {
+            background: var(--surface-3);
+            border-color: var(--border-2);
+            transform: none;
+        }
+
+        /* Left rule carries the confidence tier without shouting. */
+        .detection-item.tier-border-4 { border-left: 3px solid var(--tier-4); }
+        .detection-item.tier-border-3 { border-left: 3px solid var(--tier-3); }
+        .detection-item.tier-border-2 { border-left: 3px solid var(--tier-2); }
+        .detection-item.tier-border-1 { border-left: 3px solid var(--tier-1); }
+        .detection-item.tier-border-0 { border-left: 3px solid var(--tier-0); }
+
+        button, .export-btn, .clear-btn, .refresh-btn,
+        .serial-terminal-btn, .oui-search-btn, .map-btn, .beep-btn,
+        .panel-btn {
+            background: var(--surface-3);
+            color: var(--text);
+            border: 1px solid var(--border-2);
+            border-radius: var(--radius);
+            font-weight: 500;
+            letter-spacing: .2px;
+            box-shadow: none;
+            transition: background .12s ease, border-color .12s ease;
+        }
+
+        button:hover, .export-btn:hover, .clear-btn:hover, .refresh-btn:hover,
+        .serial-terminal-btn:hover, .oui-search-btn:hover, .map-btn:hover,
+        .beep-btn:hover, .panel-btn:hover {
+            background: var(--border-2);
+            border-color: var(--text-faint);
+            transform: none;
+            box-shadow: none;
+        }
+
+        button.danger, .clear-btn { border-color: var(--danger-deep); }
+        button.danger:hover, .clear-btn:hover { background: var(--danger-deep); }
+
+        .beep-btn.active, .serial-terminal-btn.active {
+            background: var(--accent-deep);
+            border-color: var(--accent);
+        }
+
+        select, input[type="text"], input[type="number"] {
+            background: var(--surface-2);
+            color: var(--text);
+            border: 1px solid var(--border-2);
+            border-radius: var(--radius);
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        /* ---------- method badges ---------- */
+
+        .detection-type {
+            display: inline-block;
+            padding: .15rem .5rem;
+            border-radius: 999px;
+            font-size: .72rem;
+            font-weight: 600;
+            letter-spacing: .3px;
+            text-transform: none;
+            color: var(--bg);
+            background: var(--tier-0);
+        }
+
+        .detection-type.tier-4 { background: var(--tier-4); }
+        .detection-type.tier-3 { background: var(--tier-3); }
+        .detection-type.tier-2 { background: var(--tier-2); }
+        .detection-type.tier-1 { background: var(--tier-1); }
+        .detection-type.tier-0 { background: var(--tier-0); }
+
+        .method-also {
+            display: inline-flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: .3rem;
+            margin-left: .5rem;
+        }
+
+        .method-also-label {
+            color: var(--text-faint);
+            font-size: .68rem;
+            text-transform: uppercase;
+            letter-spacing: .5px;
+        }
+
+        .method-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: .25rem;
+            padding: .1rem .4rem;
+            border-radius: 999px;
+            font-size: .68rem;
+            color: var(--text-dim);
+            background: transparent;
+            border: 1px solid var(--border-2);
+        }
+
+        .method-chip.tier-4 { border-color: var(--tier-4); color: var(--tier-4); }
+        .method-chip.tier-3 { border-color: var(--tier-3); color: var(--tier-3); }
+        .method-chip.tier-2 { border-color: var(--tier-2); color: var(--tier-2); }
+        .method-chip.tier-1 { border-color: var(--tier-1); color: var(--tier-1); }
+
+        .chip-count {
+            font-variant-numeric: tabular-nums;
+            opacity: .7;
+        }
+
+        /* ---------- detection cards ---------- */
+        /*
+           Two rows, three weights of emphasis. The MAC is the identity and
+           reads first; the method badge carries the tier colour; everything
+           else is quiet metadata that stays legible without competing. No
+           field was dropped from the old card — MAC and RSSI moved up into
+           the header, the rest became inline key/value pairs.
+        */
+
+        .detection-item {
+            padding: 0.6rem 0.9rem;
+            margin-bottom: 0.45rem;
+            min-height: 0;                 /* old rule forced 5rem of dead space */
+            display: flex;
+            flex-direction: column;
+            border-left-width: 4px;
+        }
+
+        .det-row {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            min-width: 0;
+        }
+
+        /* Pushes the right-hand cluster out to the edge so the full row gets used. */
+        .det-spacer { flex: 1 1 auto; }
+
+        .det-mac {
+            font-family: var(--font-mono);
+            font-size: 1.02rem;
+            font-weight: 700;
+            letter-spacing: .01em;
+            color: var(--text);
+        }
+
+        .detection-item .detection-type {
+            padding: .22rem .7rem;
+            font-size: .8rem;
+            font-weight: 700;
+            letter-spacing: .01em;
+        }
+
+        .detection-item .detection-count {
+            background: var(--surface-3);
+            color: var(--text-dim);
+            border: 1px solid var(--border-2);
+            border-radius: 999px;
+            padding: .12rem .55rem;
+            min-width: 0;
+            font-size: .82rem;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .detection-item .detection-time {
+            color: var(--text-dim);
+            font-size: .86rem;
+            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+            font-family: var(--font-mono);
+        }
+
+        /* RSSI meter — bars plus the exact dBm, so nothing is lost to the icon. */
+        .rssi { display: inline-flex; align-items: center; gap: .45rem; }
+
+        .rssi-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 16px; }
+
+        .rssi-bars i {
+            width: 4px;
+            background: var(--border-2);
+            border-radius: 1px;
+        }
+        .rssi-bars i:nth-child(1) { height: 5px; }
+        .rssi-bars i:nth-child(2) { height: 9px; }
+        .rssi-bars i:nth-child(3) { height: 13px; }
+        .rssi-bars i:nth-child(4) { height: 16px; }
+        .rssi-bars i.on { background: var(--blue); }
+
+        .rssi-num {
+            font-size: .86rem;
+            font-weight: 600;
+            color: var(--blue);
+            font-family: var(--font-mono);
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* Inline metadata: dim key, mono value. */
+        .det-row-meta { gap: 0.4rem 1.3rem; }
+
+        .meta { display: inline-flex; align-items: baseline; gap: .4rem; min-width: 0; }
+
+        .meta-k {
+            color: var(--text-faint);
+            font-size: .76rem;
+            font-weight: 500;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+        }
+
+        .meta-v {
+            color: var(--text-dim);
+            font-family: var(--font-mono);
+            font-size: .88rem;
+            overflow-wrap: anywhere;
+        }
+
+        .detection-item .gps-link {
+            background: transparent;
+            border: none;
+            padding: 0;
+            font-size: .88rem;
+            font-weight: 500;
+            font-family: var(--font-mono);
+            color: var(--accent-2);
+            text-decoration: none;
+        }
+        .detection-item .gps-link:hover { text-decoration: underline; }
+
+        /* Alias gets its own slot at the end of the row — a real target with a
+           visible border, not a word buried in the metadata. */
+        .alias-slot {
+            display: inline-flex;
+            align-items: center;
+            gap: .5rem;
+            padding: .28rem .7rem;
+            border: 1px dashed var(--border-2);
+            border-radius: 999px;
+            cursor: pointer;
+            min-height: 34px;
+            transition: border-color .12s ease, background .12s ease;
+        }
+
+        .alias-slot:hover {
+            border-color: var(--accent);
+            background: rgba(168, 85, 247, .12);
+        }
+
+        .alias-slot.has-alias {
+            border-style: solid;
+            border-color: var(--accent);
+            background: rgba(168, 85, 247, .14);
+        }
+
+        .alias-k {
+            color: var(--accent);
+            font-size: .72rem;
+            font-weight: 700;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+        }
+
+        .detection-item .alias-display {
+            background: transparent;
+            border: none;
+            padding: 0;
+            min-width: 0;
+            font-size: .9rem;
+            font-weight: 600;
+            color: var(--text-faint);
+            cursor: pointer;
+        }
+
+        .alias-slot.has-alias .alias-display { color: var(--text); }
+
+        .detection-item .alias-display input {
+            font: inherit;
+            font-size: .9rem;
+            background: var(--surface);
+            border: 1px solid var(--accent);
+            border-radius: 4px;
+            color: var(--text);
+            padding: .1rem .35rem;
+            width: 11rem;
+        }
+
+        /* One line when it fits. Everything sits in a single wrapping flex
+           row, so a wide window puts the whole card on one line and narrower
+           windows wrap it naturally instead of forcing a fixed row count.
+           The spacer keeps signal / time / alias pinned right while there is
+           room, and collapses to a line break once the row wraps. */
+        .detection-item .det-row {
+            row-gap: .45rem;
+            column-gap: .55rem;
+        }
+
+        .detection-item .method-also {
+            margin: 0;
+            display: inline-flex;
+            align-items: center;
+            gap: .35rem;
+            flex-wrap: wrap;
+        }
+
+        .detection-item .method-chip { font-size: .78rem; padding: .14rem .55rem; }
+
+        .detection-item .method-also-label { font-size: .72rem; }
+
+        .detections-list { max-height: 70vh; padding-right: .3rem; }
+
+        @media (max-width: 768px) {
+            .det-row-top { gap: .5rem; }
+            .det-spacer { flex-basis: 100%; height: 0; }   /* wrap the right cluster */
+            .det-row-meta { gap: .5rem 1rem; }
+            .alias-slot { width: 100%; justify-content: flex-start; }
+        }
+
+        /* ---------- collapsible sections ---------- */
+        /*
+           Every panel stays mounted; collapsing hides its body and leaves the
+           header bar as a handle. Nothing is display:none at the container
+           level, so the sections keep their order on the page.
+        */
+
+        .detections-header h2,
+        .map-header h2,
+        .panel-header h2,
+        .serial-terminal-header h2,
+        .oui-search-header h2 {
+            display: flex;
+            align-items: center;
+            gap: .55rem;
+            margin: 0;
+        }
+
+        .collapse-btn {
+            background: transparent;
+            border: 1px solid var(--border-2);
+            color: var(--text-dim);
+            width: 30px;
+            height: 30px;
+            min-height: 30px;
+            border-radius: var(--radius);
+            font-size: .8rem;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            flex-shrink: 0;
+            padding: 0;
+        }
+
+        .collapse-btn:hover {
+            background: var(--surface-3);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .section-count {
+            color: var(--text-faint);
+            font-size: .8rem;
+            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* Collapsed: keep the header, drop everything after it. */
+        .detections-container.collapsed .detections-list,
+        .detections-container.collapsed .export-buttons,
+        .map-container.collapsed .map-content,
+        .map-container.collapsed .map-controls,
+        .serial-terminal-container.collapsed .serial-terminal-content,
+        .serial-terminal-container.collapsed .serial-controls,
+        .oui-search-container.collapsed .oui-search-content,
+        .oui-search-container.collapsed .oui-search-controls {
+            display: none;
+        }
+
+        .detections-container.collapsed .detections-header,
+        .map-container.collapsed .map-header,
+        .serial-terminal-container.collapsed .serial-terminal-header,
+        .oui-search-container.collapsed .oui-search-header {
+            border-bottom: none;
+        }
+
+        .map-container, .serial-terminal-container, .oui-search-container {
+            margin-bottom: 1.25rem;
+        }
+
+        /* Gear beside the master switch — opens the per-tier audio settings. */
+        .gear-btn {
+            background: transparent;
+            border: 1px solid var(--border-2);
+            color: var(--text-dim);
+            width: 40px;
+            height: 40px;
+            min-height: 40px;
+            border-radius: 999px;
+            font-size: 1.05rem;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+            flex-shrink: 0;
+        }
+
+        .gear-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: rgba(168, 85, 247, .12);
+        }
+
+        .gear-btn.active {
+            border-color: var(--accent);
+            color: var(--lime);
+            background: rgba(168, 85, 247, .18);
+        }
+
+        /* ---------- master audio toggle (header) ---------- */
+
+        .audio-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: .6rem;
+            padding: .3rem .75rem;
+            border: 1px solid var(--border-2);
+            border-radius: 999px;
+            cursor: pointer;
+            min-height: 40px;
+            white-space: nowrap;
+        }
+
+        .audio-toggle:hover { border-color: var(--accent); }
+
+        .audio-toggle input {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .audio-toggle-label {
+            font-size: .82rem;
+            font-weight: 600;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+            color: var(--text-dim);
+        }
+
+        .audio-toggle input:checked ~ .switch-track {
+            background: var(--accent-deep);
+            border-color: var(--accent);
+        }
+        .audio-toggle input:checked ~ .switch-track .switch-thumb {
+            transform: translateX(18px);
+            background: var(--lime);
+        }
+        .audio-toggle input:focus-visible ~ .switch-track {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        /* ---------- audio panel ---------- */
+
+        /* ---------- audio popup ---------- */
+
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(5, 3, 10, .72);
+            backdrop-filter: blur(3px);
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.25rem;
+        }
+
+        .modal-backdrop[hidden] { display: none; }
+
+        .beep-panel-container {
+            width: min(680px, 100%);
+            max-height: 86vh;
+            overflow-y: auto;
+            margin: 0;
+            box-shadow: 0 24px 60px rgba(0, 0, 0, .6);
+        }
+
+        .modal-close {
+            background: transparent;
+            border: 1px solid var(--border-2);
+            color: var(--text-dim);
+            width: 32px;
+            height: 32px;
+            min-height: 32px;
+            border-radius: 999px;
+            font-size: 1.1rem;
+            line-height: 1;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        .modal-close:hover {
+            border-color: var(--danger);
+            color: var(--danger);
+            background: transparent;
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: .75rem;
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .panel-header h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            letter-spacing: .3px;
+            margin: 0;
+        }
+
+        .panel-controls {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            flex-wrap: wrap;
+        }
+
+        .panel-btn { padding: .3rem .7rem; font-size: .8rem; }
+
+        .panel-status {
+            font-size: .78rem;
+            color: var(--text-faint);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .panel-status.ok    { color: var(--ok); }
+        .panel-status.error { color: var(--danger); }
+
+        .panel-body { padding: 1rem 1.25rem 1.25rem; }
+
+        .panel-note {
+            color: var(--text-dim);
+            font-size: .82rem;
+            line-height: 1.5;
+            margin: 0 0 1rem;
+            max-width: 70ch;
+        }
+
+        .beep-tier-list {
+            display: flex;
+            flex-direction: column;
+            gap: .5rem;
+        }
+
+        .beep-tier {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: .7rem .9rem;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+
+        .beep-tier.unknown { opacity: .55; }
+
+        .beep-tier-main {
+            display: flex;
+            align-items: center;
+            gap: .7rem;
+            min-width: 0;
+        }
+
+        .tier-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: var(--tier-0);
+        }
+
+        .tier-dot.tier-4 { background: var(--tier-4); }
+        .tier-dot.tier-3 { background: var(--tier-3); }
+        .tier-dot.tier-2 { background: var(--tier-2); }
+        .tier-dot.tier-1 { background: var(--tier-1); }
+
+        .beep-tier-text { display: flex; flex-direction: column; min-width: 0; }
+
+        .beep-tier-name {
+            font-size: .88rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .beep-tier-detail {
+            font-size: .76rem;
+            color: var(--text-faint);
+        }
+
+        /* Switch — 44px touch target on the label so it works with a thumb. */
+        .switch {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            flex-shrink: 0;
+            min-height: 44px;
+            min-width: 52px;
+            justify-content: flex-end;
+            cursor: pointer;
+        }
+
+        .switch input {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            cursor: pointer;
+        }
+
+        .switch input:disabled { cursor: not-allowed; }
+
+        .switch-track {
+            display: block;
+            width: 42px;
+            height: 24px;
+            border-radius: 999px;
+            background: var(--border-2);
+            border: 1px solid var(--border-2);
+            transition: background .15s ease, border-color .15s ease;
+        }
+
+        .switch-thumb {
+            display: block;
+            width: 18px;
+            height: 18px;
+            margin: 2px;
+            border-radius: 50%;
+            background: var(--text-dim);
+            transition: transform .15s ease, background .15s ease;
+        }
+
+        .switch input:checked + .switch-track {
+            background: var(--accent-deep);
+            border-color: var(--accent);
+        }
+
+        .switch input:checked + .switch-track .switch-thumb {
+            transform: translateX(18px);
+            background: var(--text);
+        }
+
+        .switch input:focus-visible + .switch-track {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        /* ---------- mobile ---------- */
+
+        @media (max-width: 768px) {
+            body { font-size: 15px; }
+
+            .panel-header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .panel-controls { width: 100%; }
+            .panel-btn { flex: 1; }
+
+            .beep-tier {
+                /* Keep the switch on the same row as its label — stacking it
+                   makes the list twice as tall and harder to scan one-handed. */
+                gap: .6rem;
+            }
+
+            .beep-tier-detail { font-size: .72rem; }
+
+            .method-also {
+                margin-left: 0;
+                width: 100%;
+                margin-top: .35rem;
+            }
+
+            .detection-header-left {
+                flex-wrap: wrap;
+            }
+
+            /* Comfortable tap targets across the header controls. */
+            button, .export-btn, .clear-btn,
+            .serial-terminal-btn, .oui-search-btn, .map-btn, .beep-btn {
+                min-height: 40px;
+            }
+
+            select, input[type="text"], input[type="number"] {
+                min-height: 40px;
+                font-size: 16px;   /* prevents iOS zoom-on-focus */
+            }
+        }
+        /* ============================================================
+           Mobile
+           Phone is a first-class target: this thing runs on a laptop or a
+           phone in a car. Everything stays reachable one-handed, nothing
+           scrolls sideways, and tap targets stay at 44px.
+           ============================================================ */
+        @media (max-width: 768px) {
+            html, body { overflow-x: hidden; }
+
+            .header { padding: 0.75rem; }
+
+            /* Wordmark and the audio switch share the top line; device
+               controls take the full width underneath. */
+            .header-content {
+                grid-template-areas: "title buttons" "controls controls";
+                grid-template-columns: 1fr auto;
+                gap: 0.75rem;
+            }
+
+            .flock-you-title { font-size: 1.35rem; letter-spacing: 1px; }
+
+            .header-controls {
+                flex-wrap: wrap;
+                justify-content: flex-start;
+                gap: 0.75rem;
+                margin-right: 0;
+            }
+
+            /* The desktop divider between Sniffer and GPS makes no sense once
+               the groups are stacked. */
+            .header-controls .device-control-group + .device-control-group {
+                padding-left: 0;
+                border-left: none;
+                border-top: 1px solid var(--border);
+                padding-top: 0.75rem;
+            }
+
+            .device-control-group {
+                width: 100%;
+                flex-wrap: wrap;
+                gap: 0.4rem;
+            }
+
+            .device-control-group select { flex: 1 1 auto; min-width: 0; }
+
+            .main-content { padding: 0.75rem; }
+
+            /* Two-up stats rather than one long column of big numbers. */
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 0.6rem;
+            }
+            .stat-card { padding: 0.75rem 0.5rem; }
+            .stat-number { font-size: 1.6rem; }
+            .stat-label { font-size: 0.78rem; }
+            .stat-hint { display: none; }
+
+            /* Section headers stack: title row, then controls full width. */
+            .detections-header,
+            .map-header,
+            .panel-header,
+            .serial-terminal-header,
+            .oui-search-header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 0.6rem;
+            }
+
+            .export-buttons,
+            .map-controls,
+            .serial-controls,
+            .oui-search-controls,
+            .panel-controls {
+                flex-wrap: wrap;
+                gap: 0.5rem;
+                width: 100%;
+            }
+
+            .filter-group { width: 100%; }
+            .filter-group select { flex: 1 1 auto; min-width: 0; }
+
+            .detection-search-group { width: 100%; }
+            .detection-search-input { width: 100%; }
+
+            .export-dropdown { flex: 1 1 auto; }
+            .export-dropdown .export-btn { width: 100%; }
+
+            /* Detection cards keep their two rows; the right-hand cluster
+               wraps under rather than squeezing the MAC. */
+            .detection-item { padding: 0.75rem 0.8rem; }
+            .det-mac { font-size: 0.95rem; }
+            .det-row-top, .det-row-meta { min-height: 0; }
+            .det-row-meta { gap: 0.45rem 1rem; }
+            .alias-slot { width: 100%; justify-content: flex-start; min-height: 44px; }
+
+            .detections-list { max-height: none; }
+
+            #map { height: 300px !important; }
+            .map-legend { flex-direction: column; align-items: flex-start; gap: 0.4rem; }
+            .legend-items { flex-wrap: wrap; gap: 0.5rem; }
+
+            .collapse-btn { width: 38px; height: 38px; min-height: 38px; font-size: 0.9rem; }
+
+            .audio-toggle { min-height: 44px; padding: 0.35rem 0.7rem; }
+
+            .beep-tier { padding: 0.8rem; }
+
+            .serial-terminal-content { font-size: 0.78rem; }
+
+            /* Wide content scrolls inside its own box, never the page. */
+            .oui-results-grid, .search-results, table { max-width: 100%; overflow-x: auto; }
+        }
+
+        @media (max-width: 420px) {
+            .stats-grid { grid-template-columns: 1fr 1fr; }
+            .flock-you-title { font-size: 1.15rem; }
+            .audio-toggle-label { display: none; }   /* switch alone at very small widths */
+        }
     </style>
 </head>
 <body>
@@ -1321,24 +2286,22 @@
                         <button id="disconnectGpsBtn" class="danger" style="display: none;">Disconnect</button>
                     </div>
                     
-                    <div class="control-group">
-                        <label>Filter:</label>
-                        <select id="filterSelect">
-                            <option value="all">All Detections</option>
-                            <option value="probe_request">WiFi Probe Requests</option>
-                            <option value="beacon">WiFi Beacons</option>
-                            <option value="mac_prefix">MAC Address</option>
-                            <option value="device_name">BLE Device Name</option>
-                        </select>
-                    </div>
                 </div>
             </div>
             
             <div class="header-buttons">
                 <div class="action-buttons">
-                    <button id="serial-terminal-btn" class="serial-terminal-btn" onclick="toggleSerialTerminal()">Terminal</button>
-                    <button id="oui-search-btn" class="oui-search-btn" onclick="toggleOuiSearch()">OUI</button>
-                    <button id="map-btn" class="map-btn" onclick="toggleMap()">Map</button>
+                    <!-- Terminal / OUI / Map buttons are gone: those panels are
+                         collapsible sections on the page now. Audio stays as a
+                         master mute; per-tier control lives in its section. -->
+                    <button class="gear-btn" id="audioGearBtn" onclick="toggleAudioPanel()"
+                            title="Per-tier audio settings" aria-label="Detection audio settings">⚙</button>
+                    <label class="audio-toggle" title="Master detection audio">
+                        <span class="audio-toggle-label">Audio</span>
+                        <input type="checkbox" id="masterAudioToggle" checked
+                               onchange="setMasterAudio(this.checked)">
+                        <span class="switch-track"><span class="switch-thumb"></span></span>
+                    </label>
                 </div>
             </div>
         </div>
@@ -1357,8 +2320,8 @@
                 <div class="stat-hint">(Hover for cumulative)</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number" id="bleDetections">0</div>
-                <div class="stat-label">BLE Detections</div>
+                <div class="stat-number" id="ieDetections">0</div>
+                <div class="stat-label">IE Confirmed</div>
                 <div class="stat-hint">(Hover for cumulative)</div>
             </div>
             <div class="stat-card">
@@ -1368,10 +2331,31 @@
             </div>
         </div>
 
-        <div class="detections-container">
+        <div class="detections-container" id="detectionsContainer">
             <div class="detections-header">
-                <h2>Detections</h2>
+                <h2>
+                    <button class="collapse-btn" id="detectionsCollapseBtn"
+                            onclick="toggleCollapse('detectionsContainer')"
+                            aria-expanded="true" title="Collapse detections">▾</button>
+                    Detections
+                    <span class="section-count" id="detectionsSectionCount"></span>
+                </h2>
                 <div class="export-buttons">
+                    <div class="control-group filter-group">
+                        <label for="filterSelect">Filter</label>
+                        <!-- Values must match the detection_method strings the
+                             firmware emits; the old probe_request/beacon options
+                             matched nothing and always filtered to empty. -->
+                        <select id="filterSelect">
+                            <option value="all">All Detections</option>
+                            <option value="wifi_wildcard_probe_ie_sig">IE fingerprint (T4)</option>
+                            <option value="wifi_wildcard_probe">Wildcard probe (T3)</option>
+                            <option value="wifi_oui_addr2">OUI transmitter (T2)</option>
+                            <option value="wifi_oui_addr1">OUI receiver (T1)</option>
+                            <option value="wifi_oui_addr3">OUI BSSID (T1)</option>
+                            <option value="wifi_ssid">SSID keyword (T0)</option>
+                        </select>
+                    </div>
                     <div class="detection-search-group">
                         <input type="text" id="detectionSearchInput" class="detection-search-input" placeholder="Search detections..." onkeyup="searchDetections()">
                     </div>
@@ -1404,51 +2388,14 @@
             </div>
         </div>
 
-        <div class="serial-terminal-container" id="serialTerminalContainer" style="display: none;">
-            <div class="serial-terminal-header">
-                <h2>Serial Terminal</h2>
-                <div class="serial-controls">
-                    <div class="terminal-filter-group">
-                        <label for="terminalFilter">Filter:</label>
-                        <select id="terminalFilter" class="terminal-filter-select" onchange="filterTerminalData()">
-                            <option value="all">All Data</option>
-                            <option value="sniffer">Sniffer Only</option>
-                            <option value="gps">GPS Only</option>
-                        </select>
-                    </div>
-                    <span class="serial-status">Status: <span id="serialConnectionStatus">Disconnected</span></span>
-                    <button class="clear-terminal-btn" onclick="clearSerialTerminal()">Clear Terminal</button>
-                </div>
-            </div>
-            <div class="serial-terminal-content" id="serialTerminalOutput">
-                <div class="terminal-placeholder">Connect to a Sniffer device to see serial output...</div>
-            </div>
-        </div>
-
-        <div class="oui-search-container" id="ouiSearchContainer" style="display: none;">
-            <div class="oui-search-header">
-                <h2>OUI Database Search</h2>
-                <div class="oui-search-controls">
-                    <span class="oui-status">Search IEEE OUI Database</span>
-                    <button class="view-all-btn" onclick="viewAllOui()">View All</button>
-                    <button class="refresh-db-btn" onclick="refreshOuiDatabase()">Refresh DB</button>
-                    <button class="clear-oui-btn" onclick="clearOuiResults()">Clear Results</button>
-                </div>
-            </div>
-            <div class="oui-search-content">
-                <div class="search-input-group">
-                    <input type="text" id="ouiSearchInput" class="oui-search-input" placeholder="Enter MAC address (e.g., 00:11:22) or manufacturer name..." onkeypress="handleOuiSearch(event)">
-                    <button class="search-btn" onclick="searchOui()">Search</button>
-                </div>
-                <div class="search-results" id="ouiSearchResults">
-                    <div class="search-placeholder">Enter a MAC address or manufacturer name to search...</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="map-container" id="mapContainer" style="display: none;">
+        <div class="map-container" id="mapContainer">
             <div class="map-header">
-                <h2>Detection Map</h2>
+                <h2>
+                    <button class="collapse-btn" id="mapCollapseBtn"
+                            onclick="toggleCollapse('mapContainer')"
+                            aria-expanded="true" title="Collapse map">▾</button>
+                    Detection Map
+                </h2>
                 <div class="map-controls">
                     <div class="map-layer-group">
                         <label for="mapLayer">Layer:</label>
@@ -1475,31 +2422,172 @@
                 <div class="map-legend">
                     <h4 class="legend-title">Legend:</h4>
                     <div class="legend-items">
+                        <!-- Fill = confidence tier, border = session vs cumulative. -->
                         <div class="legend-item">
-                            <div class="legend-marker wifi-session"></div>
-                            <span>WiFi (Session)</span>
+                            <div class="legend-marker tier-marker-4"></div>
+                            <span>IE fingerprint (T4)</span>
                         </div>
                         <div class="legend-item">
-                            <div class="legend-marker wifi-cumulative"></div>
-                            <span>WiFi (Cumulative)</span>
+                            <div class="legend-marker tier-marker-3"></div>
+                            <span>Wildcard probe (T3)</span>
                         </div>
                         <div class="legend-item">
-                            <div class="legend-marker ble-session"></div>
-                            <span>BLE (Session)</span>
+                            <div class="legend-marker tier-marker-2"></div>
+                            <span>OUI transmitter (T2)</span>
                         </div>
                         <div class="legend-item">
-                            <div class="legend-marker ble-cumulative"></div>
-                            <span>BLE (Cumulative)</span>
+                            <div class="legend-marker tier-marker-1"></div>
+                            <span>OUI echo (T1)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-marker marker-session"></div>
+                            <span>Session (bright border)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-marker marker-cumulative"></div>
+                            <span>Cumulative (dim border)</span>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
+
+        <!-- Detection Audio is a popup off the header gear, not a section in
+             the page flow. Hidden until the gear is clicked. -->
+        <div class="modal-backdrop" id="audioModal" hidden onclick="closeAudioPanelFromBackdrop(event)">
+            <div class="beep-panel-container" id="beepPanelContainer" role="dialog"
+                 aria-modal="true" aria-labelledby="audioPanelTitle">
+                <div class="panel-header">
+                    <h2 id="audioPanelTitle">Detection Audio</h2>
+                    <div class="panel-controls">
+                        <span class="panel-status" id="beepPanelStatus">Device not connected</span>
+                        <button class="panel-btn" onclick="setAllTierBeeps(true)">All On</button>
+                        <button class="panel-btn" onclick="setAllTierBeeps(false)">All Off</button>
+                        <button class="modal-close" onclick="toggleAudioPanel(false)"
+                                aria-label="Close">×</button>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <p class="panel-note">
+                        Every detection path stays active and is logged regardless of these
+                        switches — they only control what the buzzer announces. Each tier has
+                        its own tone, so a confirmed camera never sounds like an OUI echo.
+                        The setting is stored on the device and survives a power cycle.
+                    </p>
+                    <div class="beep-tier-list" id="beepTierList"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="serial-terminal-container" id="serialTerminalContainer">
+            <div class="serial-terminal-header">
+                <h2>
+                    <button class="collapse-btn" onclick="toggleCollapse('serialTerminalContainer')"
+                            aria-expanded="true" title="Collapse terminal">▾</button>
+                    Serial Terminal
+                </h2>
+                <div class="serial-controls">
+                    <div class="terminal-filter-group">
+                        <label for="terminalFilter">Filter:</label>
+                        <select id="terminalFilter" class="terminal-filter-select" onchange="filterTerminalData()">
+                            <option value="all">All Data</option>
+                            <option value="sniffer">Sniffer Only</option>
+                            <option value="gps">GPS Only</option>
+                        </select>
+                    </div>
+                    <span class="serial-status">Status: <span id="serialConnectionStatus">Disconnected</span></span>
+                    <button class="clear-terminal-btn" onclick="clearSerialTerminal()">Clear Terminal</button>
+                </div>
+            </div>
+            <div class="serial-terminal-content" id="serialTerminalOutput">
+                <div class="terminal-placeholder">Connect to a Sniffer device to see serial output...</div>
+            </div>
+        </div>
+
+        <div class="oui-search-container" id="ouiSearchContainer">
+            <div class="oui-search-header">
+                <h2>
+                    <button class="collapse-btn" onclick="toggleCollapse('ouiSearchContainer')"
+                            aria-expanded="true" title="Collapse OUI search">▾</button>
+                    OUI Database Search
+                </h2>
+                <div class="oui-search-controls">
+                    <span class="oui-status">Search IEEE OUI Database</span>
+                    <button class="view-all-btn" onclick="viewAllOui()">View All</button>
+                    <button class="refresh-db-btn" onclick="refreshOuiDatabase()">Refresh DB</button>
+                    <button class="clear-oui-btn" onclick="clearOuiResults()">Clear Results</button>
+                </div>
+            </div>
+            <div class="oui-search-content">
+                <div class="search-input-group">
+                    <input type="text" id="ouiSearchInput" class="oui-search-input" placeholder="Enter MAC address (e.g., 00:11:22) or manufacturer name..." onkeypress="handleOuiSearch(event)">
+                    <button class="search-btn" onclick="searchOui()">Search</button>
+                </div>
+                <div class="search-results" id="ouiSearchResults">
+                    <div class="search-placeholder">Enter a MAC address or manufacturer name to search...</div>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script>
+        // ============================================================
+        // Detection methods & confidence tiers
+        // ============================================================
+        // Mirrors METHOD_TIERS / METHOD_LABELS in flockyou.py and the tier
+        // ladder in the firmware. Tier 4 is DeFlockJoplin's IE fingerprint;
+        // tiers 1-2 are @NitekryDPaul's broad OUI paths, which are noisier but
+        // catch stations the fingerprint never sees.
+        const METHOD_TIER = {
+            'wifi_wildcard_probe_ie_sig': 4,
+            'wifi_wildcard_probe':        3,
+            'wifi_oui_addr2':             2,
+            'wifi_oui_addr1':             1,
+            'wifi_oui_addr3':             1,
+            'wifi_ssid':                  0,
+        };
+
+        const METHOD_LABEL = {
+            'wifi_wildcard_probe_ie_sig': 'IE fingerprint',
+            'wifi_wildcard_probe':        'Wildcard probe',
+            'wifi_oui_addr2':             'OUI transmitter',
+            'wifi_oui_addr1':             'OUI receiver',
+            'wifi_oui_addr3':             'OUI BSSID',
+            'wifi_ssid':                  'SSID keyword',
+        };
+
+        // Beep toggles are per tier, not per method — addr1 and addr3 share
+        // tier 1 and there is no reason to mute one without the other.
+        const TIER_INFO = [
+            { tier: 4, name: 'IE fingerprint',   detail: 'Wildcard probe + Flock IE signature' },
+            { tier: 3, name: 'Wildcard probe',   detail: 'Wildcard probe, IE unverified' },
+            { tier: 2, name: 'OUI transmitter',  detail: 'Flock OUI in addr2, any frame' },
+            { tier: 1, name: 'OUI echo',         detail: 'Flock OUI in addr1 / addr3 (AP replies)' },
+            { tier: 0, name: 'SSID keyword',     detail: 'SSID name match (off in firmware)' },
+        ];
+
+        function methodLabel(method) {
+            return METHOD_LABEL[method] || (method || 'unknown');
+        }
+
+        // SSIDs and device names come off the air and are attacker-controlled.
+        // They land in innerHTML, so escape them or a crafted beacon can inject
+        // markup into the dashboard.
+        function esc(v) {
+            if (v === null || v === undefined) return '';
+            return String(v)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function detectionTier(detection) {
+            if (typeof detection.detection_tier === 'number') return detection.detection_tier;
+            return METHOD_TIER[detection.detection_method] ?? 0;
+        }
+
         const socket = io({
             transports: ['websocket', 'polling'],
             reconnection: true,
@@ -1521,6 +2609,7 @@
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
+            restoreCollapseState();   // before data loads, so the map sizes right
             loadDetections();
             loadCumulativeDetections();
             loadFlockPorts();
@@ -2034,13 +3123,16 @@
 
         function updateStats() {
             const total = detections.length;
-            const wifi = detections.filter(d => d.protocol === 'wifi').length;
-            const ble = detections.filter(d => d.protocol === 'bluetooth_le' || d.protocol === 'bluetooth_classic').length;
+            const wifi = detections.filter(d => (d.protocol || '').startsWith('wifi')).length;
+            // This branch is WiFi-only, so the old BLE counter was always 0.
+            // Tier-4 count is the number that actually matters on a drive:
+            // devices confirmed by the IE fingerprint rather than OUI alone.
+            const ieConfirmed = detections.filter(d => detectionTier(d) === 4).length;
             const gps = detections.filter(d => d.gps).length;
 
             document.getElementById('totalDetections').textContent = total;
             document.getElementById('wifiDetections').textContent = wifi;
-            document.getElementById('bleDetections').textContent = ble;
+            document.getElementById('ieDetections').textContent = ieConfirmed;
             document.getElementById('gpsDetections').textContent = gps;
             
             // Also update with cumulative stats in tooltip or additional display
@@ -2049,7 +3141,7 @@
                 .then(stats => {
                     document.getElementById('totalDetections').title = `Session: ${stats.session.total} | Cumulative: ${stats.cumulative.total}`;
                     document.getElementById('wifiDetections').title = `Session: ${stats.session.wifi} | Cumulative: ${stats.cumulative.wifi}`;
-                    document.getElementById('bleDetections').title = `Session: ${stats.session.ble} | Cumulative: ${stats.cumulative.ble}`;
+                    document.getElementById('ieDetections').title = 'Devices confirmed by the tier-4 IE fingerprint';
                     document.getElementById('gpsDetections').title = `Session: ${stats.session.gps} | Cumulative: ${stats.cumulative.gps}`;
                 })
                 .catch(error => {
@@ -2081,23 +3173,34 @@
                 const ssid = detection.last_ssid || detection.ssid;
                 const deviceName = detection.last_device_name || detection.device_name;
                 
-                // Build essential fields in a compact layout
+                // MAC and RSSI are promoted out of this list into the header —
+                // the MAC is the device's identity and belongs at the top, and
+                // RSSI reads better as a meter than as another label/value pair.
                 const essentialFields = [];
-                if (detection.protocol) essentialFields.push(['Protocol', detection.protocol]);
-                if (detection.mac_address) essentialFields.push(['MAC', detection.mac_address]);
-                if (rssi !== undefined) essentialFields.push(['RSSI', `${rssi} dBm`]);
-                if (channel) essentialFields.push(['Channel', channel]);
-                if (ssid) essentialFields.push(['SSID', ssid]);
-                if (deviceName) essentialFields.push(['Device', deviceName]);
-                if (detection.manufacturer) essentialFields.push(['Manufacturer', detection.manufacturer]);
-                
-                // Build the details HTML
+                if (channel) essentialFields.push(['ch', esc(channel)]);
+                if (detection.manufacturer && detection.manufacturer !== 'Unknown Manufacturer'
+                    && detection.manufacturer !== 'Unknown') essentialFields.push(['vendor', esc(detection.manufacturer)]);
+                if (ssid) essentialFields.push(['ssid', esc(ssid)]);
+                if (deviceName) essentialFields.push(['device', esc(deviceName)]);
+                if (detection.protocol) essentialFields.push(['proto', esc(detection.protocol)]);
+
                 const detailsHtml = essentialFields.map(([label, value]) => `
-                    <div class="detail-item">
-                        <span class="detail-label">${label}:</span>
-                        <span class="detail-value">${value}</span>
-                    </div>
+                    <span class="meta">
+                        <span class="meta-k">${label}</span><span class="meta-v">${value}</span>
+                    </span>
                 `).join('');
+
+                // Four-bar meter, -30 dBm (full) to -95 dBm (RSSI_MIN in firmware).
+                let rssiHtml = '';
+                if (rssi !== undefined && rssi !== null) {
+                    const bars = Math.max(0, Math.min(4, Math.round((rssi + 95) / 16.25)));
+                    rssiHtml = `
+                        <span class="rssi" title="${rssi} dBm">
+                            <span class="rssi-bars">${[1,2,3,4].map(b =>
+                                `<i class="${b <= bars ? 'on' : ''}"></i>`).join('')}</span>
+                            <span class="rssi-num">${rssi}</span>
+                        </span>`;
+                }
 
                 // Build GPS link if available (header only)
                 let gpsLink = '';
@@ -2108,26 +3211,40 @@
                     gpsLink = `<a href="${osmUrl}" target="_blank" class="gps-link">${lat.toFixed(4)}, ${lon.toFixed(4)}</a>`;
                 }
 
+                // Confidence tier drives the badge colour, so the strongest
+                // evidence for each device is readable at a glance.
+                const tier = detectionTier(detection);
+                // Every path that has caught this MAC, not just the best one —
+                // a device that only ever trips the broad OUI paths and never
+                // fingerprints is the interesting case.
+                const seen = detection.methods_seen || {};
+                const otherMethods = Object.keys(seen)
+                    .filter(m => m !== detection.detection_method)
+                    .sort((a, b) => METHOD_TIER[b] - METHOD_TIER[a]);
+                const alsoHtml = otherMethods.map(m => `
+                    <span class="method-chip tier-${METHOD_TIER[m] ?? 0}" title="${m} — ${seen[m]} hit(s)">
+                        ${methodLabel(m)}<span class="chip-count">${seen[m]}</span>
+                    </span>`).join('');
+
                 return `
-                    <div class="detection-item">
-                        <div class="detection-header">
-                            <div class="detection-header-left">
-                                <div class="detection-type-badge">
-                                    <span class="detection-type">${detection.detection_method ? detection.detection_method.toUpperCase() : 'UNKNOWN'}</span>
-                                    <span class="detection-count">${count}×</span>
-                                    ${detection.gps && detection.gps.latitude !== undefined ? '<span class="gps-tag">GPS</span>' : ''}
-                                </div>
-                                ${gpsLink}
-                            </div>
-                            <span class="detection-time">${lastSeen}</span>
-                        </div>
-                        <div class="detection-details">
+                    <div class="detection-item tier-border-${tier}">
+                        <div class="det-row">
+                            <span class="det-mac">${detection.mac_address || '—'}</span>
+                            <span class="detection-type tier-${tier}" title="${detection.detection_method || 'unknown'} (tier ${tier})">
+                                ${methodLabel(detection.detection_method)}
+                            </span>
+                            <span class="detection-count" title="${count} hit(s)">${count}×</span>
                             ${detailsHtml}
-                            <div class="detail-item">
-                                <span class="detail-label">Alias:</span>
-                                <span class="alias-display" onclick="editAlias(${detection.id})">
-                                    ${detection.alias || '<em>Click to add alias</em>'}
-                                </span>
+                            ${gpsLink ? `<span class="meta"><span class="meta-k">gps</span>${gpsLink}</span>` : ''}
+                            ${alsoHtml ? `<span class="method-also"><span class="method-also-label">also</span>${alsoHtml}</span>` : ''}
+                            <span class="det-spacer"></span>
+                            ${rssiHtml}
+                            <span class="detection-time" title="Last seen">${lastSeen}</span>
+                            <div class="alias-slot ${detection.alias ? 'has-alias' : ''}"
+                                 onclick="editAlias(${detection.id}, this)"
+                                 title="Click to name this device">
+                                <span class="alias-k">alias</span>
+                                <span class="alias-display" data-alias="${esc(detection.alias || '')}">${detection.alias ? esc(detection.alias) : 'add name'}</span>
                             </div>
                         </div>
                     </div>
@@ -2291,10 +3408,9 @@
             updateStats();
             renderDetections();
             
-            // Update map if visible
-            if (map && document.getElementById('mapContainer').style.display !== 'none') {
-                updateMapMarkers();
-            }
+            // The map is always on the page now, so plot live hits as they
+            // arrive; skip only while it's collapsed out of view.
+            refreshMapLive();
         });
 
         socket.on('detection_updated', function(detection) {
@@ -2340,6 +3456,16 @@
             const disconnectBtn = document.getElementById('disconnectFlockBtn');
             if (connectBtn) connectBtn.style.display = 'inline-block';
             if (disconnectBtn) disconnectBtn.style.display = 'none';
+            // The audio panel reflects device state, so it goes inert too.
+            deviceConfig = null;
+            renderBeepPanel();
+        });
+
+        // Device answered a beep command (or announced itself on boot). This
+        // is the authoritative state — the switches follow it, not the click.
+        socket.on('device_config', function(config) {
+            deviceConfig = config;
+            renderBeepPanel();
         });
 
         socket.on('detections_cleared', function() {
@@ -2382,43 +3508,107 @@
             }
         });
 
-        function toggleSerialTerminal() {
-            const container = document.getElementById('serialTerminalContainer');
-            const button = document.getElementById('serial-terminal-btn');
-            
-            if (container.style.display === 'none') {
-                container.style.display = 'block';
-                button.textContent = 'Hide Terminal';
-                button.style.background = 'linear-gradient(135deg, #dc2626 0%, #ef4444 100%)';
-                
-                // Start serial connection if device is connected
-                const flockPort = document.getElementById('flockDeviceSelect').value;
-                if (flockPort) {
-                    startSerialConnection(flockPort);
-                } else {
-                    addSerialLine('No Sniffer device selected', 'error');
+        // ============================================================
+        // Per-tier detection audio
+        // ============================================================
+        let deviceConfig = null;
+
+
+        function renderBeepPanel() {
+            const list = document.getElementById('beepTierList');
+            const status = document.getElementById('beepPanelStatus');
+            // Map tier -> enabled from whatever the device last reported.
+            const state = {};
+            if (deviceConfig && Array.isArray(deviceConfig.tiers)) {
+                deviceConfig.tiers.forEach(t => { state[t.tier] = !!t.beep; });
+            }
+            const known = deviceConfig !== null;
+            status.textContent = known
+                ? `Device reporting — mask 0x${(deviceConfig.beep_mask ?? 0).toString(16).toUpperCase()}, ${deviceConfig.oui_count ?? '?'} OUIs`
+                : 'Device not connected';
+            status.classList.toggle('ok', known);
+
+            syncMasterAudioToggle();
+
+            list.innerHTML = TIER_INFO.map(info => {
+                const on = known ? state[info.tier] !== false : false;
+                return `
+                    <div class="beep-tier ${known ? '' : 'unknown'}">
+                        <div class="beep-tier-main">
+                            <span class="tier-dot tier-${info.tier}"></span>
+                            <div class="beep-tier-text">
+                                <span class="beep-tier-name">${info.name}</span>
+                                <span class="beep-tier-detail">${info.detail}</span>
+                            </div>
+                        </div>
+                        <label class="switch" title="${known ? '' : 'Connect the device to change this'}">
+                            <input type="checkbox" ${on ? 'checked' : ''} ${known ? '' : 'disabled'}
+                                   onchange="setTierBeep(${info.tier}, this.checked)">
+                            <span class="switch-track"><span class="switch-thumb"></span></span>
+                        </label>
+                    </div>`;
+            }).join('');
+        }
+
+        async function loadDeviceConfig() {
+            try {
+                const res = await fetch('/api/flock/config');
+                const data = await res.json();
+                // A disconnected device leaves config null; keep the panel
+                // rendered but inert rather than showing a stale state.
+                deviceConfig = data.connected ? data.config : null;
+            } catch (e) {
+                deviceConfig = null;
+            }
+            renderBeepPanel();
+        }
+
+        async function setTierBeep(tier, enabled) {
+            try {
+                const res = await fetch('/api/flock/beep', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tier, enabled }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    showBeepError(err.message || 'Device did not accept the change');
+                    renderBeepPanel();   // snap the switch back
                 }
-            } else {
-                container.style.display = 'none';
-                button.textContent = 'Serial Terminal';
-                button.style.background = 'linear-gradient(135deg, #059669 0%, #10b981 100%)';
+                // On success the device answers with a config line, which
+                // arrives over the socket and re-renders authoritatively.
+            } catch (e) {
+                showBeepError('Request failed');
+                renderBeepPanel();
             }
         }
 
-        function toggleOuiSearch() {
-            const container = document.getElementById('ouiSearchContainer');
-            const button = document.getElementById('oui-search-btn');
-            
-            if (container.style.display === 'none') {
-                container.style.display = 'block';
-                button.textContent = 'Hide Search';
-                button.style.background = 'linear-gradient(135deg, #dc2626 0%, #ef4444 100%)';
-            } else {
-                container.style.display = 'none';
-                button.textContent = 'Search OUI';
-                button.style.background = 'linear-gradient(135deg, #7c3aed 0%, #8b5cf6 100%)';
+        async function setAllTierBeeps(enabled) {
+            const mask = enabled ? 0x1F : 0x00;
+            try {
+                const res = await fetch('/api/flock/beep', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mask }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    showBeepError(err.message || 'Device did not accept the change');
+                }
+            } catch (e) {
+                showBeepError('Request failed');
             }
         }
+
+        function showBeepError(msg) {
+            const status = document.getElementById('beepPanelStatus');
+            status.textContent = msg;
+            status.classList.remove('ok');
+            status.classList.add('error');
+            setTimeout(() => status.classList.remove('error'), 4000);
+        }
+
+
 
         function startSerialConnection(port) {
             const statusElement = document.getElementById('serialConnectionStatus');
@@ -2472,7 +3662,7 @@
             if (terminalFilter === 'gps' && (textLower.includes('gps') || textLower.includes('$gp') || textLower.includes('$gn') || textLower.includes('nmea'))) {
                 return true;
             }
-            if (terminalFilter === 'sniffer' && !textLower.includes('gps') && (textLower.includes('detection') || textLower.includes('wifi') || textLower.includes('ble') || textLower.includes('mac') || textLower.includes('channel') || textLower.includes('rssi'))) {
+            if (terminalFilter === 'sniffer' && !textLower.includes('gps') && (textLower.includes('detection') || textLower.includes('wifi') || textLower.includes('probe') || textLower.includes('mac') || textLower.includes('channel') || textLower.includes('rssi'))) {
                 return true;
             }
             
@@ -2586,10 +3776,19 @@
         });
 
         // Alias editing functions
-        function editAlias(detectionId) {
-            const aliasDisplay = event.target;
-            const currentAlias = aliasDisplay.textContent.replace('<em>Click to add alias</em>', '').trim();
-            
+        function editAlias(detectionId, slot) {
+            // Resolve the text element explicitly instead of leaning on the
+            // implicit global `event.target`, so the whole alias slot is
+            // clickable — label included — not just the text node.
+            const aliasDisplay = (slot && slot.querySelector('.alias-display'))
+                || (slot && slot.classList && slot.classList.contains('alias-display') ? slot : null)
+                || (typeof event !== 'undefined' ? event.target : null);
+            if (!aliasDisplay) return;
+            if (aliasDisplay.querySelector('input')) return;   // already editing
+            // Read the real value from the dataset. Reading textContent picked
+            // up the "add name" placeholder and pre-filled it as the alias.
+            const currentAlias = aliasDisplay.dataset.alias || '';
+
             const input = document.createElement('input');
             input.type = 'text';
             input.className = 'alias-input';
@@ -2763,26 +3962,116 @@
         }
 
         // Map functions
-        function toggleMap() {
-            const container = document.getElementById('mapContainer');
-            const button = document.getElementById('map-btn');
-            
-            if (container.style.display === 'none') {
-                container.style.display = 'block';
-                button.textContent = 'Hide Map';
-                button.style.background = 'linear-gradient(135deg, #dc2626 0%, #ef4444 100%)';
-                
-                if (!map) {
-                    initializeMap();
-                }
-                // Load fresh cumulative data when opening map
-                loadCumulativeDetections();
-                updateMapMarkers();
-            } else {
-                container.style.display = 'none';
-                button.textContent = 'Map';
-                button.style.background = 'linear-gradient(135deg, #0891b2 0%, #06b6d4 100%)';
+        // ============================================================
+        // Collapsible sections
+        // ============================================================
+        // Detections and Map are both always on the page; each collapses to
+        // just its header bar. State is remembered per section across reloads.
+
+        function toggleCollapse(containerId, force) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            const collapsed = (force === undefined) ? !container.classList.contains('collapsed') : force;
+            container.classList.toggle('collapsed', collapsed);
+
+            const btn = container.querySelector('.collapse-btn');
+            if (btn) {
+                btn.textContent = collapsed ? '▸' : '▾';
+                btn.setAttribute('aria-expanded', String(!collapsed));
+                btn.title = (collapsed ? 'Expand ' : 'Collapse ') +
+                            (containerId === 'mapContainer' ? 'map' : 'detections');
             }
+
+            try { localStorage.setItem('collapsed:' + containerId, collapsed ? '1' : '0'); } catch (e) {}
+
+            // Leaflet sizes itself against the container at init time; if the
+            // map was collapsed then it comes back with a broken viewport and
+            // grey tiles until told to re-measure.
+            if (containerId === 'mapContainer' && !collapsed) {
+                if (!map) initializeMap();
+                setTimeout(() => {
+                    if (map) map.invalidateSize();
+                    loadCumulativeDetections();
+                    updateMapMarkers();
+                }, 60);
+            }
+
+            // Expanding the terminal attaches to the selected port, which is
+            // what the old Terminal button used to do.
+            if (containerId === 'serialTerminalContainer' && !collapsed) {
+                const flockPort = document.getElementById('flockDeviceSelect').value;
+                if (flockPort) startSerialConnection(flockPort);
+                else addSerialLine('No Sniffer device selected', 'error');
+            }
+
+            if (containerId === 'beepPanelContainer' && !collapsed) {
+                loadDeviceConfig();
+            }
+        }
+
+        // Gear beside the master switch opens the per-tier audio popup.
+        function toggleAudioPanel(force) {
+            const modal = document.getElementById('audioModal');
+            if (!modal) return;
+            const open = (force === undefined) ? modal.hidden : force;
+            modal.hidden = !open;
+            document.getElementById('audioGearBtn').classList.toggle('active', open);
+            if (open) loadDeviceConfig();
+        }
+
+        // Backdrop click closes; clicks inside the dialog do not.
+        function closeAudioPanelFromBackdrop(e) {
+            if (e.target === e.currentTarget) toggleAudioPanel(false);
+        }
+
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') toggleAudioPanel(false);
+        });
+
+        // Master audio switch in the header: mutes or restores every tier at
+        // once. The per-tier detail lives in the Detection Audio section.
+        async function setMasterAudio(enabled) {
+            await setAllTierBeeps(enabled);
+        }
+
+        // Keep the header switch in step with whatever the device reports —
+        // it reads "on" when any tier is still audible.
+        function syncMasterAudioToggle() {
+            const el = document.getElementById('masterAudioToggle');
+            if (!el) return;
+            el.checked = !deviceConfig ? true : (deviceConfig.beep_mask || 0) !== 0;
+        }
+
+        // Every section is on the page; only Detections starts open. The rest
+        // collapse to a header bar so the dashboard opens on the thing you
+        // actually came for. Choices are remembered per section after that.
+        // Detection Audio is not here — it's a popup off the header gear.
+        const SECTIONS = [
+            'detectionsContainer',
+            'mapContainer',
+            'ouiSearchContainer',
+            'serialTerminalContainer',
+        ];
+        // Detections and the map are what you want on screen while driving;
+        // the rest are on demand.
+        const DEFAULT_OPEN = ['detectionsContainer', 'mapContainer'];
+
+        function restoreCollapseState() {
+            SECTIONS.forEach(id => {
+                let saved = null;
+                try { saved = localStorage.getItem('collapsed:' + id); } catch (e) {}
+                const collapsed = (saved === null) ? !DEFAULT_OPEN.includes(id) : (saved === '1');
+                toggleCollapse(id, collapsed);
+            });
+        }
+
+        // Plot detections as they arrive. Called from the socket handlers, so
+        // a live hit lands on the map without any user action.
+        function refreshMapLive() {
+            const container = document.getElementById('mapContainer');
+            if (!container || container.classList.contains('collapsed')) return;
+            if (!map) initializeMap();
+            updateMapMarkers();
         }
 
         function initializeMap() {
@@ -2860,9 +4149,11 @@
                 // Determine if this is from session or cumulative
                 const isSessionData = detections.some(d => d.mac_address === detection.mac_address);
                 
-                // Create custom icon based on detection type and data source
-                let iconColor = detection.protocol === 'wifi' ? '#ef4444' : '#3b82f6'; // red for wifi, blue for ble
-                let borderColor = isSessionData ? '#22c55e' : '#f59e0b'; // green border for session, orange for cumulative
+                // Fill = confidence tier (everything here is WiFi, so colouring
+                // by protocol told you nothing); border = session vs cumulative.
+                const TIER_MARKER = ['#5d6673', '#7d8899', '#c99a3b', '#4b8fd6', '#3fa66a'];
+                let iconColor = TIER_MARKER[detectionTier(detection)] || TIER_MARKER[0];
+                let borderColor = isSessionData ? '#e6edf3' : '#6e7d8c'; // bright border for session
                 
                 const icon = L.divIcon({
                     className: 'custom-marker',
@@ -2896,7 +4187,7 @@
                     <h3>${detection.alias || `Detection #${detection.id}`} (${dataSource})</h3>
                     ${aliasText}
                     <strong>Protocol:</strong> ${detection.protocol}<br>
-                    <strong>Method:</strong> ${detection.detection_method}<br>
+                    <strong>Method:</strong> ${methodLabel(detection.detection_method)} (tier ${detectionTier(detection)})<br>
                     <strong>MAC:</strong> ${detection.mac_address}<br>
                     ${detection.ssid ? `<strong>SSID:</strong> ${detection.ssid}<br>` : ''}
                     ${detection.manufacturer ? `<strong>Manufacturer:</strong> ${detection.manufacturer}<br>` : ''}

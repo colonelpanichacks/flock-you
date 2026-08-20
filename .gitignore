@@ -4,3 +4,7 @@
 .vscode/
 
 .DS_Store
+
+.claude/
+api/data/
+api/exports/

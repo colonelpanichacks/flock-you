@@ -6,8 +6,10 @@ A Flask-based web dashboard for real-time monitoring and analysis of Flock Safet
 
 ### Real-Time Detection Monitoring
 - **Live Updates**: Real-time detection display via WebSocket
-- **Detection Filtering**: Filter by detection method (WiFi, BLE, MAC, Device Name)
-- **Statistics Dashboard**: Overview of detection counts and types
+- **Detection Filtering**: Filter by detection method / confidence tier (IE fingerprint, wildcard probe, OUI transmitter, OUI receiver, OUI BSSID, SSID keyword)
+- **Confidence Tiers**: Each detection is tagged with the method that caught it and a tier 0–4; the badge shows the strongest evidence, and an "also" row lists every other path that caught the same device with hit counts
+- **Per-Tier Audio**: Mute or unmute each tier's buzzer tone on the device from the **Audio** panel; the setting persists on-device in NVS
+- **Statistics Dashboard**: Session and cumulative counts, including IE-confirmed devices
 - **Detailed View**: Complete device information for each detection
 
 ### GPS Integration
@@ -97,24 +99,46 @@ The web dashboard is designed to receive JSON detection data from the Flock You 
 
 ```json
 {
-  "timestamp": 12345,
-  "detection_time": "12.345s",
-  "protocol": "wifi",
-  "detection_method": "probe_request",
-  "ssid": "Flock_Camera_001",
-  "mac_address": "aa:bb:cc:dd:ee:ff",
-  "rssi": -65,
-  "signal_strength": "MEDIUM",
-  "channel": 6
+  "event": "detection",
+  "protocol": "wifi_2_4ghz",
+  "detection_method": "wifi_wildcard_probe_ie_sig",
+  "detection_tier": 4,
+  "ssid": "",
+  "mac_address": "82:6b:f2:14:07:3a",
+  "oui": "82:6b:f2",
+  "rssi": -52,
+  "channel": 6,
+  "frequency": 2437
 }
 ```
 
+In normal use the device streams these over USB CDC and the dashboard ingests them directly — the POST endpoint is for testing and external feeds.
+
+### Detection methods and tiers
+
+| Tier | `detection_method` | Meaning |
+|---|---|---|
+| 4 | `wifi_wildcard_probe_ie_sig` | Wildcard probe from a Flock OUI whose IE fields match the Flock signature |
+| 3 | `wifi_wildcard_probe` | Wildcard probe from a Flock OUI, IE fields did not match |
+| 2 | `wifi_oui_addr2` | Flock OUI as frame transmitter |
+| 1 | `wifi_oui_addr1` / `wifi_oui_addr3` | Flock OUI as receiver or BSSID — AP echoes |
+| 0 | `wifi_ssid` | SSID keyword match (off in firmware) |
+
+The stored method is best-ever: a device caught first by a low tier and later confirmed by the fingerprint is relabelled upward and never back down.
+
+### Device control
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/flock/config` | Current per-tier beep state; also asks the device to re-report |
+| `POST /api/flock/beep` | `{"tier": 0-4, "enabled": bool}` or `{"mask": 0-31}` |
+
 ## GPS Dongle Compatibility
 
-The dashboard supports standard NMEA GPS dongles that output GPGGA sentences. Compatible devices include:
+The dashboard supports standard NMEA GPS dongles that output GPGGA sentences, and can also read from a running `gpsd` over TCP. Compatible devices include:
 - USB GPS receivers
-- Bluetooth GPS modules (when connected via USB adapter)
 - Serial GPS modules
+- Anything already feeding `gpsd`
 
 ## File Structure
 ```

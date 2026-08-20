@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <SPIFFS.h>
+#include <Preferences.h>
 #include "display_dongle.h"
 
 // ============================================================
@@ -63,17 +64,60 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 // Flock's burst-sleep gap would mean false chirps; longer means you'd miss
 // a drive-away/return. 30 s is a good middle ground.
 #define REDISCOVER_MS          30000
-#define NEW_CHIRP_LO_HZ        2000
-#define NEW_CHIRP_HI_HZ        2800
-#define NEW_CHIRP_NOTE_MS      55
-#define NEW_CHIRP_GAP_MS       25
+// (the old NEW_CHIRP_* pair now lives on as the tier-4 tone, T4_LO/HI_HZ —
+//  same 2000/2800 Hz at 55 ms, so a confirmed camera sounds exactly as before)
 #define HB_BEEP_HZ             1500
 #define HB_BEEP_NOTE_MS        70
 #define HB_BEEP_GAP_MS         70
 
 #define ENABLE_SSID_MATCH 0
-#define CHECK_ADDR1 0   // disabled — see wifiSniffer() comment block
-#define CHECK_ADDR3 0   // disabled — see wifiSniffer() comment block
+#define CHECK_ADDR1 1   // re-enabled as a tiered path — see wifiSniffer()
+#define CHECK_ADDR3 1   // re-enabled as a tiered path — see wifiSniffer()
+
+// ============================================================
+// CONFIDENCE TIERS
+// ============================================================
+//
+// Every detection path stays live, but they are not equally trustworthy. Each
+// carries a tier; the tier drives which sound plays, which method string wins
+// when several paths hit the same MAC, and whether a broad hit is allowed to
+// squat on the dedupe cooldown ahead of a better one.
+//
+//   4  wildcard_probe_ie_sig  DeFlockJoplin: OUI + wildcard SSID + IE fingerprint
+//   3  wildcard_probe         OUI + wildcard SSID, no IE verification
+//   2  oui_addr2              @NitekryDPaul: transmitter-side OUI, any frame
+//   1  oui_addr1 / oui_addr3  @NitekryDPaul: receiver / BSSID OUI — AP echoes
+//   0  ssid                   SSID keyword match (off by default)
+//
+// Tier 1 paths are second-hand: a nearby AP answering a camera's probe puts
+// the camera MAC in addr1. Noisier, but they catch stations that are asleep
+// during our dwell window and never transmit — the reason addr1 exists.
+#define TIER_SSID    0
+#define TIER_ECHO    1
+#define TIER_OUI     2
+#define TIER_PROBE   3
+#define TIER_IE_SIG  4
+#define TIER_COUNT   5
+
+// Per-tier audio. Distinct enough to identify without looking at the screen:
+// tier 4 is the original ascending two-note chirp, tier 3 the same shape but
+// a fifth lower, tiers 2/1/0 single blips descending in pitch. Loudest and
+// highest = most confident.
+#define T4_LO_HZ 2000
+#define T4_HI_HZ 2800
+#define T3_LO_HZ 1400
+#define T3_HI_HZ 1800
+#define T2_HZ    1200
+#define T1_HZ     800
+#define T0_HZ     600
+#define TIER_NOTE_MS  55
+#define TIER_GAP_MS   25
+#define BLIP_MS       45
+
+// Which tiers are allowed to make noise. Bit N = tier N. Default: everything
+// audible. Runtime-settable over serial by the Flask dashboard, persisted to
+// NVS so it survives a power cycle.
+#define BEEP_MASK_DEFAULT 0x1F   // 0b11111 — all five tiers on
 static const char* target_ssid_keywords[] = { "flock" };
 static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(target_ssid_keywords[0]);
 
@@ -93,13 +137,20 @@ static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(t
 // TARGET OUI LIST  (all lowercase, colons only)
 // ============================================================
 
+// Synced with @NitekryDPaul's nite-oui-collection my_tested_flock.md,
+// 2026-07-16 revision: 31 active prefixes. Plus 82:6b:f2 from DeFlockJoplin.
+//
+// Note: do NOT add a locally-administered filter to the match path. 82:6b:f2
+// has bit 1 of the first octet set, so a "skip locally-administered" rule
+// would silently drop DeFlockJoplin's camera.
 static const char* target_ouis[] = {
   "70:c9:4e", "3c:91:80", "d8:f3:bc", "80:30:49", "b8:35:32",
   "14:5a:fc", "74:4c:a1", "08:3a:88", "9c:2f:9d", "c0:35:32",
-  "94:08:53", "e4:aa:ea", "f4:6a:dd", "f8:a2:d6", "24:b2:b9",
+  "94:08:53", "e4:aa:ea", "f4:6a:dd", "e0:0a:f6", "24:b2:b9",
   "00:f4:8d", "d0:39:57", "e8:d0:fc", "e0:4f:43", "b8:1e:a4",
   "70:08:94", "58:8e:81", "ec:1b:bd", "3c:71:bf", "58:00:e3",
   "90:35:ea", "5c:93:a2", "64:6e:69", "48:27:ea", "a4:cf:12",
+  "14:b5:cd",
   "82:6b:f2"  // contributed by DeFlockJoplin
 };
 static const size_t OUI_COUNT = sizeof(target_ouis) / sizeof(target_ouis[0]);
@@ -120,10 +171,24 @@ typedef enum : uint8_t {
   ALERT_OUI_ADDR3       = 2,
   ALERT_SSID            = 3,
   // Wildcard probe + OUI + primary IE signature (wifi_wildcard_probe_ie_sig).
-  // wifi_wildcard_probe (OUI + wildcard only) was removed — superseded by this
-  // path: same wildcard/OUI gates plus IE-field verification.
   ALERT_WILDCARD_PROBE_IE_SIG = 4,
+  // Wildcard probe + OUI, IE fingerprint did NOT match. Kept as its own tier
+  // rather than folded into addr2: the wildcard behaviour is still meaningful
+  // on its own, and separating it shows which cameras the IE signature misses.
+  ALERT_WILDCARD_PROBE  = 5,
 } AlertType;
+
+static inline uint8_t alertTypeToTier(AlertType t) {
+  switch (t) {
+    case ALERT_WILDCARD_PROBE_IE_SIG: return TIER_IE_SIG;
+    case ALERT_WILDCARD_PROBE:        return TIER_PROBE;
+    case ALERT_OUI_ADDR2:             return TIER_OUI;
+    case ALERT_OUI_ADDR1:             return TIER_ECHO;
+    case ALERT_OUI_ADDR3:             return TIER_ECHO;
+    case ALERT_SSID:                  return TIER_SSID;
+    default:                          return TIER_SSID;
+  }
+}
 
 typedef struct {
   AlertType type;
@@ -175,6 +240,7 @@ static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rs
 typedef struct {
   char     mac[18];
   char     method[24];     // alertTypeToMethod strings (incl. wildcard_probe_ie_sig)
+  uint8_t  tier;           // best tier seen for this MAC; method[] tracks it
   int8_t   rssi;
   uint8_t  channel;
   uint32_t firstSeen;      // millis() at first hit
@@ -205,10 +271,17 @@ static volatile bool sniffingStopped = false;
 // This is the *serial-rate-limit* dedup — it suppresses beep + emit within
 // ALERT_COOLDOWN_MS of a prior hit on the same MAC. The detection table
 // (above) still counts every hit regardless of this suppression.
+//
+// `tier` records the best tier already reported for that MAC inside the
+// current cooldown. A hit at a HIGHER tier is let through even mid-cooldown
+// and raises the bar — without that, a broad addr1/addr2 hit would win the
+// race (it fires on any frame, the IE path needs a specific probe request)
+// and silently mask the high-confidence confirmation for the same camera.
 #define DEDUPE_SLOTS 8
 static struct {
   char mac[18];
   unsigned long ts;
+  uint8_t tier;
 } dedupeTable[DEDUPE_SLOTS];
 static size_t dedupeIdx = 0;
 
@@ -247,6 +320,9 @@ static void apa102Init() {
 // HB_DEVICE_ACTIVE_MS the heartbeat stops until the next new detection.
 static unsigned long fyLastTargetSeen  = 0;
 static unsigned long fyLastHeartbeatAt = 0;
+// Best tier seen inside the current HB_DEVICE_ACTIVE_MS window. The heartbeat
+// borrows that tier's voice, so muting a tier mutes its heartbeat too.
+static uint8_t       fyLastTargetTier  = 0;
 
 // ============================================================
 // 802.11 HEADER
@@ -327,13 +403,45 @@ static void buzzerBeep(unsigned int ms) {
 #endif
 }
 
-// Two fast ascending beeps — played on the FIRST sighting of a MAC.
-static void newDetectChirp() {
+// Bit N set = tier N is allowed to beep. Runtime-settable from the dashboard,
+// mirrored to NVS. Volatile: read by loop(), written by the serial command
+// handler in the same task, but keep it honest for future ISR-side reads.
+static volatile uint8_t fyBeepMask = BEEP_MASK_DEFAULT;
+
+static inline bool tierAudible(uint8_t tier) {
+  return (tier < TIER_COUNT) && ((fyBeepMask >> tier) & 0x01);
+}
+
+// Single blip at a given pitch — the lower-confidence tiers.
+static void blip(uint16_t hz) {
 #if USE_BUZZER
-  tone(BUZZER_PIN, NEW_CHIRP_LO_HZ); delay(NEW_CHIRP_NOTE_MS); noTone(BUZZER_PIN);
-  delay(NEW_CHIRP_GAP_MS);
-  tone(BUZZER_PIN, NEW_CHIRP_HI_HZ); delay(NEW_CHIRP_NOTE_MS); noTone(BUZZER_PIN);
+  tone(BUZZER_PIN, hz); delay(BLIP_MS); noTone(BUZZER_PIN);
 #endif
+}
+
+// Two-note ascending chirp — the probe-behaviour tiers.
+static void chirp2(uint16_t lo, uint16_t hi) {
+#if USE_BUZZER
+  tone(BUZZER_PIN, lo); delay(TIER_NOTE_MS); noTone(BUZZER_PIN);
+  delay(TIER_GAP_MS);
+  tone(BUZZER_PIN, hi); delay(TIER_NOTE_MS); noTone(BUZZER_PIN);
+#endif
+}
+
+// Play the sound for a tier, honouring the runtime mask. Every tier is
+// audible by default but each has its own signature, so a confirmed camera
+// (tier 4, high ascending pair) is never mistaken for an AP echo (tier 1,
+// low single blip) while driving.
+static void tierChirp(uint8_t tier) {
+  if (!tierAudible(tier)) return;
+  switch (tier) {
+    case TIER_IE_SIG: chirp2(T4_LO_HZ, T4_HI_HZ); break;
+    case TIER_PROBE:  chirp2(T3_LO_HZ, T3_HI_HZ); break;
+    case TIER_OUI:    blip(T2_HZ);                break;
+    case TIER_ECHO:   blip(T1_HZ);                break;
+    case TIER_SSID:   blip(T0_HZ);                break;
+    default: break;
+  }
 }
 
 // Two monotone beeps — periodic heartbeat while at least one target is still
@@ -424,18 +532,29 @@ static inline uint16_t channelFreqMhz(uint8_t ch) {
   return (ch >= 1 && ch <= 14) ? (uint16_t)(2407 + 5 * ch) : 0;
 }
 
-static bool shouldSuppressDuplicate(const char* macStr) {
+// Returns true when this hit should be swallowed (no emit, no beep, no flash).
+// A hit at a strictly higher tier than what we've already reported for this
+// MAC always gets through, even inside the cooldown — an upgrade from
+// "OUI echo" to "confirmed IE fingerprint" is new information, not a repeat.
+static bool shouldSuppressDuplicate(const char* macStr, uint8_t tier) {
   unsigned long now = millis();
   for (size_t i = 0; i < DEDUPE_SLOTS; i++) {
     if (strcmp(dedupeTable[i].mac, macStr) == 0) {
-      if ((now - dedupeTable[i].ts) < ALERT_COOLDOWN_MS) return true;
+      bool cooling  = (now - dedupeTable[i].ts) < ALERT_COOLDOWN_MS;
+      bool upgrade  = tier > dedupeTable[i].tier;
+      if (cooling && !upgrade) return true;
       dedupeTable[i].ts = now;
+      // Raise the bar on upgrade; on a normal cooldown expiry reset to this
+      // hit's tier so the MAC can climb again next window.
+      dedupeTable[i].tier = upgrade ? tier
+                                    : (cooling ? dedupeTable[i].tier : tier);
       return false;
     }
   }
   // Not found — insert into next slot
   strlcpy(dedupeTable[dedupeIdx].mac, macStr, 18);
-  dedupeTable[dedupeIdx].ts = now;
+  dedupeTable[dedupeIdx].ts   = now;
+  dedupeTable[dedupeIdx].tier = tier;
   dedupeIdx = (dedupeIdx + 1) % DEDUPE_SLOTS;
   return false;
 }
@@ -503,6 +622,7 @@ static const char* alertTypeToMethod(AlertType t) {
     case ALERT_OUI_ADDR3:      return "oui_addr3";
     case ALERT_SSID:                   return "ssid";
     case ALERT_WILDCARD_PROBE_IE_SIG:  return "wildcard_probe_ie_sig";
+    case ALERT_WILDCARD_PROBE:         return "wildcard_probe";
     default:                           return "unknown";
   }
 }
@@ -512,7 +632,7 @@ static const char* alertTypeToMethod(AlertType t) {
 // the ascending new-discovery chirp. Chirp-worthy means either (a) MAC is
 // brand new to this session, or (b) MAC is known but hasn't been seen in
 // REDISCOVER_MS — i.e. it left RF range and came back.
-static int fyAddDetection(const char* mac, const char* method,
+static int fyAddDetection(const char* mac, const char* method, uint8_t tier,
                           int8_t rssi, uint8_t ch, const char* ssid,
                           bool* outChirpWorthy) {
   uint32_t now = millis();
@@ -523,11 +643,22 @@ static int fyAddDetection(const char* mac, const char* method,
       fyDet[i].lastSeen = now;
       fyDet[i].rssi     = rssi;
       fyDet[i].channel  = ch;
+      // Method/tier are best-ever, not last-seen: a MAC first caught by a
+      // broad addr1 echo and later confirmed by the IE fingerprint should
+      // read as the fingerprint from then on. Previously method[] was
+      // write-once, so the weaker label stuck in SPIFFS forever.
+      bool upgrade = tier > fyDet[i].tier;
+      if (upgrade) {
+        fyDet[i].tier = tier;
+        strlcpy(fyDet[i].method, method ? method : "", sizeof(fyDet[i].method));
+      }
       if (ssid && ssid[0] && !fyDet[i].ssid[0]) {
         strlcpy(fyDet[i].ssid, ssid, sizeof(fyDet[i].ssid));
       }
       fyDirty = true;
-      if (outChirpWorthy) *outChirpWorthy = rediscover;
+      // Chirp on a confidence upgrade too — hearing a known MAC get promoted
+      // to a confirmed fingerprint is worth the same attention as a new one.
+      if (outChirpWorthy) *outChirpWorthy = rediscover || upgrade;
       return i;
     }
   }
@@ -538,6 +669,7 @@ static int fyAddDetection(const char* mac, const char* method,
   FYDetection& d = fyDet[fyDetCount];
   strlcpy(d.mac,    mac,                       sizeof(d.mac));
   strlcpy(d.method, method ? method : "",      sizeof(d.method));
+  d.tier      = tier;
   d.rssi      = rssi;
   d.channel   = ch;
   d.firstSeen = now;
@@ -613,9 +745,9 @@ static size_t fySerializeDet(const FYDetection& d, char* dst, size_t cap) {
   char ssidEsc[sizeof(d.ssid) * 6 + 1];
   jsonEscape(ssidEsc, sizeof(ssidEsc), d.ssid);
   int n = snprintf(dst, cap,
-      "{\"mac\":\"%s\",\"method\":\"%s\",\"rssi\":%d,\"channel\":%u,"
+      "{\"mac\":\"%s\",\"method\":\"%s\",\"tier\":%u,\"rssi\":%d,\"channel\":%u,"
       "\"first\":%lu,\"last\":%lu,\"count\":%u,\"ssid\":\"%s\"}",
-      d.mac, d.method, d.rssi, (unsigned)d.channel,
+      d.mac, d.method, (unsigned)d.tier, d.rssi, (unsigned)d.channel,
       (unsigned long)d.firstSeen, (unsigned long)d.lastSeen, (unsigned)d.count,
       ssidEsc);
   return (n > 0 && (size_t)n < cap) ? (size_t)n : 0;
@@ -804,7 +936,7 @@ static void fyPromotePrevSession() {
 // GPS is handled Flask-side via its own USB NMEA puck or browser geolocation;
 // we don't embed GPS here because there's no on-device AP / phone link.
 
-static void emitDetectionJSON(const char* mac, const char* method,
+static void emitDetectionJSON(const char* mac, const char* method, uint8_t tier,
                               int8_t rssi, uint8_t ch, const char* ssid) {
   char ssidEsc[sizeof(((FYDetection*)0)->ssid) * 6 + 1];
   jsonEscape(ssidEsc, sizeof(ssidEsc), ssid ? ssid : "");
@@ -817,6 +949,7 @@ static void emitDetectionJSON(const char* mac, const char* method,
   dualPrintf(
       "{\"event\":\"detection\","
       "\"detection_method\":\"wifi_%s\","
+      "\"detection_tier\":%u,"
       "\"protocol\":\"wifi_2_4ghz\","
       "\"mac_address\":\"%s\","
       "\"oui\":\"%s\","
@@ -825,8 +958,141 @@ static void emitDetectionJSON(const char* mac, const char* method,
       "\"channel\":%u,"
       "\"frequency\":%u,"
       "\"ssid\":\"%s\"}\n",
-      method, mac, oui, rssi,
+      method, (unsigned)tier, mac, oui, rssi,
       (unsigned)ch, (unsigned)channelFreqMhz(ch), ssidEsc);
+}
+
+// ============================================================
+// HOST COMMAND CHANNEL  (Flask dashboard → device, over USB CDC)
+// ============================================================
+//
+// The dashboard needs to mute individual detection tiers without a reflash —
+// on a long drive the tier-1 echo blips are useful data but you don't always
+// want to hear them. Commands arrive as one JSON object per line on the same
+// USB CDC link the detections go out on; the device answers with an
+// `event:"config"` line, which Flask ignores for detection purposes because
+// it filters on `detection_method`.
+//
+//   {"cmd":"get_config"}
+//   {"cmd":"set_beep","tier":1,"on":0}
+//   {"cmd":"set_beep_mask","mask":29}
+//
+// Parsed with substring + sscanf rather than a JSON library: the grammar is
+// three fixed shapes and pulling in ArduinoJson for it isn't worth the flash.
+
+static Preferences fyPrefs;
+static const char* FY_NVS_NS   = "flockyou";
+static const char* FY_NVS_BEEP = "beepmask";
+
+#define CMD_BUF_LEN 128
+static char   cmdBuf[CMD_BUF_LEN];
+static size_t cmdLen = 0;
+
+// Canonical label per tier — what the dashboard shows on its toggles.
+static const char* tierLabel(uint8_t tier) {
+  switch (tier) {
+    case TIER_IE_SIG: return "wildcard_probe_ie_sig";
+    case TIER_PROBE:  return "wildcard_probe";
+    case TIER_OUI:    return "oui_addr2";
+    case TIER_ECHO:   return "oui_addr1_addr3";
+    case TIER_SSID:   return "ssid";
+    default:          return "unknown";
+  }
+}
+
+static void fyLoadBeepMask() {
+  if (!fyPrefs.begin(FY_NVS_NS, /*readOnly=*/true)) {
+    fyBeepMask = BEEP_MASK_DEFAULT;
+    return;
+  }
+  fyBeepMask = fyPrefs.getUChar(FY_NVS_BEEP, BEEP_MASK_DEFAULT);
+  fyPrefs.end();
+}
+
+static void fySaveBeepMask() {
+  if (!fyPrefs.begin(FY_NVS_NS, /*readOnly=*/false)) {
+    dualPrintln("[flockyou] NVS open failed — beep mask not persisted");
+    return;
+  }
+  fyPrefs.putUChar(FY_NVS_BEEP, (uint8_t)fyBeepMask);
+  fyPrefs.end();
+}
+
+static void emitConfigJSON() {
+  char tiers[320];
+  size_t o = 0;
+  o += snprintf(tiers + o, sizeof(tiers) - o, "[");
+  for (uint8_t t = 0; t < TIER_COUNT; t++) {
+    o += snprintf(tiers + o, sizeof(tiers) - o,
+                  "%s{\"tier\":%u,\"method\":\"wifi_%s\",\"beep\":%u}",
+                  (t == 0) ? "" : ",", (unsigned)t, tierLabel(t),
+                  tierAudible(t) ? 1u : 0u);
+    if (o >= sizeof(tiers)) break;
+  }
+  snprintf(tiers + o, sizeof(tiers) - o, "]");
+
+  dualPrintf("{\"event\":\"config\",\"beep_mask\":%u,\"oui_count\":%u,"
+             "\"tiers\":%s}\n",
+             (unsigned)fyBeepMask, (unsigned)OUI_COUNT, tiers);
+}
+
+static void handleCommandLine(const char* line) {
+  if (!strstr(line, "\"cmd\"")) return;
+
+  if (strstr(line, "\"get_config\"")) {
+    emitConfigJSON();
+    return;
+  }
+
+  if (strstr(line, "\"set_beep_mask\"")) {
+    const char* m = strstr(line, "\"mask\"");
+    unsigned v = 0;
+    if (m && sscanf(m + 6, " : %u", &v) == 1) {
+      fyBeepMask = (uint8_t)(v & 0x1F);
+      fySaveBeepMask();
+    }
+    emitConfigJSON();
+    return;
+  }
+
+  if (strstr(line, "\"set_beep\"")) {
+    const char* tp = strstr(line, "\"tier\"");
+    const char* op = strstr(line, "\"on\"");
+    unsigned tier = 0, on = 0;
+    if (tp && op &&
+        sscanf(tp + 6, " : %u", &tier) == 1 &&
+        sscanf(op + 4, " : %u", &on)   == 1 &&
+        tier < TIER_COUNT) {
+      if (on) fyBeepMask |=  (uint8_t)(1u << tier);
+      else    fyBeepMask &= (uint8_t)~(1u << tier);
+      fySaveBeepMask();
+    }
+    emitConfigJSON();
+    return;
+  }
+}
+
+// Non-blocking line reader. Called every loop() pass; a partial line just
+// stays in the buffer until the rest arrives. Over-long lines are dropped
+// rather than truncated-and-parsed, so a garbled write can't half-apply.
+static void pollHostCommands() {
+  while (Serial.available() > 0) {
+    int c = Serial.read();
+    if (c < 0) break;
+    if (c == '\n' || c == '\r') {
+      if (cmdLen > 0) {
+        cmdBuf[cmdLen] = '\0';
+        handleCommandLine(cmdBuf);
+        cmdLen = 0;
+      }
+      continue;
+    }
+    if (cmdLen < CMD_BUF_LEN - 1) {
+      cmdBuf[cmdLen++] = (char)c;
+    } else {
+      cmdLen = 0;   // overflow — discard the whole line
+    }
+  }
 }
 
 // ============================================================
@@ -1102,13 +1368,17 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
 
   // --- OUI check: addr2 (transmitter/source) ---
   //
-  // Probe requests (type=0 subtype=4) from a matched OUI: wildcard SSID IE
-  // (tag 0, length 0) plus primary Flock IE signature → wifi_wildcard_probe_ie_sig.
+  // All paths run. Each enqueues at its own tier and the downstream dedupe
+  // keeps the best one per MAC, so the broad OUI matches act as a recall net
+  // (they catch stations the IE path misses) without downgrading the label on
+  // a camera the fingerprint has already confirmed.
   //
-  // wifi_wildcard_probe (OUI + wildcard only, no IE check) was removed here.
-  // Suggest superseded by the IE fingerprint path: it uses the same wildcard
-  // and OUI gates and adds verification on probe IE fields.
+  // Ordering matters only for which sound plays first inside a cooldown
+  // window; correctness does not depend on it, since a later higher-tier hit
+  // is allowed to preempt.
   if (matchOuiRaw(hdr->addr2)) {
+    bool fingerprinted = false;
+
     if (type == WIFI_PKT_MGMT) {
       uint8_t fc0     = hdr->frame_ctrl & 0xFF;
       uint8_t ftype   = (fc0 >> 2) & 0x03;
@@ -1122,50 +1392,63 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         // ALL (-1). A found-but-nonzero (0) means legit directed probe; do
         // not retry — it would mis-classify.
         if (r == -1 && bodyLen > 4) r = isWildcardProbeIE(body, bodyLen - 4);
-        if (r == 1 && fyProbeBodyFlockIeSigPrimary(body, bodyLen)) {
-          enqueueAlert(ALERT_WILDCARD_PROBE_IE_SIG, hdr->addr2, rssi, ch,
-                       nullptr, "probe_req");
+        if (r == 1) {
+          if (fyProbeBodyFlockIeSigPrimary(body, bodyLen)) {
+            // Tier 4 — DeFlockJoplin: OUI + wildcard + IE fingerprint.
+            enqueueAlert(ALERT_WILDCARD_PROBE_IE_SIG, hdr->addr2, rssi, ch,
+                         nullptr, "probe_req");
+          } else {
+            // Tier 3 — wildcard probe from a Flock OUI whose IE fields did
+            // not match. Either a camera on firmware we haven't fingerprinted
+            // or an unrelated device sharing the OUI; worth hearing, worth
+            // distinguishing.
+            enqueueAlert(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, ch,
+                         nullptr, "probe_req");
+          }
+          fingerprinted = true;
         }
       }
     }
-    // wifi_oui_addr2 — broad transmitter OUI on any non-fingerprint frame:
-    // if (!emitted) {
-    //   enqueueAlert(ALERT_OUI_ADDR2, hdr->addr2, rssi, ch, nullptr, "addr2");
-    // }
+
+    // Tier 2 — @NitekryDPaul: broad transmitter OUI on any other frame.
+    // Skipped when a probe path already fired for this frame, so one frame
+    // never produces two queue entries.
+    if (!fingerprinted) {
+      enqueueAlert(ALERT_OUI_ADDR2, hdr->addr2, rssi, ch, nullptr, "addr2");
+    }
   }
 
-  // --- Disabled: wifi_oui_addr1 (receiver / addr1) ---
+  // --- wifi_oui_addr1 (receiver / addr1) — tier 1 ---
   //
-  // Suggest leaving this disabled. Flock cameras are known to channel-hop and
-  // send wildcard probe requests (addr2 = camera). Nearby APs that hear those
-  // probes reply with probe responses where addr1 = camera MAC and addr2 = AP.
-  // This path is the same OUI list again, but matching addr1 (destination) —
-  // i.e. "is anyone sending *to* a Flock OUI?" — not the camera transmitting.
+  // @NitekryDPaul's addr1 insight. Flock cameras channel-hop and send wildcard
+  // probe requests (addr2 = camera). Nearby APs that hear those probes reply
+  // with probe responses where addr1 = camera MAC and addr2 = AP. So this path
+  // asks "is anyone sending *to* a Flock OUI?" rather than "is a Flock OUI
+  // transmitting?".
   //
   // 802.11 MAC header roles (infrastructure / mgmt):
   //   addr1 = receiver (DA)   addr2 = transmitter (SA)   addr3 = BSSID
   // On a camera probe request:  addr2=camera, addr1 often broadcast.
   // On an AP probe response:    addr1=camera, addr2=AP, addr3=AP BSSID.
   //
-  // addr1 hits are therefore mostly second-hand fallout from the same probe
-  // behavior (AP replies), redundant with wildcard+IE detection on the uplink
-  // probe request itself.
+  // These are second-hand echoes and noisier than the uplink paths — hence
+  // tier 1 — but they surface stations that stay silent through our whole
+  // dwell window, which the transmitter-only paths cannot see at all.
 #if CHECK_ADDR1
-  // if (!isMulticast(hdr->addr1) && matchOuiRaw(hdr->addr1)) {
-  //   enqueueAlert(ALERT_OUI_ADDR1, hdr->addr1, rssi, ch, nullptr, "addr1");
-  // }
+  if (!isMulticast(hdr->addr1) && matchOuiRaw(hdr->addr1)) {
+    enqueueAlert(ALERT_OUI_ADDR1, hdr->addr1, rssi, ch, nullptr, "addr1");
+  }
 #endif
 
-  // --- Disabled: wifi_oui_addr3 (BSSID / addr3) ---
+  // --- wifi_oui_addr3 (BSSID / addr3) — tier 1 ---
   //
-  // Suggest leaving this disabled. Another broad OUI filter on addr3 (BSSID)
-  // on management frames — intended for randomised addr2 with real OUI in
-  // addr3, but still OUI-only with no probe/IE behavioral check, so it can
-  // generate false positives on unrelated mgmt traffic.
+  // Broad OUI filter on addr3 (BSSID) of management frames — catches a real
+  // OUI in addr3 when addr2 is randomised. No probe/IE behavioural check, so
+  // it shares tier 1 with addr1 and the same false-positive caveat.
 #if CHECK_ADDR3
-  // if (type == WIFI_PKT_MGMT && matchOuiRaw(hdr->addr3)) {
-  //   enqueueAlert(ALERT_OUI_ADDR3, hdr->addr3, rssi, ch, nullptr, "addr3");
-  // }
+  if (type == WIFI_PKT_MGMT && matchOuiRaw(hdr->addr3)) {
+    enqueueAlert(ALERT_OUI_ADDR3, hdr->addr3, rssi, ch, nullptr, "addr3");
+  }
 #endif
 
 #if ENABLE_SSID_MATCH
@@ -1234,7 +1517,8 @@ static void drainAlertQueue() {
     // chirpWorthy = true for brand-new MACs AND for MACs rediscovered after
     // REDISCOVER_MS of silence (drove away and came back).
     bool chirpWorthy = false;
-    int idx = fyAddDetection(macStr, method, e.rssi, e.channel,
+    const uint8_t tier = alertTypeToTier(e.type);
+    int idx = fyAddDetection(macStr, method, tier, e.rssi, e.channel,
                              (e.type == ALERT_SSID) ? e.ssid : nullptr,
                              &chirpWorthy);
 
@@ -1242,9 +1526,13 @@ static void drainAlertQueue() {
     // Done unconditionally so a device counts as active even when serial is
     // rate-limited (still audible via heartbeat, just quieter on the wire).
     fyLastTargetSeen = millis();
+    // Heartbeat speaks for the best-confidence thing currently in range, so a
+    // muted tier stays muted between hits too.
+    if (tier > fyLastTargetTier) fyLastTargetTier = tier;
 
     // Serial-rate-limit: suppress emit/beep/flash within ALERT_COOLDOWN_MS.
-    if (shouldSuppressDuplicate(macStr)) continue;
+    // A higher-tier hit is allowed through mid-cooldown (see the function).
+    if (shouldSuppressDuplicate(macStr, tier)) continue;
 
     // Human-readable line (for serial terminal / mirror).
     char oui[9];
@@ -1261,15 +1549,15 @@ static void drainAlertQueue() {
     }
 
     // Flask-compatible JSON line (parsed by api/flockyou.py over USB CDC).
-    emitDetectionJSON(macStr, method, e.rssi, e.channel,
+    emitDetectionJSON(macStr, method, tier, e.rssi, e.channel,
                       (e.type == ALERT_SSID) ? e.ssid : "");
 
     // Audio feedback:
-    //   - NEW MAC  → two fast ascending beeps (clearly distinct sound)
-    //   - REPEAT   → silent; the heartbeat tick covers continued presence
-    // LED flashes on every emitted detection either way.
+    //   - NEW MAC or confidence upgrade → that tier's signature sound
+    //   - REPEAT at the same tier       → silent; heartbeat covers presence
+    // LED flashes on every emitted detection either way, muted tier or not.
     if (chirpWorthy) {
-      newDetectChirp();
+      tierChirp(tier);
       // Reset the heartbeat phase so the first follow-up beep lands
       // HB_BEEP_INTERVAL_MS after the initial chirp, not mid-window.
       fyLastHeartbeatAt = millis();
@@ -1304,8 +1592,12 @@ static void autosaveTick() {
 static void heartbeatTick() {
   if (fyLastTargetSeen == 0) return;                           // never seen one
   unsigned long now = millis();
-  if (now - fyLastTargetSeen > HB_DEVICE_ACTIVE_MS) return;    // gone silent
+  if (now - fyLastTargetSeen > HB_DEVICE_ACTIVE_MS) {
+    fyLastTargetTier = 0;   // window closed — next target sets the tier fresh
+    return;                                                    // gone silent
+  }
   if (now - fyLastHeartbeatAt < HB_BEEP_INTERVAL_MS) return;   // too soon
+  if (!tierAudible(fyLastTargetTier)) return;                  // tier muted
   heartbeatBeep();
   fyLastHeartbeatAt = now;
 }
@@ -1351,6 +1643,9 @@ void setup() {
   precompileOuis();
   memset(dedupeTable, 0, sizeof(dedupeTable));
 
+  // Restore the per-tier beep mask chosen from the dashboard last session.
+  fyLoadBeepMask();
+
   // SPIFFS — format on first boot if missing. Non-fatal if it fails.
   if (SPIFFS.begin(true)) {
     fySpiffsReady = true;
@@ -1387,6 +1682,10 @@ void setup() {
                 channelModeName(), CHANNEL_DWELL_MS, currentChannel,
                 RSSI_MIN, fySpiffsReady ? 1 : 0);
 
+  // Announce the tier config on boot so a dashboard that was already
+  // listening picks up the current mute state without having to ask.
+  emitConfigJSON();
+
   lastHeartbeat = millis();
   fyLastSaveAt  = millis();
 
@@ -1397,6 +1696,7 @@ void setup() {
 
 void loop() {
   updateChannelMode();
+  pollHostCommands();  // dashboard → device (per-tier beep mute)
   drainAlertQueue();   // Serial.printf happens here, not in callback
   autosaveTick();      // periodic SPIFFS write if dirty
   heartbeatTick();     // audible beep-pair while a target is still in range
