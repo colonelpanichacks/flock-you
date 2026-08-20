@@ -94,15 +94,10 @@
 #endif
 #include "led_neopixel.h"
 
-#if defined(USE_M5ATOM_ECHO)
-  #define USE_M5ATOM_ECHO_BTN 1
-#endif
-
-
-
 #if defined(USE_M5ATOM_VOICES3R) || defined(USE_M5ATOM_VOICE) || defined(USE_M5BASIC)
   #include <M5Unified.h>
 #endif
+
 #if defined(USE_M5ATOM_VOICES3R)
   #define BUTTON_PIN 41
 #endif
@@ -1857,16 +1852,59 @@ void setup() {
   simpleBtnLastState = digitalRead(SIMPLE_BUTTON_PIN);
 #endif
 
+// NOTE: BUTTON_PIN's pinMode(INPUT_PULLUP) is already set above by the
+// HAS_SIMPLE_BUTTON block (SIMPLE_BUTTON_PIN == BUTTON_PIN for every board
+// that reaches this branch — Lite/Echo/Voice all satisfy HAS_SIMPLE_BUTTON's
+// guard too), so it is NOT repeated here — only the LED boot sequence runs.
 #if defined(USE_M5ATOM) || defined(USE_M5ATOM_ECHO)
   ledMatrixBootSequence();
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
 #endif
 
 #if defined(USE_M5ATOM_VOICES3R)
-  auto m5cfg = M5.config();
-  M5.begin(m5cfg);
-  M5.Speaker.setVolume(200);
+  {
+    auto m5cfg = M5.config();
+    M5.begin(m5cfg);
+
+    // Diagnostic: M5Unified auto-detects this board via an I2C probe for the
+    // ES8311 codec at address 0x18 on SDA=45/SCL=0 (see M5Unified.cpp's
+    // _check_boardtype(), EFUSE_PKG_VERSION_ESP32S3PICO case). If that probe
+    // ever fails to find the codec, M5Unified silently falls back to
+    // board_M5StampS3Mini, which has NO speaker/mic pin configuration in
+    // _begin_audio() at all -- the resulting symptom is a totally silent
+    // Speaker with no error anywhere. Logging the detected board turns a
+    // "speaker does nothing" report into an immediately diagnosable
+    // detection-failure-vs-init-failure question instead of a guessing game.
+    dualPrintf("[flockyou] M5.getBoard()=%d (expect board_M5AtomVoiceS3R=%d)\n",
+               (int)M5.getBoard(), (int)m5::board_t::board_M5AtomVoiceS3R);
+
+    // ROOT CAUSE (speaker silent on real hardware): M5Unified's
+    // _begin_audio() (run inside M5.begin() above) configures the ES8311's
+    // I2S pins for this board, but deliberately never calls Speaker.begin()
+    // itself for ANY board -- that's left to the application. M5.Speaker
+    // .tone() *can* lazily call begin() on first use (Speaker_Class::
+    // _play_raw()), but if that lazy begin() fails (I2S setup or the ES8311
+    // I2C enable-register write failing), _play_raw() just returns true and
+    // plays nothing -- silent failure with zero trace, previously
+    // indistinguishable from "codec working but no audible sound". Call
+    // begin() explicitly here and log a failure so it shows up in serial
+    // output instead of just "the speaker doesn't do anything".
+    if (!M5.Speaker.begin()) {
+      dualPrintln("[flockyou] ERROR: M5.Speaker.begin() failed - speaker will not produce sound");
+    }
+    M5.Speaker.setVolume(200);
+
+    // NOTE ON LED (also reported non-functional): confirmed by diffing
+    // M5Unified's RGB LED pin table (_pin_table_other0[], "RGBLED") against
+    // upstream source through the latest published version (0.2.20) that
+    // board_M5AtomVoiceS3R has NO entry there in any version -- unlike the
+    // Atom Lite/Matrix/Voice (GPIO27 SK6812), this module's table entry
+    // simply doesn't exist. This is not a library version-pinning bug or a
+    // missed M5.begin() config step; the Atom Echo S3R / VoiceS3R hardware
+    // has no discrete addressable status LED at all (it's an audio-only
+    // module), so USE_LED=0 above is correct and there is nothing to drive.
+  }
 #endif
+
 
 #if defined(USE_M5ATOM_VOICE)
   {
