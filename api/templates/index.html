@@ -205,6 +205,62 @@
             flex-shrink: 0;
         }
 
+        /* BLE Sniffer bar — cyan/purple palette so it's visually distinct
+           from the (green) WiFi Sniffer bar. Live-JSON hits arrive over the
+           same Flask add_detection_from_serial() pipeline as WiFi, but the
+           BLE-Ⲉ badge in the detection list tags them so users can tell
+           at a glance which protocol found the device. */
+        .ble-control-group {
+            padding: 0.15rem 0.4rem;
+            border-radius: 6px;
+            border: 1px solid rgba(34, 211, 238, 0.35);
+            background: rgba(34, 211, 238, 0.08);
+        }
+        .ble-control-group label {
+            color: #67e8f9;
+            text-shadow: 0 0 6px rgba(34, 211, 238, 0.35);
+        }
+        .ble-cmd-bar {
+            display: flex;
+            gap: 0.25rem;
+            margin-left: 0.5rem;
+            flex-wrap: wrap;
+        }
+        button.ble-btn {
+            background: linear-gradient(135deg, #0891b2 0%, #a21caf 100%);
+            color: #ffffff;
+            font-weight: 600;
+            border: 1px solid #22d3ee;
+            padding: 0.3rem 0.7rem;
+            box-shadow: 0 0 6px rgba(34, 211, 238, 0.35);
+        }
+        button.ble-btn:hover {
+            background: linear-gradient(135deg, #06b6d4 0%, #c026d3 100%);
+            box-shadow: 0 0 10px rgba(34, 211, 238, 0.65);
+            transform: translateY(-1px);
+        }
+        button.ble-btn.danger {
+            background: linear-gradient(135deg, #9333ea 0%, #db2777 100%);
+            border-color: #f0abfc;
+        }
+        button.ble-btn.danger:hover {
+            background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%);
+        }
+
+        /* BLE-Ⲉ badge on ingested BLE detections in the list. */
+        .badge-ble {
+            display: inline-block;
+            padding: 0.05rem 0.4rem;
+            margin-left: 0.35rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            background: rgba(34, 211, 238, 0.15);
+            color: #67e8f9;
+            border: 1px solid rgba(34, 211, 238, 0.5);
+            text-shadow: 0 0 4px rgba(34, 211, 238, 0.6);
+        }
+
         .port-controls {
             display: flex;
             align-items: center;
@@ -2285,6 +2341,26 @@
                         <button id="connectGpsBtn">Connect</button>
                         <button id="disconnectGpsBtn" class="danger" style="display: none;">Disconnect</button>
                     </div>
+
+                    <div class="device-control-group ble-control-group">
+                        <div class="status-indicator" id="bleStatus"></div>
+                        <label>BLE Sniffer:</label>
+                        <div class="port-controls">
+                            <select id="bleDeviceSelect">
+                                <option value="">Select Port</option>
+                            </select>
+                            <button id="refreshBlePortsBtn" class="refresh-btn" title="Refresh ports" onclick="loadBlePorts()">↻</button>
+                        </div>
+                        <button id="connectBleBtn" class="ble-btn">Connect</button>
+                        <button id="disconnectBleBtn" class="danger" style="display: none;">Disconnect</button>
+                        <div class="ble-cmd-bar" id="bleCmdBar" style="display: none;">
+                            <button class="ble-btn" onclick="bleDumpPrev()"  title="Pull the prior boot's saved BLE detections from the device">Pull Prev</button>
+                            <button class="ble-btn" onclick="bleDumpLive()"  title="Pull the current in-RAM BLE detection table">Pull Live</button>
+                            <button class="ble-btn" onclick="bleStatusPoll()" title="Query the device for its session status">Status</button>
+                            <button class="ble-btn danger" onclick="bleClearPrev()" title="Delete the prior-boot BLE session from flash">Clear Prev</button>
+                            <button class="ble-btn danger" onclick="bleClearLive()" title="Wipe the in-RAM BLE detection table">Clear Live</button>
+                        </div>
+                    </div>
                     
                 </div>
             </div>
@@ -2614,6 +2690,7 @@
             loadCumulativeDetections();
             loadFlockPorts();
             loadGpsPorts();
+            loadBlePorts();
             setupEventListeners();
             loadStatus();
             loadSettings();
@@ -2666,6 +2743,16 @@
             document.getElementById('disconnectFlockBtn').addEventListener('click', disconnectFlock);
             document.getElementById('connectGpsBtn').addEventListener('click', connectGps);
             document.getElementById('disconnectGpsBtn').addEventListener('click', disconnectGps);
+            document.getElementById('connectBleBtn').addEventListener('click', connectBle);
+            document.getElementById('disconnectBleBtn').addEventListener('click', disconnectBle);
+
+            // Prevent port auto-refresh from clobbering user selection.
+            const bleSelect = document.getElementById('bleDeviceSelect');
+            bleSelect.addEventListener('focus', () => { userInteractingWithPorts = true; });
+            bleSelect.addEventListener('blur',  () => {
+                setTimeout(() => { userInteractingWithPorts = false; }, 1000);
+            });
+            bleSelect.addEventListener('change', () => { userInteractingWithPorts = true; });
             
             // Add event listeners for port dropdowns to prevent auto-refresh interference
             const flockSelect = document.getElementById('flockDeviceSelect');
@@ -2890,7 +2977,7 @@
 
         function disconnectFlock() {
             console.log('Disconnecting Flock device');
-            
+
             fetch('/api/flock/disconnect', {
                 method: 'POST'
             })
@@ -2906,6 +2993,141 @@
             .catch(error => {
                 console.error('Flock disconnect error:', error);
             });
+        }
+
+        // ----------------------------------------------------------------
+        // BLE Sniffer (Mode 1 oui-spy-unified-blue Detector) — companion
+        // to the WiFi Flock bar. Talks to /api/flock_ble/* endpoints which
+        // wrap the device's CMD: serial protocol.
+        // ----------------------------------------------------------------
+        function loadBlePorts() {
+            const select    = document.getElementById('bleDeviceSelect');
+            const refreshBtn = document.getElementById('refreshBlePortsBtn');
+            const current    = select.value;
+            refreshBtn.textContent = '⟳';
+            refreshBtn.style.animation = 'spin 1s linear infinite';
+            fetch('/api/flock_ble/ports')
+                .then(r => r.json())
+                .then(ports => {
+                    select.innerHTML = '<option value="">Select BLE Port</option>';
+                    ports.forEach(p => {
+                        const o = document.createElement('option');
+                        o.value = p.device;
+                        o.textContent = `${p.device} - ${p.description}`;
+                        select.appendChild(o);
+                    });
+                    if (current && ports.some(p => p.device === current)) select.value = current;
+                })
+                .catch(err => console.error('BLE ports error:', err))
+                .finally(() => {
+                    refreshBtn.textContent = '↻';
+                    refreshBtn.style.animation = '';
+                });
+        }
+
+        function connectBle() {
+            const port = document.getElementById('bleDeviceSelect').value;
+            if (!port) { alert('Please select a BLE port'); return; }
+            fetch('/api/flock_ble/connect', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({port: port})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    updateBleStatus(true);
+                    document.getElementById('connectBleBtn').style.display = 'none';
+                    document.getElementById('disconnectBleBtn').style.display = 'inline-block';
+                    document.getElementById('bleCmdBar').style.display = 'flex';
+                } else {
+                    alert('BLE connection failed: ' + (data.message || 'unknown'));
+                }
+            })
+            .catch(err => alert('BLE connection failed: ' + err.message));
+        }
+
+        function disconnectBle() {
+            fetch('/api/flock_ble/disconnect', {method: 'POST'})
+                .then(r => r.json())
+                .then(_ => {
+                    updateBleStatus(false);
+                    document.getElementById('connectBleBtn').style.display = 'inline-block';
+                    document.getElementById('disconnectBleBtn').style.display = 'none';
+                    document.getElementById('bleCmdBar').style.display = 'none';
+                })
+                .catch(err => console.error('BLE disconnect error:', err));
+        }
+
+        function updateBleStatus(connected) {
+            const el = document.getElementById('bleStatus');
+            if (!el) return;
+            el.style.background = connected ? '#22d3ee' : '#4b5563';
+            el.style.boxShadow  = connected ? '0 0 8px #22d3ee' : 'none';
+            el.title = connected ? 'BLE Sniffer connected' : 'BLE Sniffer disconnected';
+        }
+
+        function _blePostSimple(url, label) {
+            return fetch(url, {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    console.log(`[BLE ${label}]`, data);
+                    return data;
+                })
+                .catch(err => {
+                    console.error(`[BLE ${label}] error:`, err);
+                    alert(`${label} failed: ${err.message}`);
+                });
+        }
+
+        function bleDumpPrev()  {
+            _blePostSimple('/api/flock_ble/dump_prev', 'Pull Prev')
+                .then(data => {
+                    if (data && data.status === 'success') {
+                        // Ingested rows arrive over Socket.IO via the shared
+                        // add_detection_from_serial path — nothing to do here
+                        // except refresh cumulative counts.
+                        loadCumulativeDetections && loadCumulativeDetections();
+                    } else if (data && data.message) {
+                        alert('Pull Prev: ' + data.message);
+                    }
+                });
+        }
+        function bleDumpLive()  {
+            _blePostSimple('/api/flock_ble/dump_live', 'Pull Live')
+                .then(data => {
+                    if (data && data.status === 'success') {
+                        loadCumulativeDetections && loadCumulativeDetections();
+                    } else if (data && data.message) {
+                        alert('Pull Live: ' + data.message);
+                    }
+                });
+        }
+        function bleClearPrev() {
+            if (!confirm('Delete the prior-boot BLE session from device flash?')) return;
+            _blePostSimple('/api/flock_ble/clear_prev', 'Clear Prev');
+        }
+        function bleClearLive() {
+            if (!confirm('Wipe the in-RAM BLE detection table on the device?')) return;
+            _blePostSimple('/api/flock_ble/clear_live', 'Clear Live');
+        }
+        function bleStatusPoll() {
+            fetch('/api/flock_ble/status')
+                .then(r => r.json())
+                .then(data => {
+                    // Prefer the device's live blob when reachable, fall back
+                    // to the local connection state.
+                    const dev = data.device || {};
+                    const msg = data.connected
+                        ? `Port: ${data.port}\n` +
+                          `Live: ${dev.live_count ?? '?'}   ` +
+                          `Prev: ${dev.prev_exists ? (dev.prev_bytes || 0) + 'B' : 'none'}\n` +
+                          `Uptime: ${dev.uptime_s ?? '?'}s   Heap: ${dev.heap ?? '?'}\n` +
+                          `FW: ${dev.fw || '?'}`
+                        : 'BLE device is not connected';
+                    alert(msg);
+                })
+                .catch(err => alert('BLE status error: ' + err.message));
         }
 
         function connectGps() {
@@ -3234,6 +3456,7 @@
                                 ${methodLabel(detection.detection_method)}
                             </span>
                             <span class="detection-count" title="${count} hit(s)">${count}×</span>
+                            ${detection.protocol === 'ble' ? `<span class="badge-ble" title="BLE detection${detection.replay_source ? ' (' + detection.replay_source + ')' : ''}">BLE-Ⲉ</span>` : ''}
                             ${detailsHtml}
                             ${gpsLink ? `<span class="meta"><span class="meta-k">gps</span>${gpsLink}</span>` : ''}
                             ${alsoHtml ? `<span class="method-also"><span class="method-also-label">also</span>${alsoHtml}</span>` : ''}

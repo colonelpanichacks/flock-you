@@ -22,6 +22,13 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.auto_reload = True
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
 
+# BLE-side companion (Mode 1 oui-spy-unified-blue Detector). Handles a second
+# serial port and answers /api/flock_ble/* endpoints. Blueprint is registered
+# after this app object exists; the ingest sink is wired at __main__ time so
+# BLE detections land in the same detections list as WiFi hits.
+from flockyou_ble import bp as flock_ble_bp, init_bridge as flock_ble_init_bridge
+app.register_blueprint(flock_ble_bp)
+
 # Global variables
 detections = []
 cumulative_detections = []
@@ -2006,6 +2013,11 @@ def initialize_app():
     load_oui_database()
     load_cumulative_detections()
     load_settings()
+
+    # Wire the BLE blueprint to the shared detection sink so BLE hits (live
+    # emit + CMD dump replays) land in the same detections list as WiFi hits.
+    flock_ble_init_bridge(ingest_fn=add_detection_from_serial,
+                          emit_fn=safe_socket_emit)
 
     monitor_thread = threading.Thread(target=connection_monitor, daemon=True)
     monitor_thread.start()
