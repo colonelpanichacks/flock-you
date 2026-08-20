@@ -2,11 +2,14 @@
 
 <img src="flock.png" alt="Flock You" width="300px">
 
-**Passive 2.4 GHz promiscuous-mode detector for Flock Safety surveillance infrastructure. Runs standalone or feeds the Flask dashboard over USB for live GPS-tagged wardriving.**
+**Passive 2.4 GHz promiscuous-mode detector for Flock Cam surveillance infrastructure. Runs standalone or feeds the Flask dashboard over USB for live GPS-tagged wardriving.**
+
+
+> **For research & educational use only.** You assume all liability for any use or misuse of these devices — don't do anything illegal or dumb. This project is not affiliated with, endorsed by, or associated with any camera-network operator; all trademarks belong to their respective owners.
 
 This is the `main` branch — stable line. Development happens on `promiscious-dev`, which adds the DeFlockJoplin Information Element research and wildcard-probe signature on top of this baseline. See "Further research" below.
 
-> **Region:** Flock Safety hardware is deployed primarily in the United States (and to a lesser extent Canada). If you're outside North America the OUI list and probe-request signatures here won't match anything — the tool is still useful for research, but it's not going to find infrastructure that isn't there.
+> **Region:** Flock Cam hardware is deployed primarily in the United States (and to a lesser extent Canada). If you're outside North America the OUI list and probe-request signatures here won't match anything — the tool is still useful for research, but it's not going to find infrastructure that isn't there.
 
 ---
 
@@ -21,12 +24,12 @@ Pintor, Lucia & Atzori, Luigi. (2022). Analysis of Wi-Fi Probe Requests Towards 
 
 ## What this branch does
 
-Turns a Seeed XIAO ESP32-S3 into a passive WiFi receiver that watches 2.4 GHz management and data frames for Flock Safety MAC OUIs. No AP, no transmit — the radio stays dedicated to sniffing while the device hops channels 11 / 6 / 1 (descending) at 350 ms dwell.
+Turns a Seeed XIAO ESP32-S3 into a passive WiFi receiver that watches 2.4 GHz management and data frames for Flock Cam MAC OUIs. No AP, no transmit — the radio stays dedicated to sniffing while the device hops channels 11 / 6 / 1 (descending) at 350 ms dwell.
 
 Every detection is:
 
 - beeped (piezo on GPIO3) and flashed (onboard LED on GPIO21)
-- written to on-device SPIFFS in an atomic CRC-envelope format, surviving power loss
+- written to on-device SPIFFS in an CRC-validated persistence, previous session preserved
 - emitted as one JSON line over USB CDC in the schema `api/flockyou.py` expects, so the Flask dashboard auto-ingests it with GPS temporal matching
 
 The device works standalone (no USB host needed) and plugged in (live dashboard) without any mode switch.
@@ -90,7 +93,7 @@ When we get a hit, we emit `detection_method: wifi_wildcard_probe_ie_sig`. Broad
        │   autosaveTick()             ← every 60s when dirty
        │        │
        │        ▼
-       │   fySaveSession()            ← atomic CRC-envelope write to SPIFFS
+       │   fySaveSession()            ← CRC-envelope write to SPIFFS
        │
        ├─► shouldSuppressDuplicate()  ← 5s per-MAC serial-emit rate limit
        │
@@ -104,7 +107,7 @@ The split between callback and loop is deliberate: the WiFi task has hard real-t
 
 ## OUI target list (@NitekryDPaul research)
 
-All lowercase, colon-separated. 31 Flock Safety infrastructure prefixes:
+All lowercase, colon-separated. 31 Flock Cam infrastructure prefixes:
 
 ```
 70:c9:4e   3c:91:80   d8:f3:bc   80:30:49   b8:35:32
@@ -124,7 +127,7 @@ Full dataset and methodology: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/Ni
 
 ## SPIFFS wire format
 
-On-flash layout, atomic and crash-safe:
+On-flash layout:
 
 ```
 Line 1: {"v":1,"count":N,"bytes":B,"crc":"0xXXXXXXXX"}
