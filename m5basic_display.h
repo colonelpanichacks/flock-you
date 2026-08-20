@@ -60,8 +60,16 @@ static bool    mb_inAlert       = false;
 static unsigned long mb_lastDrawMs  = 0;
 static unsigned long mb_lastAlertMs = 0;
 // How long a detection alert stays on screen before the periodic live
-// refresh (below) is allowed to repaint the scanning view over it.
-static constexpr unsigned long MB_ALERT_HOLD_MS = 4000;
+// refresh (below) is allowed to repaint the scanning view over it. Must
+// match UI_ALERT_HOLD_MS in ui_task.h (can't reference it directly — this
+// header is #included by main.cpp before ui_task.h). Raised from 4000 to
+// 15000: at 4s, a subsequent low-confidence alert's *Detection() call
+// (only reached at all if it wins ui_task.h's severity/MAC gate — see
+// uiAlertMaySupersede()) could still expire this hold and let the
+// scanning screen repaint a high-confidence alert away almost
+// immediately; 15s gives a real detection meaningful on-screen time.
+static constexpr unsigned long MB_ALERT_HOLD_MS = 15000;
+
 
 // Cached last-detection data (for scanning screen summary)
 static char    mb_lastMac[18]   = {0};

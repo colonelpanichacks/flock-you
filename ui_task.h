@@ -101,6 +101,51 @@ static UiAlert            g_uiAlert    = { {0}, {0}, 0, 0, 0, {0}, 0, 0, {0} };
 static volatile uint32_t  g_uiAlertSeq = 0;
 static portMUX_TYPE       g_uiAlertMux = portMUX_INITIALIZER_UNLOCKED;
 
+// ── Severity-priority display gate ────────────────────────────────────────
+// WHY THIS EXISTS: drainAlertQueue() calls uiPublishAlert() for EVERY
+// dequeued alert regardless of confidence (only the chirp/LED are gated on
+// CHIRP_MIN_CONFIDENCE). Before this gate, uiTaskFn() below unconditionally
+// redrew the alert screen — and each board's *Detection() unconditionally
+// reset its own MB_ALERT_HOLD_MS/MSC_ALERT_HOLD_MS hold timer — on every
+// freshAlert. That meant a low-confidence alert (e.g. ALERT_OUI_MFR,
+// conf=20) arriving mid-hold-window would cut short and overwrite a
+// high-confidence detection's (e.g. ALERT_OUI_ADDR2, conf=40) screen time.
+// Symptoms reported: rapid flicker when several alerts land close together,
+// and "most-recently-fired-wins" instead of "most-important-wins". This
+// state tracks the confidence+MAC of whatever is CURRENTLY on screen so a
+// new alert only gets to redraw if it's at least as important, the same
+// target re-firing (allowed to refresh its own hold), or the hold window
+// has fully elapsed. Alerts that lose this comparison are still logged/
+// JSON'd/counted as before in drainAlertQueue() — only the on-screen draw
+// is withheld.
+static uint8_t             g_uiDisplayedConf   = 0;
+static char                g_uiDisplayedMac[18] = {0};
+static unsigned long       g_uiDisplayedAtMs   = 0;
+// Shared across all boards so C5/M5Basic/StickC hold the screen for the
+// same duration; MB_ALERT_HOLD_MS/MSC_ALERT_HOLD_MS (each board's own
+// repaint-guard for its "scanning" screen) are set to match this value —
+// they can't directly reference this constant since m5basic_display.h/
+// m5stickc_display.h are #included by main.cpp before this file.
+static const unsigned long UI_ALERT_HOLD_MS = 15000UL;
+
+// Returns true if `a` is allowed to overwrite whatever is currently
+// displayed (and, as a side effect, updates the tracked "currently
+// displayed" state when it returns true — callers must actually draw `a`
+// immediately after receiving true).
+static bool uiAlertMaySupersede(const UiAlert& a, unsigned long now) {
+    bool wins = (g_uiDisplayedConf == 0) ||
+                (a.confidence >= g_uiDisplayedConf) ||
+                (g_uiDisplayedMac[0] != '\0' && strcmp(a.mac, g_uiDisplayedMac) == 0) ||
+                (now - g_uiDisplayedAtMs >= UI_ALERT_HOLD_MS);
+    if (wins) {
+        g_uiDisplayedConf = a.confidence;
+        strncpy(g_uiDisplayedMac, a.mac, sizeof(g_uiDisplayedMac) - 1);
+        g_uiDisplayedMac[sizeof(g_uiDisplayedMac) - 1] = '\0';
+        g_uiDisplayedAtMs = now;
+    }
+    return wins;
+}
+
 static void uiPublishAlert(const char* method, const char* mac, uint8_t confidence,
                             int8_t rssi, uint8_t channel, const char* ssid,
                             int detCount, unsigned long lastSeenMs,
@@ -226,8 +271,27 @@ static void uiTaskFn(void* pv) {
 
         unsigned long now = millis();
 
+        // Only a freshAlert that also wins the severity/MAC/hold-window
+        // comparison actually gets drawn — see uiAlertMaySupersede() above
+        // for why. uiAlertMaySupersede() has the side effect of updating
+        // g_uiDisplayedConf/Mac/AtMs when it returns true, so it must only
+        // be evaluated once per fresh alert (not once per board's #if
+        // block below).
+        bool alertWins = freshAlert && uiAlertMaySupersede(alert, now);
+
+        // Whether the hold window from the currently-displayed alert is
+        // still active right now — used below to stop C5's HEARTBEAT_MS
+        // scanning-screen repaint (its only self-throttle; C5 has no
+        // per-board hold timer of its own) from stomping a still-protected
+        // alert screen. M5Basic/StickC don't need this check here because
+        // their own *Scanning() functions already self-guard via
+        // MB_ALERT_HOLD_MS/MSC_ALERT_HOLD_MS (kept in sync with
+        // UI_ALERT_HOLD_MS — see m5basic_display.h/m5stickc_display.h).
+        bool holdActive = (g_uiDisplayedConf != 0) &&
+                           (now - g_uiDisplayedAtMs < UI_ALERT_HOLD_MS);
+
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
-        if (freshAlert) {
+        if (alertWins) {
             c5DisplayDetection(alert.dispType, alert.mac, alert.confidence,
                                 alert.rssi, alert.channel);
         }
@@ -235,14 +299,14 @@ static void uiTaskFn(void* pv) {
             g_uiForceC5Redraw = false;
             lastC5HeartbeatMs = 0;   // force the gate below to fire this tick
         }
-        if (now - lastC5HeartbeatMs >= HEARTBEAT_MS) {
+        if (!holdActive && now - lastC5HeartbeatMs >= HEARTBEAT_MS) {
             c5DisplayScanning(scan.channel, scan.detCount);
             lastC5HeartbeatMs = now;
         }
 #endif
 
 #if defined(USE_M5BASIC)
-        if (freshAlert) {
+        if (alertWins) {
             m5basicDetection(alert.method, alert.mac, alert.confidence, alert.rssi,
                               alert.channel, alert.ssid, alert.detCount, alert.lastSeenMs);
         }
@@ -263,7 +327,7 @@ static void uiTaskFn(void* pv) {
 #endif
 
 #if defined(USE_M5STICKC_PLUS_SE)
-        if (freshAlert) {
+        if (alertWins) {
             m5stickcDetection(alert.method, alert.mac, alert.confidence, alert.rssi,
                                alert.channel, alert.ssid, alert.detCount, alert.lastSeenMs);
         }

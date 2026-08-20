@@ -56,8 +56,15 @@ static uint8_t msc_lastCh       = 255;
 static unsigned long msc_lastDrawMs  = 0;
 static unsigned long msc_lastAlertMs = 0;
 // How long a detection alert stays on screen before the periodic live
-// refresh (below) is allowed to repaint the scanning view over it.
-static constexpr unsigned long MSC_ALERT_HOLD_MS = 4000;
+// refresh (below) is allowed to repaint the scanning view over it. Must
+// match UI_ALERT_HOLD_MS in ui_task.h (can't reference it directly — this
+// header is #included by main.cpp before ui_task.h). Raised from 4000 to
+// 15000 alongside the same change in m5basic_display.h — see that file's
+// comment for the full rationale (short holds let a subsequent low-
+// confidence alert's *Detection() call, once it wins ui_task.h's
+// severity/MAC gate, cut a high-confidence alert's screen time short).
+static constexpr unsigned long MSC_ALERT_HOLD_MS = 15000;
+
 
 
 // Cached last-detection data
