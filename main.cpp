@@ -1877,17 +1877,86 @@ void setup() {
     dualPrintf("[flockyou] M5.getBoard()=%d (expect board_M5AtomVoiceS3R=%d)\n",
                (int)M5.getBoard(), (int)m5::board_t::board_M5AtomVoiceS3R);
 
-    // ROOT CAUSE (speaker silent on real hardware): M5Unified's
-    // _begin_audio() (run inside M5.begin() above) configures the ES8311's
-    // I2S pins for this board, but deliberately never calls Speaker.begin()
-    // itself for ANY board -- that's left to the application. M5.Speaker
-    // .tone() *can* lazily call begin() on first use (Speaker_Class::
-    // _play_raw()), but if that lazy begin() fails (I2S setup or the ES8311
-    // I2C enable-register write failing), _play_raw() just returns true and
-    // plays nothing -- silent failure with zero trace, previously
-    // indistinguishable from "codec working but no audible sound". Call
-    // begin() explicitly here and log a failure so it shows up in serial
-    // output instead of just "the speaker doesn't do anything".
+    // ROOT CAUSE, CONFIRMED ON REAL HARDWARE (a physical Atom VoiceS3R unit
+    // logged M5.getBoard()=143/board_M5StampS3Mini instead of the expected
+    // 145/board_M5AtomVoiceS3R): M5Unified's board auto-detection identifies
+    // this board by probing for its ES8311 codec over I2C
+    // (_detect_i2c_device(45, 0, 0x18) inside M5Unified.cpp's
+    // _check_boardtype()). When that probe fails on some units, detection
+    // falls back to board_M5StampS3Mini, which has NO speaker/mic pin
+    // configuration anywhere in M5Unified's private _begin_audio() --
+    // meaning M5.Speaker's I2S pins are simply never set, and the ES8311's
+    // I2C power-up sequence (normally run via the private
+    // _speaker_enabled_cb_atom_echos3r() callback, wired up only inside the
+    // `case board_t::board_M5AtomVoiceS3R:` branch of _begin_audio()) never
+    // runs either. M5.Speaker.begin() below then "succeeds" against
+    // unconfigured/default I2S pins (or fails outright) with total silence
+    // either way.
+    //
+    // There is no public API to override the detected board: config_t only
+    // exposes `fallback_board`, which M5Unified only consults when
+    // _check_boardtype() returns board_unknown -- but the I2C-probe cascade
+    // above never returns board_unknown for this package (worst case it
+    // resolves to a concrete, wrong board), so fallback_board is a dead end
+    // here. The private `_board` member has no public setter either.
+    //
+    // WORKAROUND: manually replicate, unconditionally (regardless of what
+    // M5.getBoard() reported above), the exact I2S pin config + ES8311
+    // codec power-up register sequence + NS4150B amp-enable GPIO that
+    // M5Unified's own _begin_audio()/_speaker_enabled_cb_atom_echos3r()
+    // would have done for a correctly-detected board_M5AtomVoiceS3R. Both
+    // the pin values and the register sequence below were read directly out
+    // of M5Unified.cpp (the `case board_t::board_M5AtomVoiceS3R:` block in
+    // _begin_audio(), and the body of _speaker_enabled_cb_atom_echos3r()),
+    // not inferred -- and independently cross-checked against M5Stack's
+    // official Atom VoiceS3R pin map (ES8311 SDA=G45 SCL=G0 DOUT=G48 WS=G3
+    // BCLK=G17 MCLK=G11, NS4150B amp enable=G18). Speaker_Class::begin()/
+    // end() gracefully no-op the codec-enable callback when it's unset
+    // (guarded by `if (_cb_set_enabled)` in Speaker_Class.cpp), so doing
+    // this ourselves here is safe and doesn't fight M5Unified's internal
+    // callback mechanism -- it's a harmless duplicate of the same writes on
+    // a correctly-detected unit, and the actual fix on a misdetected one.
+    auto spk_cfg = M5.Speaker.config();
+    spk_cfg.pin_bck       = GPIO_NUM_17;
+    spk_cfg.pin_ws        = GPIO_NUM_3;
+    spk_cfg.pin_data_out  = GPIO_NUM_48;
+    spk_cfg.magnification = 1;
+    spk_cfg.i2s_port      = I2S_NUM_1;
+    M5.Speaker.config(spk_cfg);
+
+    M5.In_I2C.begin(I2C_NUM_1, /*sda*/GPIO_NUM_45, /*scl*/GPIO_NUM_0);
+    static constexpr uint8_t ES8311_I2C_ADDR = 0x18;
+    static constexpr struct { uint8_t reg, val; } es8311EnableRegs[] = {
+      {0x00, 0x80}, // RESET / CSM power on
+      {0x01, 0xB5}, // CLOCK_MANAGER / MCLK=BCLK
+      {0x02, 0x18}, // CLOCK_MANAGER / MULT_PRE=3
+      {0x0D, 0x01}, // SYSTEM / power up analog circuitry
+      {0x12, 0x00}, // SYSTEM / power-up DAC (not the chip's default)
+      {0x13, 0x10}, // SYSTEM / enable output to HP drive (not the default)
+      {0x32, 0xFF}, // DAC / full volume
+      {0x37, 0x08}, // DAC / bypass DAC equalizer (not the default)
+    };
+    bool codecI2cOk = true;
+    for (auto &r : es8311EnableRegs) {
+      if (!M5.In_I2C.writeRegister8(ES8311_I2C_ADDR, r.reg, r.val, 100000)) {
+        codecI2cOk = false;
+      }
+    }
+    if (!codecI2cOk) {
+      dualPrintln("[flockyou] ERROR: ES8311 codec I2C init failed - speaker will not produce sound");
+    }
+    // NS4150B Class-D amp enable pin -- matches GPIO18 toggled by
+    // M5Unified's own _speaker_enabled_cb_atom_echos3r(), independently
+    // confirmed against the official Atom VoiceS3R pin map.
+    pinMode(18, OUTPUT);
+    digitalWrite(18, HIGH);
+
+    // M5.Speaker.tone() *can* lazily call begin() on first use
+    // (Speaker_Class::_play_raw()), but if that lazy begin() fails,
+    // _play_raw() just returns true and plays nothing -- silent failure
+    // with zero trace. Call begin() explicitly here and log a failure so
+    // it shows up in serial output instead of just "the speaker doesn't do
+    // anything".
     if (!M5.Speaker.begin()) {
       dualPrintln("[flockyou] ERROR: M5.Speaker.begin() failed - speaker will not produce sound");
     }
