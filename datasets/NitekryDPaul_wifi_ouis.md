@@ -1,8 +1,10 @@
 # Flock Safety WiFi OUIs — Research by @NitekryDPaul
 
-**Researcher:** ØяĐöØцяöЪöяцฐ (**@NitekryDPaul**)
+**Researcher:** OrdoOuroboros (**@NitekryDPaul**, GitHub [@nitekry](https://github.com/nitekry))
 
-This dataset documents Flock Safety and related surveillance-infrastructure WiFi MAC-address OUIs (first three octets) discovered through 2.4 GHz promiscuous-mode analysis. All 30 prefixes below were identified by @NitekryDPaul during his promiscuous-mode research on Flock camera air traffic.
+Upstream source: [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection) — `groups/flockers/my_tested_flock.md`. Last synced: **2026-07-16**.
+
+This dataset documents Flock Safety and related surveillance-infrastructure WiFi MAC-address OUIs (first three octets) discovered through 2.4 GHz promiscuous-mode analysis. The 31 active prefixes below were identified by @NitekryDPaul during his promiscuous-mode research on Flock camera air traffic.
 
 ## Why promiscuous mode
 
@@ -10,9 +12,11 @@ Flock stations spend most of their duty cycle asleep, waking briefly to upload a
 
 This addr1 technique is @NitekryDPaul's discovery and is the basis of the `promiscuis-flock-you` firmware.
 
-## OUI list (30 prefixes, lowercase, colon-separated)
+## OUI list (32 prefixes, lowercase, colon-separated)
 
-@NitekryDPaul contributed all 30.
+@NitekryDPaul contributed 31; the 32nd (`82:6b:f2`) came from DeFlockJoplin's
+Joplin drive-testing — it's the OUI of the 12th camera in his field test, which the
+original list didn't catch. See [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
 
 ```
 70:c9:4e
@@ -28,7 +32,7 @@ c0:35:32
 94:08:53
 e4:aa:ea
 f4:6a:dd
-f8:a2:d6
+e0:0a:f6
 24:b2:b9
 00:f4:8d
 d0:39:57
@@ -45,6 +49,7 @@ ec:1b:bd
 64:6e:69
 48:27:ea
 a4:cf:12
+14:b5:cd
 82:6b:f2
 ```
 
@@ -65,7 +70,7 @@ a4:cf:12
 | 94:08:53 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | e4:aa:ea | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | f4:6a:dd | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
-| f8:a2:d6 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
+| e0:0a:f6 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | 24:b2:b9 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | 00:f4:8d | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | d0:39:57 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
@@ -82,6 +87,34 @@ a4:cf:12
 | 64:6e:69 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | 48:27:ea | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
 | a4:cf:12 | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
+| 14:b5:cd | Flock Safety infrastructure | WiFi 2.4 GHz | @NitekryDPaul |
+| 82:6b:f2 | Flock Safety infrastructure | WiFi 2.4 GHz | DeFlockJoplin |
+
+## Demoted / removed upstream
+
+Tracked in earlier revisions of this file, removed from the active firmware array
+per @NitekryDPaul's own field notes.
+
+| Prefix | Reason |
+|---|---|
+| `f8:a2:d6` | Low confidence; observed hitting a Sony Media Player, not a Flock device. Removed in the 2026-07-16 sync. |
+| `cc:cc:cc` | No observed hits; early placeholder from the original upstream list. |
+| `00:0c:e7` | MediaTek prefix; marked weak / disputed and a likely false positive. |
+| `94:2a:6f` | "Nope - Ubiquiti" — hits Ubiquiti radios. |
+| `f4:e2:c6` | "Nope - Ubiquiti" — hits Ubiquiti radios. |
+| `6c:cd:d6` | "Nope - Netgear" — never entered the active list; recorded for completeness. |
+
+## Flagged but still active
+
+| Prefix | Caveat |
+|---|---|
+| `08:3a:88` | Espressif Flock Falcon V2 WiFi module (high confidence), but has a BLE Ring-doorbell conflict — expect occasional false positives on BLE. WiFi-side detection unaffected. |
+| `48:27:ea` | Low confidence — Espressif plausible Flock variant, WiGLE crowdsource. |
+| `a4:cf:12` | Low confidence — Espressif plausible Flock variant, WiGLE crowdsource. |
+
+> `82:6b:f2` is locally administered (bit 1 of the first octet is set). Do not add a
+> "skip locally-administered MAC" filter to the match path — it would silently drop
+> DeFlockJoplin's camera.
 
 ## Detection strategy
 

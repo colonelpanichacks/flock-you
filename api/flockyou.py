@@ -16,7 +16,18 @@ from pathlib import Path
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'flockyou_dev_key_2024')
+# Pick up template edits on refresh. Without this, Jinja caches index.html on
+# first render (debug is off) and dashboard changes only appear after a restart.
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.jinja_env.auto_reload = True
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
+
+# BLE-side companion (Mode 1 oui-spy-unified-blue Detector). Handles a second
+# serial port and answers /api/flock_ble/* endpoints. Blueprint is registered
+# after this app object exists; the ingest sink is wired at __main__ time so
+# BLE detections land in the same detections list as WiFi hits.
+from flockyou_ble import bp as flock_ble_bp, init_bridge as flock_ble_init_bridge
+app.register_blueprint(flock_ble_bp)
 
 # Global variables
 detections = []
@@ -39,6 +50,13 @@ reconnect_delay = 3  # seconds
 connection_lock = threading.Lock()
 serial_queue = queue.Queue()
 next_detection_id = 1  # Unique ID counter
+
+# Last per-tier beep configuration reported by the device, refreshed from the
+# {"event":"config"} line it emits on boot and after every set_beep command.
+# None until the device has spoken, so the UI can tell "muted" apart from
+# "haven't heard from the device yet".
+device_config = None
+device_write_lock = threading.Lock()
 settings = {
     'gps_source': 'serial',        # 'serial' | 'gpsd'
     'gps_port': '',                # serial device path
@@ -381,7 +399,12 @@ def flock_reader():
                             # Try to parse as detection data
                             try:
                                 data = json.loads(line)
-                                if 'detection_method' in data:
+                                if data.get('event') == 'config':
+                                    # Device reporting its per-tier beep mask.
+                                    globals()['device_config'] = data
+                                    safe_socket_emit('device_config', data)
+                                    print(f"Device config: beep_mask={data.get('beep_mask')}")
+                                elif 'detection_method' in data:
                                     # Map ESP32 GPS from phone to Flask GPS format
                                     esp_gps = data.get('gps')
                                     if esp_gps:
@@ -471,6 +494,65 @@ def validate_gps_data(gps_data):
         return False, f"Poor GPS fix quality: {fix_quality}"
     
     return True, "Valid GPS data"
+
+# Confidence tier per detection method, mirroring the firmware's tier ladder.
+# Used to decide which label wins when several paths catch the same MAC, and
+# to colour-code the dashboard. Kept as a lookup rather than trusting the
+# device's detection_tier field alone, so detections imported from older
+# firmware (or from JSON/CSV files) still classify correctly.
+METHOD_TIERS = {
+    'wifi_wildcard_probe_ie_sig': 4,
+    'wifi_wildcard_probe':        3,
+    'wifi_oui_addr2':             2,
+    'wifi_oui_addr1':             1,
+    'wifi_oui_addr3':             1,
+    'wifi_ssid':                  0,
+}
+
+METHOD_LABELS = {
+    'wifi_wildcard_probe_ie_sig': 'IE fingerprint',
+    'wifi_wildcard_probe':        'Wildcard probe',
+    'wifi_oui_addr2':             'OUI transmitter',
+    'wifi_oui_addr1':             'OUI receiver',
+    'wifi_oui_addr3':             'OUI BSSID',
+    'wifi_ssid':                  'SSID keyword',
+}
+
+# Reverse map so a KML exported with human-readable labels can still be
+# imported back to canonical method keys.
+LABEL_TO_METHOD = {v: k for k, v in METHOD_LABELS.items()}
+
+# The firmware's SPIFFS session format writes bare method names (no wifi_
+# prefix); normalise them on import so an on-device session file and a
+# dashboard export both land on the same canonical keys.
+def normalize_method(raw):
+    if not raw:
+        return 'unknown'
+    m = str(raw).strip()
+    if m in METHOD_TIERS:
+        return m
+    if m in LABEL_TO_METHOD:              # "IE fingerprint"
+        return LABEL_TO_METHOD[m]
+    if ('wifi_' + m) in METHOD_TIERS:     # "wildcard_probe_ie_sig"
+        return 'wifi_' + m
+    return m
+
+
+def method_tier(data_or_method):
+    """Resolve a detection's confidence tier, preferring the device's own value."""
+    if isinstance(data_or_method, dict):
+        tier = data_or_method.get('detection_tier')
+        if isinstance(tier, int):
+            return tier
+        method = data_or_method.get('detection_method')
+    else:
+        method = data_or_method
+    return METHOD_TIERS.get(method, 0)
+
+
+def method_label(method):
+    return METHOD_LABELS.get(method, method or 'unknown')
+
 
 def add_detection_from_serial(data):
     """Add detection from serial data - counts detections per MAC address"""
@@ -571,10 +653,24 @@ def add_detection_from_serial(data):
         existing_detection['last_ssid'] = data.get('ssid', existing_detection.get('last_ssid'))
         existing_detection['last_device_name'] = data.get('device_name', existing_detection.get('last_device_name'))
         
-        # Preserve detection_method if not already set
-        if not existing_detection.get('detection_method') and data.get('detection_method'):
-            existing_detection['detection_method'] = data.get('detection_method')
-        
+        # Detection method is best-ever, not first-ever. A camera first caught
+        # by a broad OUI echo and later confirmed by the IE fingerprint should
+        # read as the fingerprint from then on — the old code only filled the
+        # field when empty, so the weaker label stuck permanently.
+        new_method = data.get('detection_method')
+        if new_method:
+            new_tier = method_tier(data)
+            if new_tier >= method_tier(existing_detection):
+                existing_detection['detection_method'] = new_method
+                existing_detection['detection_tier'] = new_tier
+            # Every path that has ever caught this device, with a hit count.
+            # This is the interesting research artifact: it shows which
+            # cameras only ever trip the broad paths and never fingerprint.
+            seen = existing_detection.setdefault('methods_seen', {})
+            seen[new_method] = seen.get(new_method, 0) + 1
+            existing_detection['last_method'] = new_method
+
+
         # Update GPS if new data is available
         if data.get('gps'):
             existing_detection['gps'] = data['gps']
@@ -597,6 +693,10 @@ def add_detection_from_serial(data):
         data['detection_count'] = 1
         data['first_seen'] = datetime.now().isoformat()
         data['last_seen'] = datetime.now().isoformat()
+        data['detection_tier'] = method_tier(data)
+        data['last_method'] = data.get('detection_method')
+        if data.get('detection_method'):
+            data['methods_seen'] = {data['detection_method']: 1}
         
         detections.append(data)
         
@@ -966,6 +1066,75 @@ def disconnect_flock():
     
     return jsonify({'status': 'success', 'message': 'Flock You device disconnected'})
 
+
+def send_device_command(payload):
+    """Write one JSON command line to the device over USB CDC.
+
+    Returns (ok, message). The device answers asynchronously with an
+    {"event":"config"} line that flock_reader() picks up, so callers get the
+    authoritative state via the device_config socket event rather than from
+    this function's return value.
+    """
+    if not (flock_serial_connection and flock_serial_connection.is_open):
+        return False, 'Flock You device not connected'
+    line = (json.dumps(payload) + '\n').encode('utf-8')
+    try:
+        # Serialise writes: the reader thread runs concurrently and pyserial
+        # gives no write atomicity guarantee across threads.
+        with device_write_lock:
+            flock_serial_connection.write(line)
+            flock_serial_connection.flush()
+        return True, 'sent'
+    except Exception as e:
+        return False, f'write failed: {e}'
+
+
+@app.route('/api/flock/config', methods=['GET'])
+def get_flock_config():
+    """Last known per-tier beep config, and ask the device to re-report."""
+    send_device_command({'cmd': 'get_config'})
+    return jsonify({
+        'status': 'success',
+        'config': device_config,
+        'connected': bool(flock_serial_connection and flock_serial_connection.is_open),
+        'methods': METHOD_LABELS,
+        'tiers': METHOD_TIERS,
+    })
+
+
+@app.route('/api/flock/beep', methods=['POST'])
+def set_flock_beep():
+    """Mute or unmute one detection tier's audio on the device.
+
+    Body: {"tier": 0-4, "enabled": bool}
+       or {"mask": 0-31} to set every tier at once.
+    """
+    body = request.get_json(silent=True) or {}
+
+    if 'mask' in body:
+        try:
+            mask = int(body['mask'])
+        except (TypeError, ValueError):
+            return jsonify({'status': 'error', 'message': 'mask must be an integer'}), 400
+        if not 0 <= mask <= 0x1F:
+            return jsonify({'status': 'error', 'message': 'mask out of range 0-31'}), 400
+        ok, msg = send_device_command({'cmd': 'set_beep_mask', 'mask': mask})
+    else:
+        try:
+            tier = int(body.get('tier'))
+        except (TypeError, ValueError):
+            return jsonify({'status': 'error', 'message': 'tier must be an integer 0-4'}), 400
+        if not 0 <= tier <= 4:
+            return jsonify({'status': 'error', 'message': 'tier out of range 0-4'}), 400
+        enabled = bool(body.get('enabled', True))
+        ok, msg = send_device_command(
+            {'cmd': 'set_beep', 'tier': tier, 'on': 1 if enabled else 0})
+
+    if not ok:
+        return jsonify({'status': 'error', 'message': msg}), 503
+    return jsonify({'status': 'success', 'message': msg})
+
+
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """Get connection status of both devices"""
@@ -1038,11 +1207,24 @@ def export_csv():
     os.makedirs('exports', exist_ok=True)
     
     with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+        # Grouped so the sheet reads left to right: what it is, how we caught
+        # it, how strong the signal was, where, then when. GPS columns are all
+        # gps_-prefixed so they sort and filter together.
         fieldnames = [
-            'timestamp', 'detection_time', 'server_timestamp', 'protocol', 'detection_method',
-            'ssid', 'device_name', 'mac_address', 'manufacturer', 'alias', 'rssi', 'last_rssi', 
-            'signal_strength', 'channel', 'last_channel', 'detection_count',
-            'latitude', 'longitude', 'altitude', 'gps_timestamp', 'satellites', 'fix_quality', 'gps_time_diff', 'gps_match_quality', 'timestamp_source'
+            # identity
+            'mac_address', 'alias', 'manufacturer', 'ssid', 'device_name',
+            # detection
+            'detection_method', 'detection_label', 'detection_tier',
+            'last_method', 'methods_seen', 'detection_count', 'protocol',
+            # signal
+            'rssi', 'last_rssi', 'signal_strength', 'channel', 'last_channel',
+            # location
+            'latitude', 'longitude', 'altitude',
+            'gps_fix_quality', 'gps_satellites', 'gps_timestamp',
+            'gps_time_diff', 'gps_match_quality',
+            # time
+            'first_seen', 'last_seen', 'detection_time', 'timestamp',
+            'server_timestamp', 'timestamp_source',
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -1050,31 +1232,46 @@ def export_csv():
         for detection in data_to_export:
             gps_data = detection.get('gps', {})
             row = {
-                'timestamp': detection.get('timestamp'),
-                'detection_time': detection.get('detection_time'),
-                'server_timestamp': detection.get('server_timestamp'),
-                'protocol': detection.get('protocol'),
-                'detection_method': detection.get('detection_method'),
+                # identity
+                'mac_address': detection.get('mac_address'),
+                'alias': detection.get('alias', ''),
+                'manufacturer': detection.get('manufacturer', 'Unknown'),
                 'ssid': detection.get('ssid', ''),
                 'device_name': detection.get('device_name', ''),
-                'mac_address': detection.get('mac_address'),
-                'manufacturer': detection.get('manufacturer', 'Unknown'),
-                'alias': detection.get('alias', ''),
+                # detection
+                'detection_method': detection.get('detection_method'),
+                'detection_label': method_label(detection.get('detection_method')),
+                'detection_tier': detection.get('detection_tier', method_tier(detection)),
+                'last_method': detection.get('last_method', detection.get('detection_method')),
+                # Flattened as "method:count; method:count" so a spreadsheet
+                # keeps it in one cell instead of exploding the schema.
+                'methods_seen': '; '.join(
+                    f'{m}:{c}' for m, c in sorted((detection.get('methods_seen') or {}).items())
+                ),
+                'detection_count': detection.get('detection_count', 1),
+                'protocol': detection.get('protocol'),
+                # signal
                 'rssi': detection.get('rssi'),
                 'last_rssi': detection.get('last_rssi'),
                 'signal_strength': detection.get('signal_strength'),
                 'channel': detection.get('channel'),
                 'last_channel': detection.get('last_channel'),
-                'detection_count': detection.get('detection_count', 1),
+                # location
                 'latitude': gps_data.get('latitude'),
                 'longitude': gps_data.get('longitude'),
                 'altitude': gps_data.get('altitude'),
+                'gps_fix_quality': gps_data.get('fix_quality'),
+                'gps_satellites': gps_data.get('satellites'),
                 'gps_timestamp': gps_data.get('timestamp'),
-                'satellites': gps_data.get('satellites'),
-                'fix_quality': gps_data.get('fix_quality'),
                 'gps_time_diff': gps_data.get('time_diff'),
                 'gps_match_quality': gps_data.get('match_quality'),
-                'timestamp_source': detection.get('timestamp_source', 'unknown')
+                # time
+                'first_seen': detection.get('first_seen'),
+                'last_seen': detection.get('last_seen'),
+                'detection_time': detection.get('detection_time'),
+                'timestamp': detection.get('timestamp'),
+                'server_timestamp': detection.get('server_timestamp'),
+                'timestamp_source': detection.get('timestamp_source', 'unknown'),
             }
             writer.writerow(row)
     
@@ -1113,7 +1310,10 @@ def export_kml():
         gps = detection.get('gps', {})
         if gps.get('latitude') and gps.get('longitude'):
             # Use alias if available, otherwise use detection number
-            placemark_name = detection.get('alias') or f"Detection {i+1}"
+            # Fall back to the MAC, not "Detection N" — the name is the only
+            # identity Google Earth shows, and a re-import needs it to match
+            # an existing device instead of inventing a new one.
+            placemark_name = detection.get('alias') or detection.get('mac_address') or f"Detection {i+1}"
             
             # GPS accuracy indicator
             gps_accuracy = ""
@@ -1147,7 +1347,10 @@ def export_kml():
         <description>
             <![CDATA[
             <b>Protocol:</b> {detection.get('protocol')}<br/>
-            <b>Detection Method:</b> {detection.get('detection_method')}<br/>
+            <b>Detection Method:</b> {method_label(detection.get('detection_method'))}<br/>
+            <b>Method Key:</b> {detection.get('detection_method') or 'unknown'}<br/>
+            <b>Tier:</b> {detection.get('detection_tier', method_tier(detection))}<br/>
+            <b>All Methods:</b> {', '.join(f"{method_label(m)} x{c}" for m, c in sorted((detection.get('methods_seen') or {}).items())) or 'n/a'}<br/>
             {device_info}
             <b>MAC Address:</b> {detection.get('mac_address')}<br/>
             <b>Manufacturer:</b> {detection.get('manufacturer', 'Unknown')}<br/>
@@ -1205,19 +1408,24 @@ def import_json():
         count = 0
         for item in imported:
             # Map ESP32 export fields to Flask detection format
+            method = normalize_method(item.get('method', item.get('detection_method')))
             data = {
-                'detection_method': item.get('method', item.get('detection_method', 'unknown')),
-                'protocol': 'bluetooth_le',
+                'detection_method': method,
+                # This firmware is WiFi-only; the old hardcoded bluetooth_le
+                # mislabelled every imported record.
+                'protocol': item.get('protocol', 'wifi_2_4ghz'),
                 'mac_address': item.get('mac', item.get('mac_address', '')),
                 'device_name': item.get('name', item.get('device_name', '')),
                 'rssi': item.get('rssi', 0),
                 'detection_count': item.get('count', item.get('detection_count', 1)),
+                # Trust an explicit tier from the device, else derive it.
+                'detection_tier': item.get('tier', item.get('detection_tier',
+                                                            METHOD_TIERS.get(method, 0))),
             }
-
-            # Raven fields
-            if item.get('raven') or item.get('is_raven'):
-                data['is_raven'] = True
-                data['raven_fw'] = item.get('fw', item.get('raven_fw', ''))
+            if item.get('channel') is not None:
+                data['channel'] = item['channel']
+            if item.get('ssid'):
+                data['ssid'] = item['ssid']
 
             # GPS fields from ESP32 wardriving export
             gps_obj = item.get('gps')
@@ -1264,20 +1472,25 @@ def import_csv():
 
         count = 0
         for row in reader:
+            method = normalize_method(row.get('method', row.get('detection_method')))
             data = {
-                'detection_method': row.get('method', row.get('detection_method', 'unknown')),
-                'protocol': 'bluetooth_le',
+                'detection_method': method,
+                'protocol': row.get('protocol') or 'wifi_2_4ghz',
                 'mac_address': row.get('mac', row.get('mac_address', '')),
                 'device_name': row.get('name', row.get('device_name', '')),
                 'rssi': int(row.get('rssi', 0)) if row.get('rssi') else 0,
                 'detection_count': int(row.get('count', row.get('detection_count', 1))) if row.get('count', row.get('detection_count')) else 1,
             }
-
-            # Raven fields
-            is_raven = row.get('is_raven', row.get('raven', 'false'))
-            if is_raven and is_raven.lower() == 'true':
-                data['is_raven'] = True
-                data['raven_fw'] = row.get('raven_fw', row.get('fw', ''))
+            tier_str = row.get('detection_tier', row.get('tier', ''))
+            try:
+                data['detection_tier'] = int(tier_str) if str(tier_str).strip() != '' \
+                    else METHOD_TIERS.get(method, 0)
+            except (ValueError, TypeError):
+                data['detection_tier'] = METHOD_TIERS.get(method, 0)
+            if row.get('channel'):
+                data['channel'] = row['channel']
+            if row.get('ssid'):
+                data['ssid'] = row['ssid']
 
             # GPS fields from ESP32 wardriving CSV export
             lat_str = row.get('latitude', '')
@@ -1333,11 +1546,26 @@ def import_kml():
 
         count = 0
         for pm in placemarks:
-            name_el = pm.find('kml:name', ns) or pm.find('name')
-            desc_el = pm.find('kml:description', ns) or pm.find('description')
-            coord_el = pm.find('.//kml:coordinates', ns) or pm.find('.//coordinates')
+            # NB: `a or b` is wrong for ElementTree — an element with no
+            # children is falsy, so leaf tags like <name> fell through to the
+            # non-namespaced lookup, returned None, and every placemark
+            # imported as "unknown_N". Compare against None explicitly.
+            def pick(*paths):
+                for path in paths:
+                    el = pm.find(path, ns) if path.startswith('kml:') or '/kml:' in path \
+                        else pm.find(path)
+                    if el is not None:
+                        return el
+                return None
 
-            mac = name_el.text.strip() if name_el is not None and name_el.text else f"unknown_{count}"
+            name_el = pick('kml:name', 'name')
+            desc_el = pick('kml:description', 'description')
+            coord_el = pick('.//kml:coordinates', './/coordinates')
+
+            # The placemark name may be a user alias, so it is not a reliable
+            # MAC source. Read the MAC from the description first and only
+            # fall back to <name> when it actually looks like a MAC.
+            placemark_label = name_el.text.strip() if name_el is not None and name_el.text else ""
 
             # Parse coordinates (lon,lat,alt)
             gps_data = None
@@ -1371,24 +1599,61 @@ def import_kml():
             name_match = re.search(r'<b>Name:</b>\s*([^<]+)', desc_text)
             if name_match:
                 device_name = name_match.group(1).strip()
-            method_match = re.search(r'<b>Method:</b>\s*([^<]+)', desc_text)
-            if method_match:
-                method = method_match.group(1).strip()
+            # Prefer the machine-readable key the exporter emits; fall back to
+            # the human label (reverse-mapped) for older files.
+            key_match = re.search(r'<b>Method Key:</b>\s*([^<\s]+)', desc_text)
+            method_match = re.search(r'<b>Detection Method:</b>\s*([^<]+)', desc_text) \
+                or re.search(r'<b>Method:</b>\s*([^<]+)', desc_text)
+            if key_match:
+                method = normalize_method(key_match.group(1))
+            elif method_match:
+                method = normalize_method(method_match.group(1))
+
+            tier = METHOD_TIERS.get(method, 0)
+            tier_match = re.search(r'<b>Tier:</b>\s*(\d+)', desc_text)
+            if tier_match:
+                tier = int(tier_match.group(1))
+
             rssi_match = re.search(r'<b>RSSI:</b>\s*(-?\d+)', desc_text)
             if rssi_match:
                 rssi = int(rssi_match.group(1))
-            count_match = re.search(r'<b>Count:</b>\s*(\d+)', desc_text)
+            # Exporter writes "Detection Count"; the old '<b>Count:</b>' pattern
+            # never matched it, so every import came back with count 1.
+            count_match = re.search(r'<b>Detection Count:</b>\s*(\d+)', desc_text) \
+                or re.search(r'<b>Count:</b>\s*(\d+)', desc_text)
             if count_match:
                 det_count = int(count_match.group(1))
 
+            proto_match = re.search(r'<b>Protocol:</b>\s*([^<]+)', desc_text)
+
+            MAC_RE = r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}'
+            mac_match = re.search(r'<b>MAC Address:</b>\s*(' + MAC_RE + ')', desc_text)
+            if mac_match:
+                mac = mac_match.group(1).strip()
+            elif re.fullmatch(MAC_RE, placemark_label):
+                mac = placemark_label
+            else:
+                mac = f"unknown_{count}"
+
+            alias_match = re.search(r'<b>Alias:</b>\s*([^<]+)', desc_text)
+            alias = alias_match.group(1).strip() if alias_match else ''
+            if alias.lower() in ('none', 'n/a'):
+                alias = ''
+
             data = {
                 'detection_method': method,
-                'protocol': 'bluetooth_le',
+                'detection_tier': tier,
+                'protocol': proto_match.group(1).strip() if proto_match else 'wifi_2_4ghz',
                 'mac_address': mac,
                 'device_name': device_name,
                 'rssi': rssi,
                 'detection_count': det_count,
             }
+            if alias:
+                data['alias'] = alias
+            elif placemark_label and not re.fullmatch(MAC_RE, placemark_label) \
+                    and not placemark_label.lower().startswith('detection '):
+                data['alias'] = placemark_label
 
             if gps_data:
                 data['gps'] = gps_data
@@ -1490,17 +1755,21 @@ def update_settings():
 def get_stats():
     """Get detection statistics"""
     return jsonify({
+        # WiFi-only firmware — the BLE counters are gone. `protocol` is
+        # 'wifi_2_4ghz', so the old exact match on 'wifi' counted zero;
+        # startswith fixes that. 'ie_confirmed' replaces the BLE slot with
+        # the number that matters: devices verified by the IE fingerprint.
         'session': {
             'total': len(detections),
-            'wifi': len([d for d in detections if d.get('protocol') == 'wifi']),
-            'ble': len([d for d in detections if d.get('protocol') in ['bluetooth_le', 'bluetooth_classic']]),
+            'wifi': len([d for d in detections if (d.get('protocol') or '').startswith('wifi')]),
+            'ie_confirmed': len([d for d in detections if method_tier(d) == 4]),
             'gps': len([d for d in detections if d.get('gps')]),
             'start_time': session_start_time.isoformat()
         },
         'cumulative': {
             'total': len(cumulative_detections),
-            'wifi': len([d for d in cumulative_detections if d.get('protocol') == 'wifi']),
-            'ble': len([d for d in cumulative_detections if d.get('protocol') in ['bluetooth_le', 'bluetooth_classic']]),
+            'wifi': len([d for d in cumulative_detections if (d.get('protocol') or '').startswith('wifi')]),
+            'ie_confirmed': len([d for d in cumulative_detections if method_tier(d) == 4]),
             'gps': len([d for d in cumulative_detections if d.get('gps')])
         }
     })
@@ -1518,8 +1787,12 @@ def search_oui():
     
     results = []
     
-    # Clean the query - remove colons and spaces, convert to uppercase
-    clean_query = query.replace(':', '').replace(' ', '').upper()
+    # Clean the query - strip every common MAC separator, convert to uppercase.
+    # Dashes matter: IEEE's own oui.txt writes prefixes as "28-6F-B9", so a
+    # copy-paste from that file used to return nothing. Dots cover Cisco's
+    # "286f.b928" style.
+    clean_query = (query.replace(':', '').replace(' ', '')
+                        .replace('-', '').replace('.', '').upper())
     
     # Check if query looks like a MAC address (6 hex characters)
     if len(clean_query) >= 6 and all(c in '0123456789ABCDEF' for c in clean_query[:6]):
@@ -1722,26 +1995,51 @@ def handle_serial_terminal_request(data):
         print(f"Serial terminal connection error: {e}")
         emit('serial_error', {'message': f'Failed to start terminal: {str(e)}'})
 
-if __name__ == '__main__':
-    # Load data on startup
+def initialize_app():
+    """Load persisted state and start background threads.
+
+    Called at import time, not only from __main__: the OUI database, the
+    cumulative detection history and the saved settings were previously loaded
+    inside the __main__ guard, so any WSGI host that imports this module
+    (gunicorn, uwsgi, an embedded runner) came up with an empty OUI database —
+    every detection resolved to "Unknown Manufacturer" and OUI search returned
+    nothing. Guarded so repeated imports don't double-start the monitor.
+    """
+    global _initialized
+    if globals().get('_initialized'):
+        return
+    globals()['_initialized'] = True
+
     load_oui_database()
     load_cumulative_detections()
     load_settings()
-    
-    # Start connection monitor thread
+
+    # Wire the BLE blueprint to the shared detection sink so BLE hits (live
+    # emit + CMD dump replays) land in the same detections list as WiFi hits.
+    flock_ble_init_bridge(ingest_fn=add_detection_from_serial,
+                          emit_fn=safe_socket_emit)
+
     monitor_thread = threading.Thread(target=connection_monitor, daemon=True)
     monitor_thread.start()
-    
-    # Start heartbeat thread
+
     heartbeat_thread = threading.Thread(target=send_heartbeat, daemon=True)
     heartbeat_thread.start()
-    
+
+
+initialize_app()
+
+
+if __name__ == '__main__':
+    # macOS AirPlay Receiver squats on 5000; override with FLOCKYOU_PORT.
+    port = int(os.environ.get('FLOCKYOU_PORT', '5000'))
+    host = os.environ.get('FLOCKYOU_HOST', '0.0.0.0')
+
     print("Starting Flock You API server...")
-    print("Server will be available at: http://localhost:5000")
+    print(f"Server will be available at: http://localhost:{port}")
     print("Press Ctrl+C to stop the server")
-    
+
     try:
-        socketio.run(app, debug=False, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
+        socketio.run(app, debug=False, host=host, port=port, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         print("\nShutting down server...")
         # Clean up connections
