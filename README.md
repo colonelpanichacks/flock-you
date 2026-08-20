@@ -2,11 +2,14 @@
 
 <img src="flock.png" alt="Flock You" width="300px">
 
-**Passive 2.4 GHz promiscuous-mode detector for Flock Safety surveillance infrastructure. Runs standalone or feeds the Flask dashboard over USB for live GPS-tagged wardriving.**
+**Passive 2.4 GHz promiscuous-mode detector for Flock Cam surveillance infrastructure. Runs standalone or feeds the Flask dashboard over USB for live GPS-tagged wardriving.**
+
+
+> **For research & educational use only.** You assume all liability for any use or misuse of these devices — don't do anything illegal or dumb. This project is not affiliated with, endorsed by, or associated with any camera-network operator; all trademarks belong to their respective owners.
 
 This is the `dev` branch. It carries the DeFlockJoplin Information Element research and wildcard-probe signature, and runs @NitekryDPaul's broad OUI paths alongside them under a confidence-tier system — see "Running both methods together" below.
 
-> **Region:** Flock Safety hardware is deployed primarily in the United States (and to a lesser extent Canada). If you're outside North America the OUI list and probe-request signatures here won't match anything — the tool is still useful for research, but it's not going to find infrastructure that isn't there.
+> **Region:** Flock Cam hardware is deployed primarily in the United States (and to a lesser extent Canada). If you're outside North America the OUI list and probe-request signatures here won't match anything — the tool is still useful for research, but it's not going to find infrastructure that isn't there.
 
 ---
 
@@ -21,12 +24,12 @@ Pintor, Lucia & Atzori, Luigi. (2022). Analysis of Wi-Fi Probe Requests Towards 
 
 ## What this branch does
 
-Turns a Seeed XIAO ESP32-S3 into a passive WiFi receiver that watches 2.4 GHz management and data frames for Flock Safety MAC OUIs. No AP, no transmit — the radio stays dedicated to sniffing while the device hops channels 11 / 6 / 1 (descending) at 250 ms dwell.
+Turns a Seeed XIAO ESP32-S3 into a passive WiFi receiver that watches 2.4 GHz management and data frames for Flock Cam MAC OUIs. No AP, no transmit — the radio stays dedicated to sniffing while the device hops channels 11 / 6 / 1 (descending) at 250 ms dwell.
 
 Every detection is:
 
 - beeped (piezo on GPIO3) and flashed (onboard LED on GPIO21)
-- written to on-device SPIFFS in an atomic CRC-envelope format, surviving power loss
+- written to on-device SPIFFS in an CRC-validated persistence, previous session preserved
 - emitted as one JSON line over USB CDC in the schema `api/flockyou.py` expects, so the Flask dashboard auto-ingests it with GPS temporal matching
 
 The device works standalone (no USB host needed) and plugged in (live dashboard) without any mode switch.
@@ -112,7 +115,7 @@ Audio per tier can be muted live from the dashboard's **Audio** panel; detection
        │   autosaveTick()             ← every 60s when dirty
        │        │
        │        ▼
-       │   fySaveSession()            ← atomic CRC-envelope write to SPIFFS
+       │   fySaveSession()            ← CRC-envelope write to SPIFFS
        │
        ├─► shouldSuppressDuplicate(mac, tier)
        │        ← 5s per-MAC rate limit; a higher tier preempts it
@@ -158,7 +161,7 @@ Full dataset and methodology: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/Ni
 
 ## SPIFFS wire format
 
-On-flash layout, atomic and crash-safe:
+On-flash layout:
 
 ```
 Line 1: {"v":1,"count":N,"bytes":B,"crc":"0xXXXXXXXX"}
@@ -325,7 +328,7 @@ This firmware and dashboard are 2.4 GHz WiFi only. BLE detection stopped working
 
 ## Acknowledgments
 
-- **OrdoOuroboros (@NitekryDPaul**, [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection)**)** — **WiFi promiscuous detection research**: the Flock Safety OUI target list (31 active prefixes as of his 2026-07-16 revision) and the addr1-receiver detection technique that are the baseline of this firmware. The code here is a mod of his original work.
+- **OrdoOuroboros (@NitekryDPaul**, [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection)**)** — **WiFi promiscuous detection research**: the Flock Cam OUI target list (31 active prefixes as of his 2026-07-16 revision) and the addr1-receiver detection technique that are the baseline of this firmware. The code here is a mod of his original work.
 - **DeFlockJoplin** ([DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you), [deflockjoplin.today](https://deflockjoplin.today)) — **wildcard-probe-request signature**, the **IE fingerprint** path, and the `82:6b:f2` OUI. Drive-tested in Joplin to 11/12 cameras caught with only 2 false positives.
 - **[DeFlock](https://deflock.me)** ([FoggedLens/deflock](https://github.com/FoggedLens/deflock)) — crowdsourced ALPR location data and detection methodologies. Datasets included in `datasets/`
 
@@ -340,7 +343,7 @@ Flock-You is part of the OUI-SPY firmware family:
 | **[OUI-SPY Unified](https://github.com/colonelpanichacks/oui-spy-unified-blue)** | Multi-mode BLE + WiFi detector | ESP32-S3 / ESP32-C5 |
 | **[OUI-SPY Detector](https://github.com/colonelpanichacks/ouispy-detector)** | Targeted BLE scanner with OUI filtering | ESP32-S3 |
 | **[OUI-SPY Foxhunter](https://github.com/colonelpanichacks/ouispy-foxhunter)** | RSSI-based proximity tracker | ESP32-S3 |
-| **[Flock You](https://github.com/colonelpanichacks/flock-you)** | Flock Safety surveillance detection (this project) | ESP32-S3 |
+| **[Flock You](https://github.com/colonelpanichacks/flock-you)** | Flock Cam surveillance detection (this project) | ESP32-S3 |
 | **[Sky-Spy](https://github.com/colonelpanichacks/Sky-Spy)** | Drone Remote ID detection | ESP32-S3 / ESP32-C5 |
 | **[Remote-ID-Spoofer](https://github.com/colonelpanichacks/Remote-ID-Spoofer)** | WiFi Remote ID spoofer & simulator with swarm mode | ESP32-S3 |
 | **[OUI-SPY UniPwn](https://github.com/colonelpanichacks/Oui-Spy-UniPwn)** | Unitree robot exploitation system | ESP32-S3 |
