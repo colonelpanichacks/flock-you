@@ -191,8 +191,16 @@ flash_device() {
     echo "⬆️  Flashing [$env] → $port"
     echo "────────────────────────────────────"
 
-    if [[ "$env" == "m5atom-voices3r" ]]; then
+    # NOTE: matched as a glob (m5atom-voices3r*), not an exact string, so this
+    # also catches the "-ble" variant (m5atom-voices3r-ble). "Atom VoiceS3R"
+    # and "Atom Echo S3R" are the SAME physical board (see platformio.ini's
+    # hardware-identity comment above [env:m5atom-voices3r]) and there is
+    # intentionally only one PlatformIO environment family for both — this
+    # native-USB two-stage flash path must apply to it regardless of which
+    # of the two silkscreened names the user selected in the menu below.
+    if [[ "$env" == m5atom-voices3r* ]]; then
         # Release any process holding the CDC port
+
         local holder
         holder=$(lsof -t "$port" 2>/dev/null || true)
         if [[ -n "$holder" ]]; then
@@ -201,8 +209,9 @@ flash_device() {
             sleep 1
         fi
 
-        # Build (cached if source unchanged)
-        pio run --environment m5atom-voices3r || rc=$?
+        # Build (cached if source unchanged). Use "$env" (not a hardcoded
+        # literal) so this also builds the -ble variant when selected.
+        pio run --environment "$env" || rc=$?
         if [[ $rc -ne 0 ]]; then
             echo ""
             echo "❌ Build FAILED (exit code $rc)"
@@ -245,10 +254,10 @@ flash_device() {
             --after hard_reset \
             --connect-attempts 5 \
             write_flash \
-            0x0     .pio/build/m5atom-voices3r/bootloader.bin \
-            0x8000  .pio/build/m5atom-voices3r/partitions.bin \
+            0x0     ".pio/build/$env/bootloader.bin" \
+            0x8000  ".pio/build/$env/partitions.bin" \
             0xe000  "$BOOT0" \
-            0x10000 .pio/build/m5atom-voices3r/firmware.bin || rc=$?
+            0x10000 ".pio/build/$env/firmware.bin" || rc=$?
     else
         # Atom Lite / Atom Echo / Atom Voice — pio handles everything.
         #
@@ -312,7 +321,8 @@ flash_device() {
     echo "✅ Flash complete!"
 
     # ── Auto-restart: wait for device to come back up ─────────────────────────
-    if [[ "$env" == "m5atom-voices3r" ]]; then
+    # Same glob match as above — must also catch the -ble variant.
+    if [[ "$env" == m5atom-voices3r* ]]; then
         echo "🔄 Waiting for device to restart..."
         local RESTART_PORT=""
         local _j
@@ -417,8 +427,8 @@ while true; do
     echo "   1) Atom Lite + BLE        — SK6812 RGB LED + BLE scan        (FTDI/usbserial)"
     echo "   2) Atom Echo + BLE        — speaker + BLE scan               (FTDI/usbserial)"
     echo "   3) Atom Voice + BLE       — RGB LED + I²S speaker + BLE scan (FTDI/usbserial)"
-    echo "   4) Atom VoiceS3R          — native USB, ES8311 codec         (ESP32-S3, usbmodem)"
-    echo "   5) Atom Echo S3R          — native USB, I²S speaker          (ESP32-S3, usbmodem)"
+    echo "   4) Atom VoiceS3R + BLE    — native USB, ES8311 codec         (ESP32-S3, usbmodem)"
+    echo "   5) Atom Echo S3R + BLE    — native USB, I²S speaker          (ESP32-S3, usbmodem)"
     echo "   6) Basic Core v2.7 + BLE  — 2.0\" IPS display + speaker      (CH9102/usbserial)"
     echo "   7) Core2 For AWS + BLE    — 2.0\" touch + I2S + PSRAM        (CH9102/usbserial)"
     echo "   8) StickC Plus SE + BLE   — 1.14\" display + buzzer          (FTDI/usbserial)"
@@ -452,13 +462,20 @@ while true; do
             EXPECTED_PORT_TYPE="usbserial"
             ;;
         4)
-            ENV="m5atom-voices3r"
-            LABEL="Atom VoiceS3R (native USB)"
+            # "Atom VoiceS3R" and "Atom Echo S3R" (option 5) are the SAME
+            # physical board (M5Unified's board_M5AtomEchoS3R is a deprecated
+            # alias of board_M5AtomVoiceS3R) — both intentionally flash the
+            # identical -ble environment. See platformio.ini's comment above
+            # [env:m5atom-voices3r]. This also matches every other menu
+            # option's convention of flashing the BLE-coex environment, and
+            # matches what the web flasher / CI (build-firmware.yml) ships.
+            ENV="m5atom-voices3r-ble"
+            LABEL="Atom VoiceS3R + BLE (native USB)"
             EXPECTED_PORT_TYPE="usbmodem"
             ;;
         5)
-            ENV="m5atom-voices3r"
-            LABEL="Atom Echo S3R (native USB)"
+            ENV="m5atom-voices3r-ble"
+            LABEL="Atom Echo S3R + BLE (native USB)"
             EXPECTED_PORT_TYPE="usbmodem"
             ;;
         6)
