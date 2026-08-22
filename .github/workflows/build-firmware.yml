@@ -34,24 +34,43 @@ jobs:
       # Build experimental C5 first (separate invocation, non-blocking).
       # Each pio run call cleans .pio/build/ on start, so C5 runs alone first;
       # any wipe it triggers is harmless since nothing else has been built yet.
-      - name: Build lilygo-t-dongle-c5-ble (experimental)
+      # Builds BOTH the BLE and non-BLE C5 variants so the web flasher can
+      # offer both (default: BLE), same as every other board.
+      - name: Build lilygo-t-dongle-c5 + lilygo-t-dongle-c5-ble (experimental)
         continue-on-error: true
-        run: pio run -e lilygo-t-dongle-c5-ble
+        run: pio run -e lilygo-t-dongle-c5-ble -e lilygo-t-dongle-c5
 
       # Build ALL required environments in ONE pio run invocation.
       # A single invocation only cleans once at start, then builds each env
-      # sequentially -- so all five firmware.bin files survive together.
+      # sequentially -- so every firmware.bin survives together.
+      #
+      # Includes both the "-ble" and plain (no-BLE) variant of every board,
+      # plus the M5Atom Lite BLE self-test build and the beacon-tester
+      # firmware, so the web flasher (docs/index.html) can offer every
+      # PlatformIO environment that produces real, distinct firmware. The
+      # web flasher still *defaults* each board's pre-selected choice to
+      # its "-ble" variant -- this only widens what's *available*, not what
+      # gets pre-selected.
       - name: Build all required environments
         run: >
           pio run
           -e m5atom-voices3r-ble
+          -e m5atom-voices3r
           -e esp32dev-ble
+          -e esp32dev
           -e m5atom-lite-ble
+          -e m5atom-lite
+          -e m5atom-lite-ble-selftest
           -e m5atom-echo-ble
+          -e m5atom-echo
           -e m5atom-voice-ble
+          -e m5atom-voice
           -e m5stack-basic-ble
+          -e m5stack-basic
           -e m5stack-core2-aws-ble
+          -e m5stack-core2-aws
           -e m5stickc-plus-se-ble
+          -e m5stickc-plus-se
           -e m5atom-lite-beacon
 
       # Verify required build artifacts
@@ -63,7 +82,7 @@ jobs:
           ls -la .pio/build/ 2>/dev/null || echo "WARNING: .pio/build missing or empty"
 
           # Required envs - failure here blocks deploy
-          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5atom-voices3r-ble m5stack-basic-ble m5stack-core2-aws-ble m5stickc-plus-se-ble m5atom-lite-beacon; do
+          for env in esp32dev-ble esp32dev m5atom-lite-ble m5atom-lite m5atom-lite-ble-selftest m5atom-echo-ble m5atom-echo m5atom-voice-ble m5atom-voice m5atom-voices3r-ble m5atom-voices3r m5stack-basic-ble m5stack-basic m5stack-core2-aws-ble m5stack-core2-aws m5stickc-plus-se-ble m5stickc-plus-se m5atom-lite-beacon; do
             if [ -f ".pio/build/$env/firmware.bin" ]; then
               echo "OK $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
             else
@@ -73,12 +92,14 @@ jobs:
             fi
           done
 
-          # Optional C5 env - advisory only
-          if [ -f ".pio/build/lilygo-t-dongle-c5-ble/firmware.bin" ]; then
-            echo "OK lilygo-t-dongle-c5-ble: $(du -sh .pio/build/lilygo-t-dongle-c5-ble/firmware.bin | cut -f1)"
-          else
-            echo "WARN lilygo-t-dongle-c5-ble: not built (ESP32-C5 experimental - skipping)"
-          fi
+          # Optional C5 envs - advisory only
+          for env in lilygo-t-dongle-c5-ble lilygo-t-dongle-c5; do
+            if [ -f ".pio/build/$env/firmware.bin" ]; then
+              echo "OK $env: $(du -sh .pio/build/$env/firmware.bin | cut -f1)"
+            else
+              echo "WARN $env: not built (ESP32-C5 experimental - skipping)"
+            fi
+          done
 
       # Assemble site
       - name: Prepare firmware directories
@@ -93,7 +114,8 @@ jobs:
           fi
           echo "Found boot_app0.bin at: $BOOT_APP0"
 
-          for env in esp32dev-ble m5atom-lite-ble m5atom-echo-ble m5atom-voice-ble m5stack-basic-ble m5stack-core2-aws-ble m5stickc-plus-se-ble m5atom-lite-beacon; do
+          # Classic-ESP32-offset environments (bootloader @ 0x1000)
+          for env in esp32dev-ble esp32dev m5atom-lite-ble m5atom-lite m5atom-lite-ble-selftest m5atom-echo-ble m5atom-echo m5atom-voice-ble m5atom-voice m5stack-basic-ble m5stack-basic m5stack-core2-aws-ble m5stack-core2-aws m5stickc-plus-se-ble m5stickc-plus-se m5atom-lite-beacon; do
             mkdir -p site/firmware/$env
             cp .pio/build/$env/firmware.bin   site/firmware/$env/
             cp .pio/build/$env/bootloader.bin site/firmware/$env/
@@ -102,23 +124,29 @@ jobs:
             echo "Copied $env ($(du -sh site/firmware/$env/firmware.bin | cut -f1))"
           done
 
-          mkdir -p site/firmware/m5atom-voices3r-ble
-          cp .pio/build/m5atom-voices3r-ble/firmware.bin   site/firmware/m5atom-voices3r-ble/
-          cp .pio/build/m5atom-voices3r-ble/bootloader.bin site/firmware/m5atom-voices3r-ble/
-          cp .pio/build/m5atom-voices3r-ble/partitions.bin site/firmware/m5atom-voices3r-ble/
-          cp "$BOOT_APP0"                                   site/firmware/m5atom-voices3r-ble/boot_app0.bin
-          echo "Copied m5atom-voices3r-ble"
+          # ESP32-S3 environments (bootloader @ 0x0) -- both BLE and non-BLE
+          for env in m5atom-voices3r-ble m5atom-voices3r; do
+            mkdir -p site/firmware/$env
+            cp .pio/build/$env/firmware.bin   site/firmware/$env/
+            cp .pio/build/$env/bootloader.bin site/firmware/$env/
+            cp .pio/build/$env/partitions.bin site/firmware/$env/
+            cp "$BOOT_APP0"                   site/firmware/$env/boot_app0.bin
+            echo "Copied $env"
+          done
 
-          if [ -f ".pio/build/lilygo-t-dongle-c5-ble/firmware.bin" ]; then
-            mkdir -p site/firmware/lilygo-t-dongle-c5-ble
-            cp .pio/build/lilygo-t-dongle-c5-ble/firmware.bin   site/firmware/lilygo-t-dongle-c5-ble/
-            cp .pio/build/lilygo-t-dongle-c5-ble/bootloader.bin site/firmware/lilygo-t-dongle-c5-ble/
-            cp .pio/build/lilygo-t-dongle-c5-ble/partitions.bin site/firmware/lilygo-t-dongle-c5-ble/
-            cp "$BOOT_APP0"                                      site/firmware/lilygo-t-dongle-c5-ble/boot_app0.bin
-            echo "Copied lilygo-t-dongle-c5-ble"
-          else
-            echo "WARN lilygo-t-dongle-c5-ble build not found - skipping"
-          fi
+          # ESP32-C5 environments (bootloader @ 0x0, experimental -- only copy if built)
+          for env in lilygo-t-dongle-c5-ble lilygo-t-dongle-c5; do
+            if [ -f ".pio/build/$env/firmware.bin" ]; then
+              mkdir -p site/firmware/$env
+              cp .pio/build/$env/firmware.bin   site/firmware/$env/
+              cp .pio/build/$env/bootloader.bin site/firmware/$env/
+              cp .pio/build/$env/partitions.bin site/firmware/$env/
+              cp "$BOOT_APP0"                   site/firmware/$env/boot_app0.bin
+              echo "Copied $env"
+            else
+              echo "WARN $env build not found - skipping"
+            fi
+          done
 
       - name: Generate manifests
         run: |
@@ -147,54 +175,82 @@ jobs:
           MANIFEST
           }
 
-          gen_esp32_manifest "esp32dev-ble"          "Flock You - Generic ESP32 DevKit (BLE)"
-          gen_esp32_manifest "m5atom-lite-ble"       "Flock You - M5Atom Lite (BLE)"
-          gen_esp32_manifest "m5atom-echo-ble"       "Flock You - M5Atom Echo (BLE)"
-          gen_esp32_manifest "m5atom-voice-ble"      "Flock You - M5Atom Voice (BLE)"
-          gen_esp32_manifest "m5stack-basic-ble"     "Flock You - M5Stack Basic Core v2.7 (BLE)"
-          gen_esp32_manifest "m5stack-core2-aws-ble" "Flock You - M5Stack Core2 For AWS (BLE)"
-          gen_esp32_manifest "m5stickc-plus-se-ble"  "Flock You - M5StickC Plus SE (BLE)"
-          gen_esp32_manifest "m5atom-lite-beacon"    "Flock You - Beacon Tester (M5Atom Lite)"
-
-          cat > site/manifest-m5atom-voices3r-ble.json << MANIFEST
+          gen_s3_manifest() {
+            local env=$1
+            local name=$2
+            cat > site/manifest-${env}.json << MANIFEST
           {
-            "name": "Flock You - M5Atom VoiceS3R (BLE, ESP32-S3)",
+            "name": "${name}",
             "version": "latest",
             "new_install_prompt_erase": true,
             "builds": [
               {
                 "chipFamily": "ESP32-S3",
                 "parts": [
-                  { "path": "firmware/m5atom-voices3r-ble/bootloader.bin", "offset": 0 },
-                  { "path": "firmware/m5atom-voices3r-ble/partitions.bin", "offset": 32768 },
-                  { "path": "firmware/m5atom-voices3r-ble/boot_app0.bin",  "offset": 57344 },
-                  { "path": "firmware/m5atom-voices3r-ble/firmware.bin",   "offset": 65536 }
+                  { "path": "firmware/${env}/bootloader.bin", "offset": 0 },
+                  { "path": "firmware/${env}/partitions.bin", "offset": 32768 },
+                  { "path": "firmware/${env}/boot_app0.bin",  "offset": 57344 },
+                  { "path": "firmware/${env}/firmware.bin",   "offset": 65536 }
                 ]
               }
             ]
           }
           MANIFEST
+          }
 
-          if [ -d "site/firmware/lilygo-t-dongle-c5-ble" ]; then
-            cat > site/manifest-lilygo-t-dongle-c5-ble.json << MANIFEST
+          gen_c5_manifest() {
+            local env=$1
+            local name=$2
+            cat > site/manifest-${env}.json << MANIFEST
           {
-            "name": "Flock You - LILYGO T-Dongle C5 (BLE, ESP32-C5)",
+            "name": "${name}",
             "version": "latest",
             "new_install_prompt_erase": true,
             "builds": [
               {
                 "chipFamily": "ESP32-C5",
                 "parts": [
-                  { "path": "firmware/lilygo-t-dongle-c5-ble/bootloader.bin", "offset": 0 },
-                  { "path": "firmware/lilygo-t-dongle-c5-ble/partitions.bin", "offset": 32768 },
-                  { "path": "firmware/lilygo-t-dongle-c5-ble/boot_app0.bin",  "offset": 57344 },
-                  { "path": "firmware/lilygo-t-dongle-c5-ble/firmware.bin",   "offset": 65536 }
+                  { "path": "firmware/${env}/bootloader.bin", "offset": 0 },
+                  { "path": "firmware/${env}/partitions.bin", "offset": 32768 },
+                  { "path": "firmware/${env}/boot_app0.bin",  "offset": 57344 },
+                  { "path": "firmware/${env}/firmware.bin",   "offset": 65536 }
                 ]
               }
             ]
           }
           MANIFEST
+          }
+
+          gen_esp32_manifest "esp32dev-ble"          "Flock You - Generic ESP32 DevKit (BLE)"
+          gen_esp32_manifest "esp32dev"               "Flock You - Generic ESP32 DevKit (No BLE)"
+          gen_esp32_manifest "m5atom-lite-ble"       "Flock You - M5Atom Lite (BLE)"
+          gen_esp32_manifest "m5atom-lite"            "Flock You - M5Atom Lite (No BLE)"
+          gen_esp32_manifest "m5atom-lite-ble-selftest" "Flock You - M5Atom Lite (BLE Self-Test)"
+          gen_esp32_manifest "m5atom-echo-ble"       "Flock You - M5Atom Echo (BLE)"
+          gen_esp32_manifest "m5atom-echo"            "Flock You - M5Atom Echo (No BLE)"
+          gen_esp32_manifest "m5atom-voice-ble"      "Flock You - M5Atom Voice (BLE)"
+          gen_esp32_manifest "m5atom-voice"           "Flock You - M5Atom Voice (No BLE)"
+          gen_esp32_manifest "m5stack-basic-ble"     "Flock You - M5Stack Basic Core v2.7 (BLE)"
+          gen_esp32_manifest "m5stack-basic"          "Flock You - M5Stack Basic Core v2.7 (No BLE)"
+          gen_esp32_manifest "m5stack-core2-aws-ble" "Flock You - M5Stack Core2 For AWS (BLE)"
+          gen_esp32_manifest "m5stack-core2-aws"      "Flock You - M5Stack Core2 For AWS (No BLE)"
+          gen_esp32_manifest "m5stickc-plus-se-ble"  "Flock You - M5StickC Plus SE (BLE)"
+          gen_esp32_manifest "m5stickc-plus-se"       "Flock You - M5StickC Plus SE (No BLE)"
+          gen_esp32_manifest "m5atom-lite-beacon"    "Flock You - Beacon Tester (M5Atom Lite)"
+
+          gen_s3_manifest "m5atom-voices3r-ble" "Flock You - M5Atom VoiceS3R (BLE, ESP32-S3)"
+          gen_s3_manifest "m5atom-voices3r"      "Flock You - M5Atom VoiceS3R (No BLE, ESP32-S3)"
+
+          if [ -d "site/firmware/lilygo-t-dongle-c5-ble" ]; then
+            gen_c5_manifest "lilygo-t-dongle-c5-ble" "Flock You - LILYGO T-Dongle C5 (BLE, ESP32-C5)"
             echo "Generated manifest-lilygo-t-dongle-c5-ble.json"
+          else
+            echo "WARN Skipping C5 BLE manifest (firmware not built)"
+          fi
+
+          if [ -d "site/firmware/lilygo-t-dongle-c5" ]; then
+            gen_c5_manifest "lilygo-t-dongle-c5" "Flock You - LILYGO T-Dongle C5 (No BLE, ESP32-C5)"
+            echo "Generated manifest-lilygo-t-dongle-c5.json"
           else
             echo "WARN Skipping C5 manifest (firmware not built)"
           fi

@@ -385,49 +385,79 @@ document.getElementById('pane-flash').classList.add('active');
 // and always defaults back to the normal detector — the beacon tester (or
 // any other alt firmware) must be explicitly opted into every time a board
 // is (re)selected, so nobody accidentally flashes a non-detector firmware.
+// A shared "no-BLE" variant descriptor generator — every board's BLE build
+// is the recommended default (`normal`), but the plain WiFi-only build is
+// still a real, meaningfully-different firmware here (unlike eye-spy, where
+// ENABLE_BLE_SCAN/BLE_COEX_MODE don't gate any code at all — see that
+// repo's own web flasher for why it does NOT offer a "no-BLE" choice).
+function noBleVariant(manifest, chip){
+  return {
+    id:'noble', manifest, chip,
+    label:'Detector (WiFi only, no BLE)',
+    desc:'Same detector without BLE scanning compiled in — smaller/simpler build for setups where BLE tracker detection isn\'t needed.'
+  };
+}
+
 const BOARDS = {
   'esp32dev': {
     name:'Generic ESP32 DevKit', chip:'ESP32',
-    normal:{manifest:'manifest-esp32dev-ble.json'}
+    normal:{manifest:'manifest-esp32dev-ble.json'},
+    extra:[ noBleVariant('manifest-esp32dev.json', 'ESP32') ]
   },
   'm5atom-lite': {
     name:'M5Stack ATOM Lite', chip:'ESP32',
     normal:{manifest:'manifest-m5atom-lite-ble.json'},
-    extra:[{
-      id:'beacon', manifest:'manifest-m5atom-lite-beacon.json',
-      label:'🧪 Beacon Tester', chip:'ESP32 · Test Tool',
-      desc:'Broadcasts fake Flock WiFi/BLE signals so you can verify a SEPARATE real detector at home — no need to go find an actual camera. Not a detector itself.'
-    }]
+    extra:[
+      noBleVariant('manifest-m5atom-lite.json', 'ESP32'),
+      {
+        id:'selftest', manifest:'manifest-m5atom-lite-ble-selftest.json',
+        label:'🧪 BLE Self-Test', chip:'ESP32 · Test Tool',
+        desc:'Single-board BLE pipeline self-test — periodically self-advertises the 3 Flock BLE signatures and picks them back up via its own scan. NEVER use as a real detector.'
+      },
+      {
+        id:'beacon', manifest:'manifest-m5atom-lite-beacon.json',
+        label:'🧪 Beacon Tester', chip:'ESP32 · Test Tool',
+        desc:'Broadcasts fake Flock WiFi/BLE signals so you can verify a SEPARATE real detector at home — no need to go find an actual camera. Not a detector itself.'
+      }
+    ]
   },
   'm5atom-echo': {
     name:'M5Stack ATOM Echo', chip:'ESP32',
-    normal:{manifest:'manifest-m5atom-echo-ble.json'}
+    normal:{manifest:'manifest-m5atom-echo-ble.json'},
+    extra:[ noBleVariant('manifest-m5atom-echo.json', 'ESP32') ]
   },
   'm5atom-voice': {
     name:'M5Stack ATOM Voice', chip:'ESP32',
-    normal:{manifest:'manifest-m5atom-voice-ble.json'}
+    normal:{manifest:'manifest-m5atom-voice-ble.json'},
+    extra:[ noBleVariant('manifest-m5atom-voice.json', 'ESP32') ]
   },
   'm5atom-voices3r': {
     name:'M5Atom VoiceS3R', chip:'ESP32-S3',
-    normal:{manifest:'manifest-m5atom-voices3r-ble.json'}
+    normal:{manifest:'manifest-m5atom-voices3r-ble.json'},
+    extra:[ noBleVariant('manifest-m5atom-voices3r.json', 'ESP32-S3') ]
   },
   'm5stack-basic': {
     name:'M5Stack Basic Core v2.7', chip:'ESP32',
-    normal:{manifest:'manifest-m5stack-basic-ble.json'}
+    normal:{manifest:'manifest-m5stack-basic-ble.json'},
+    extra:[ noBleVariant('manifest-m5stack-basic.json', 'ESP32') ]
   },
   'm5stack-core2-aws': {
     name:'M5Stack Core2 For AWS', chip:'ESP32 · 8 MB PSRAM',
-    normal:{manifest:'manifest-m5stack-core2-aws-ble.json'}
+    normal:{manifest:'manifest-m5stack-core2-aws-ble.json'},
+    extra:[ noBleVariant('manifest-m5stack-core2-aws.json', 'ESP32 · 8 MB PSRAM') ]
   },
   'm5stickc-plus-se': {
     name:'M5StickC Plus SE', chip:'ESP32',
-    normal:{manifest:'manifest-m5stickc-plus-se-ble.json'}
+    normal:{manifest:'manifest-m5stickc-plus-se-ble.json'},
+    extra:[ noBleVariant('manifest-m5stickc-plus-se.json', 'ESP32') ]
   },
   'lilygo-t-dongle-c5': {
     name:'LILYGO T-Dongle C5', chip:'ESP32-C5 · Experimental',
-    normal:{manifest:'manifest-lilygo-t-dongle-c5-ble.json'}
+    normal:{manifest:'manifest-lilygo-t-dongle-c5-ble.json'},
+    extra:[ noBleVariant('manifest-lilygo-t-dongle-c5.json', 'ESP32-C5 · Experimental') ]
   },
 };
+
 
 // ── Step 2: board selector ──
 function selectBoard(el, boardId){

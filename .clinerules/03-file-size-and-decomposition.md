@@ -44,3 +44,38 @@ that discipline going forward.
   be expressed as one additional `build_flags` entry on a shared pattern
   instead (see how `-DBLE_SELF_TEST=1` layers on top of the same
   BLE_COEX_MODE config as the production `-ble` environments).
+
+## Web flasher (`docs/index.html`) firmware-variant convention
+
+Every PlatformIO environment that represents a genuinely distinct,
+user-flashable firmware is built in CI (`.github/workflows/build-firmware.yml`)
+and exposed in the web flasher, not just the recommended default. Concretely:
+
+- **All 18 non-experimental environments** (every `-ble` and non-`-ble` pair
+  for each board, plus `m5atom-lite-ble-selftest` and `m5atom-lite-beacon`)
+  are built and required in CI's "Verify build artifacts" step; the two
+  experimental `lilygo-t-dongle-c5[-ble]` environments are built in a
+  separate `continue-on-error: true` step and are advisory-only.
+- In `docs/index.html`'s `BOARDS` object, each board's `normal` entry is
+  always its `-ble` build (BLE-vs-no-BLE is a real, meaningful compile-time
+  difference in this project — see `fy_detect.h`/`main.cpp`'s
+  `ENABLE_BLE_SCAN`/`BLE_COEX_MODE` gating). Every board also gets a
+  `noBleVariant()` entry in its `extra[]` array so the plain WiFi-only build
+  remains selectable for anyone who wants the smaller/simpler firmware.
+  `m5atom-lite` additionally exposes the `m5atom-lite-ble-selftest` and
+  `m5atom-lite-beacon` test-tool firmwares in the same `extra[]` array.
+  `renderFirmwareVariants()` in `docs/index.html`'s JS already generically
+  iterates `extra[]`, so adding a new variant to a board only requires a
+  data change, not new JS logic.
+- **This is NOT mirrored 1:1 in the sibling `eye-spy` project.** That
+  repo's `-ble`-suffixed environments are confirmed vestigial (its
+  `ENABLE_BLE_SCAN`/`BLE_COEX_MODE` flags don't gate any code — BLE
+  scanning always runs unconditionally there), so exposing both as if they
+  were a meaningful choice would be misleading. eye-spy's web flasher
+  instead just points each of the 3 boards that have a `-ble` env
+  (`m5stack-basic`, `m5stack-core2-aws`, `m5stickc-plus-se`) at that env's
+  manifest as its *only* option, satisfying "default to BLE" without a
+  fake duplicate choice. If eye-spy ever wires up a real BLE-coexistence
+  mode that its build flags actually gate, this discrepancy should be
+  revisited.
+
