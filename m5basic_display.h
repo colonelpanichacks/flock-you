@@ -365,18 +365,51 @@ static void m5basicScanning(uint8_t ch, const char* modeName, int detCount,
                               unsigned long runtimeMs, bool spiffsOk,
                               int ouiHighCnt, int ouiMfrCnt) {
     if (mb_lastAlertMs != 0 && (millis() - mb_lastAlertMs) < MB_ALERT_HOLD_MS) return;
-    // Redraw at ~4Hz (was 1Hz) so the runtime clock / log-mirror strip feel
-    // genuinely real-time rather than visibly ticking once per second.
-    bool stale = (millis() - mb_lastDrawMs) >= 250;
 
-    bool changed = (ch != mb_lastCh) || (detCount != mb_lastDetCount) || mb_needsRedraw || stale;
-    if (!changed) return;
+    // dataChanged = the scan results themselves changed (channel hopped,
+    // a new detection landed, or a caller explicitly asked for a redraw).
+    // stale = purely time-based — fires every ~250ms so the Runtime clock
+    // / log-mirror strip feel real-time even with zero detections.
+    bool dataChanged = (ch != mb_lastCh) || (detCount != mb_lastDetCount) || mb_needsRedraw;
+    bool stale        = (millis() - mb_lastDrawMs) >= 250;
+    if (!dataChanged && !stale) return;
+
+    // WHY THIS SPLIT EXISTS: this function used to treat "stale" exactly
+    // like "dataChanged" and always began with a fillRect(BLACK) over the
+    // ENTIRE content area before redrawing everything. Every piece of text
+    // drawn below uses an OPAQUE background color (setTextColor(fg,
+    // MB_BLACK)) with fixed-width format specifiers, so redrawing just the
+    // Runtime/SPIFFS line and log strip in place already fully overwrites
+    // the previous frame — no separate clear is needed for THAT case. But
+    // because the old code cleared the whole content area on every single
+    // stale tick too, it produced a full-content black flash roughly 4
+    // times a second, continuously, for as long as the device was
+    // scanning — this was the reported "screen flickering on update."
+    // The big fillRect below (kept, in the dataChanged branch) is still
+    // required there: the "Targets found!"/"Monitoring..." status text and
+    // the detection-summary block differ in length/line-count between
+    // states and would leave stale pixels behind without it. Only the
+    // much-rarer dataChanged redraw pays that cost now, not every tick.
+    if (!dataChanged) {
+        mb_lastDrawMs = millis();
+        int ry = MB_BTN_Y - 40;
+        mb_hline(ry); ry += 6;
+        char el[12];
+        mb_fmtMs(runtimeMs, el, sizeof(el));
+        M5.Display.setTextColor(MB_GREY, MB_BLACK);
+        M5.Display.setCursor(8, ry);
+        M5.Display.printf("Runtime: %-10s  SPIFFS: %-3s", el, spiffsOk ? "OK" : "ERR");
+        mb_drawLogStrip();
+        return;
+    }
+
     mb_lastDrawMs = millis();
     mb_lastCh = ch; mb_lastDetCount = detCount;
     mb_needsRedraw = false;
     mb_inAlert = false;
 
     // Header
+
     char hdrR[28];
     snprintf(hdrR, sizeof(hdrR), "Ch:%-2u  Det:%-3d", (unsigned)ch, detCount);
     mb_header("FLOCK-YOU  SCANNING", hdrR, MB_DARK_GRN, MB_WHITE);

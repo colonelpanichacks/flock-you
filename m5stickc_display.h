@@ -204,18 +204,49 @@ static void m5stickcInit() {
 // ── Scanning / idle screen ────────────────────────────────────────────────────
 // Call every loop() iteration — internally throttled so it's cheap:
 //   - skipped entirely while a detection alert is still fresh (MSC_ALERT_HOLD_MS)
-//   - otherwise forced to redraw at least 1x/sec so the Runtime clock visibly
-//     ticks, so the screen never looks frozen even with zero detections.
+//   - a genuine dataChanged (channel hop / new detection / explicit redraw
+//     request) does a full clear + redraw of the content area
+//   - a purely time-based "stale" tick (~250ms) only refreshes the
+//     Runtime/SPIFFS line in place, so the clock visibly ticks without a
+//     full-screen redraw every time
 static void m5stickcScanning(uint8_t ch, const char* mode, int detCount,
                                unsigned long runtimeMs, bool spiffsOk,
                                int ouiHi, int ouiMfr) {
     if (msc_lastAlertMs != 0 && (millis() - msc_lastAlertMs) < MSC_ALERT_HOLD_MS) return;
-    // Redraw at ~4Hz (was 1Hz) so the runtime clock / log-mirror strip feel
-    // genuinely real-time rather than visibly ticking once per second.
-    bool stale = (millis() - msc_lastDrawMs) >= 250;
 
-    bool chg = (ch != msc_lastCh) || (detCount != msc_lastDetCount) || msc_needsRedraw || stale;
-    if (!chg) return;
+    // dataChanged = the scan results themselves changed (channel hopped, a
+    // new detection landed, or a caller explicitly asked for a redraw).
+    // stale = purely time-based — fires every ~250ms so the Runtime clock
+    // feels real-time even with zero detections.
+    bool dataChanged = (ch != msc_lastCh) || (detCount != msc_lastDetCount) || msc_needsRedraw;
+    bool stale        = (millis() - msc_lastDrawMs) >= 250;
+    if (!dataChanged && !stale) return;
+
+    // WHY THIS SPLIT EXISTS: this function used to treat "stale" exactly
+    // like "dataChanged" and always began with a fillRect(BLACK) over the
+    // ENTIRE content area before redrawing everything. Every piece of text
+    // drawn below uses an OPAQUE background color (setTextColor(fg,
+    // MSC_BLACK)) with fixed-width format specifiers, so redrawing just the
+    // Runtime/SPIFFS line in place already fully overwrites the previous
+    // frame — no separate clear is needed for THAT case. But because the
+    // old code cleared the whole content area on every single stale tick
+    // too, it produced a full-content black flash roughly 4 times a
+    // second, continuously, for as long as the device was scanning — this
+    // was the reported "screen flickering on update." The big fillRect
+    // below (kept, in the dataChanged branch) is still required there: the
+    // "Targets found!"/"Monitoring..." status text and the detection
+    // summary block differ in length/line-count between states and would
+    // leave stale pixels behind without it. Only the much-rarer
+    // dataChanged redraw pays that cost now, not every tick.
+    if (!dataChanged) {
+        msc_lastDrawMs = millis();
+        char el[12]; msc_fmtMs(runtimeMs, el, sizeof(el));
+        M5.Display.setTextColor(MSC_GREY, MSC_BLACK);
+        M5.Display.setCursor(3, MSC_BTN_Y - 13);
+        M5.Display.printf("Runtime: %-8s  SPIFFS: %-3s", el, spiffsOk ? "OK" : "ERR");
+        return;
+    }
+
     msc_lastDrawMs = millis();
     msc_lastCh = ch; msc_lastDetCount = detCount; msc_needsRedraw = false;
 
