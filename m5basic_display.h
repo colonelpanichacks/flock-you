@@ -50,6 +50,14 @@ static constexpr int MB_H       = 240;
 static constexpr int MB_HDR_H   = 18;   // header bar height
 static constexpr int MB_BTN_Y   = 214;  // button label start y
 static constexpr int MB_BTN_H   = 26;   // button bar height
+// Log-strip height: 5 lines * 7px + 3px top pad + 2px margin = 40. Grew from
+// a hardcoded 24 (3 lines) after user feedback asked for a bigger on-screen
+// log window on this board's larger 320x240 display (see mb_drawLogStrip()).
+static constexpr int MB_LOG_H     = 40;
+// Height reserved for the "Runtime: ... SPIFFS: ..." line + its separator
+// hline, drawn directly above the log strip.
+static constexpr int MB_RUNTIME_H = 13;
+
 
 // ── State ─────────────────────────────────────────────────────────────────────
 static uint8_t mb_brightness    = 160;
@@ -104,7 +112,11 @@ static unsigned long mb_vibNextMs   = 0;      // millis() timestamp of next stat
 // dualPrintf()/dualPrintln() in main.cpp.  Purely additive: it only draws in
 // a small reserved strip just above the button bar and never touches any
 // other on-screen state.
-#define MB_LOG_LINES    3
+// Grew from 3 to 5 lines — user feedback asked for a bigger on-screen log
+// window on this board's larger 320x240 display; MB_LOG_H above was grown
+// to match. The StickC Plus SE (240x135, m5stickc_display.h) has no log
+// strip at all and is unaffected.
+#define MB_LOG_LINES    5
 #define MB_LOG_LINE_LEN 53   // ~320px / 6px-per-char at text size 1
 static char mb_logBuf[MB_LOG_LINES][MB_LOG_LINE_LEN];
 // Guards mb_logBuf: mb_logAdd() is called from the scan/main task (via
@@ -113,6 +125,14 @@ static char mb_logBuf[MB_LOG_LINES][MB_LOG_LINE_LEN];
 // same buffer. Without this, a redraw racing a concurrent shift/memcpy could
 // read a torn/partial row. Mirrors eye-spy's mbe_logMux fix.
 static portMUX_TYPE mb_logMux = portMUX_INITIALIZER_UNLOCKED;
+// Bumped every time a new line is actually appended. mb_drawLogStrip()
+// compares this against the version it last drew and skips its entire
+// fillRect(BLACK)+redraw when nothing has changed — see that function's
+// comment for why (it used to unconditionally black-flash this whole strip
+// on every ~250ms "stale" tick even when the log content was identical,
+// which was reported as the log box "still flickering" after the
+// surrounding scanning-screen flicker was already fixed).
+static volatile uint32_t mb_logVersion = 0;
 
 // Appends text to the on-screen log ring buffer.  Splits on embedded '\n' so
 // a single dualPrintf()/dualPrintln() call — which may itself end in '\n' or
@@ -130,12 +150,14 @@ static void mb_logAdd(const char* text) {
                 memcpy(mb_logBuf[i], mb_logBuf[i - 1], MB_LOG_LINE_LEN);
             memcpy(mb_logBuf[0], p, n);
             mb_logBuf[0][n] = '\0';
+            mb_logVersion++;
             portEXIT_CRITICAL(&mb_logMux);
         }
         if (!nl) break;
         p = nl + 1;
     }
 }
+
 
 
 
@@ -287,21 +309,39 @@ static void mb_drawRange(int x, int y, int8_t rssi) {
 
 // Draws the reserved on-screen serial-mirror log strip.  Called just before
 // the button bar in both m5basicScanning() and m5basicDetection() — the
-// region is 24px tall, ending exactly at MB_BTN_Y, so it never overlaps the
-// button bar.
-static void mb_drawLogStrip() {
-    // Snapshot the shared ring buffer under the lock, then do all the
-    // (slow, SPI-bound) drawing from the local copy outside it — this
-    // function only ever runs on the UI task now, but mb_logAdd() can still
-    // be called concurrently from the scan/main task via dualPrintf()/
-    // dualPrintln(), so the buffer itself must stay mutex-protected.
+// region is MB_LOG_H px tall, ending exactly at MB_BTN_Y, so it never
+// overlaps the button bar.
+//
+// force=true always redraws (used right after the caller has already
+// cleared this whole region as part of a bigger fillRect, e.g. the
+// contentChanged path in m5basicScanning() or m5basicDetection() — the
+// text MUST be redrawn there or it stays blank/black). force=false (used
+// by the ~250ms "stale" tick) skips the redraw entirely when the log
+// content hasn't actually changed since the last draw, comparing
+// mb_logVersion — this function used to unconditionally
+// fillRect(BLACK)+redraw this whole strip on every single stale tick even
+// when nothing in it had changed, producing a small but continuous
+// black-flash reported by a user as "the log box still flickering" after
+// the surrounding scanning-screen flicker was already fixed.
+static uint32_t mb_logDrawnVersion = 0xFFFFFFFFu;   // force first draw
+static void mb_drawLogStrip(bool force = false) {
+    uint32_t ver;
     char localBuf[MB_LOG_LINES][MB_LOG_LINE_LEN];
+    // Snapshot the shared ring buffer (and its version) under the lock, then
+    // do all the (slow, SPI-bound) drawing from the local copy outside it —
+    // this function only ever runs on the UI task now, but mb_logAdd() can
+    // still be called concurrently from the scan/main task via dualPrintf()/
+    // dualPrintln(), so the buffer itself must stay mutex-protected.
     portENTER_CRITICAL(&mb_logMux);
+    ver = mb_logVersion;
     memcpy(localBuf, mb_logBuf, sizeof(mb_logBuf));
     portEXIT_CRITICAL(&mb_logMux);
 
-    int y0 = MB_BTN_Y - 24;
-    M5.Display.fillRect(0, y0, MB_W, 24, MB_BLACK);
+    if (!force && ver == mb_logDrawnVersion) return;
+    mb_logDrawnVersion = ver;
+
+    int y0 = MB_BTN_Y - MB_LOG_H;
+    M5.Display.fillRect(0, y0, MB_W, MB_LOG_H, MB_BLACK);
     mb_hline(y0, MB_DK_GREY);
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(0x4A69, MB_BLACK);   // dim slate — doesn't compete with primary content
@@ -412,13 +452,15 @@ static void m5basicScanning(uint8_t ch, const char* modeName, int detCount,
     if (!contentChanged) {
         if (stale) {
             mb_lastDrawMs = millis();
-            int ry = MB_BTN_Y - 40;
+            int ry = MB_BTN_Y - MB_LOG_H - MB_RUNTIME_H;
             mb_hline(ry); ry += 6;
             char el[12];
             mb_fmtMs(runtimeMs, el, sizeof(el));
             M5.Display.setTextColor(MB_GREY, MB_BLACK);
             M5.Display.setCursor(8, ry);
             M5.Display.printf("Runtime: %-10s  SPIFFS: %-3s", el, spiffsOk ? "OK" : "ERR");
+            // force=false: skips the redraw entirely unless a new log line
+            // actually arrived since the last draw (see mb_drawLogStrip()).
             mb_drawLogStrip();
         }
         return;
@@ -491,7 +533,7 @@ static void m5basicScanning(uint8_t ch, const char* modeName, int detCount,
     }
 
     // Runtime + SPIFFS
-    int ry = MB_BTN_Y - 40;
+    int ry = MB_BTN_Y - MB_LOG_H - MB_RUNTIME_H;
     mb_hline(ry); ry += 6;
     char el[12];
     mb_fmtMs(runtimeMs, el, sizeof(el));
@@ -499,9 +541,10 @@ static void m5basicScanning(uint8_t ch, const char* modeName, int detCount,
     M5.Display.setCursor(8, ry);
     M5.Display.printf("Runtime: %-10s  SPIFFS: %s", el, spiffsOk ? "OK" : "ERR");
 
-    mb_drawLogStrip();
+    mb_drawLogStrip(true);   // force: this whole region was just fillRect(BLACK)'d above
     mb_btnBar("SAVE", "BRIGHT", "HOP CH");
 }
+
 
 // ── Detection alert screen ────────────────────────────────────────────────────
 // Call after each detection is processed from the alert queue.
@@ -624,8 +667,9 @@ static void m5basicDetection(const char* method, const char* mac,
     else
         M5.Display.print("LOW — possible false positive");
 
-    mb_drawLogStrip();
+    mb_drawLogStrip(true);   // force: the whole content area was just fillRect(BLACK)'d for this alert screen
     mb_btnBar("SAVE", "BRIGHT", "CLEAR");
+
 
     // Core2 For AWS: vibration alert — non-blocking. Triggers the pattern;
     // m5basicVibrationTick() (called every loop() iteration) steps it using
