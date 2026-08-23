@@ -202,63 +202,77 @@ static void m5stickcInit() {
 }
 
 // ── Scanning / idle screen ────────────────────────────────────────────────────
-// Call every loop() iteration — internally throttled so it's cheap:
-//   - skipped entirely while a detection alert is still fresh (MSC_ALERT_HOLD_MS)
-//   - a genuine dataChanged (channel hop / new detection / explicit redraw
-//     request) does a full clear + redraw of the content area
-//   - a purely time-based "stale" tick (~250ms) only refreshes the
-//     Runtime/SPIFFS line in place, so the clock visibly ticks without a
-//     full-screen redraw every time
+// Call every loop() iteration — internally throttled so it's cheap. Redraw
+// granularity is split THREE ways so a WiFi channel hop (as often as every
+// ~100ms — CHANNEL_DWELL_MS in main.cpp) never triggers the expensive
+// full-body clear+redraw below:
+//   - headerChanged:  channel or detection count shown in the header bar
+//                      changed — cheap header-only repaint (the header is
+//                      filled with its own solid background color
+//                      immediately before its text is drawn, so it never
+//                      shows black and produces no visible flash).
+//   - contentChanged: an actual new detection landed, or a caller
+//                      explicitly asked for a redraw (msc_needsRedraw) —
+//                      the only case that pays for the full black
+//                      clear + redraw of the body content area.
+//   - stale:          purely time-based (~250ms) so the Runtime clock
+//                      feels real-time even with zero detections.
 static void m5stickcScanning(uint8_t ch, const char* mode, int detCount,
                                unsigned long runtimeMs, bool spiffsOk,
                                int ouiHi, int ouiMfr) {
     if (msc_lastAlertMs != 0 && (millis() - msc_lastAlertMs) < MSC_ALERT_HOLD_MS) return;
 
-    // dataChanged = the scan results themselves changed (channel hopped, a
-    // new detection landed, or a caller explicitly asked for a redraw).
-    // stale = purely time-based — fires every ~250ms so the Runtime clock
-    // feels real-time even with zero detections.
-    bool dataChanged = (ch != msc_lastCh) || (detCount != msc_lastDetCount) || msc_needsRedraw;
-    bool stale        = (millis() - msc_lastDrawMs) >= 250;
-    if (!dataChanged && !stale) return;
+    bool headerChanged  = (ch != msc_lastCh) || (detCount != msc_lastDetCount);
+    bool contentChanged = (detCount != msc_lastDetCount) || msc_needsRedraw;
+    bool stale          = (millis() - msc_lastDrawMs) >= 250;
+    if (!headerChanged && !contentChanged && !stale) return;
 
-    // WHY THIS SPLIT EXISTS: this function used to treat "stale" exactly
-    // like "dataChanged" and always began with a fillRect(BLACK) over the
-    // ENTIRE content area before redrawing everything. Every piece of text
-    // drawn below uses an OPAQUE background color (setTextColor(fg,
-    // MSC_BLACK)) with fixed-width format specifiers, so redrawing just the
-    // Runtime/SPIFFS line in place already fully overwrites the previous
-    // frame — no separate clear is needed for THAT case. But because the
-    // old code cleared the whole content area on every single stale tick
-    // too, it produced a full-content black flash roughly 4 times a
-    // second, continuously, for as long as the device was scanning — this
-    // was the reported "screen flickering on update." The big fillRect
-    // below (kept, in the dataChanged branch) is still required there: the
-    // "Targets found!"/"Monitoring..." status text and the detection
-    // summary block differ in length/line-count between states and would
-    // leave stale pixels behind without it. Only the much-rarer
-    // dataChanged redraw pays that cost now, not every tick.
-    if (!dataChanged) {
-        msc_lastDrawMs = millis();
-        char el[12]; msc_fmtMs(runtimeMs, el, sizeof(el));
-        M5.Display.setTextColor(MSC_GREY, MSC_BLACK);
-        M5.Display.setCursor(3, MSC_BTN_Y - 13);
-        M5.Display.printf("Runtime: %-8s  SPIFFS: %-3s", el, spiffsOk ? "OK" : "ERR");
+    // WHY THIS SPLIT EXISTS: an earlier fix already separated a purely
+    // time-based "stale" clock tick (~250ms) from a genuine data change,
+    // but that fix alone did NOT eliminate the reported flicker — it was
+    // still visible, specifically in the CENTER content area only (header
+    // and button bar were unaffected). Root cause: this function used to
+    // treat "ch != msc_lastCh" (channel changed) as equivalent to a real
+    // detection change, and BOTH took the same path — fillRect(BLACK) over
+    // the ENTIRE content area, then redraw every line from scratch. The
+    // WiFi radio hops channels every CHANNEL_DWELL_MS (currently 100ms, see
+    // main.cpp), so "ch != msc_lastCh" was true almost continuously while
+    // scanning — far more often than the ~250ms stale tick — re-triggering
+    // that expensive full-body black-flash roughly 10x/second. The header
+    // bar is unaffected by this because msc_header() fills its bar with its
+    // own solid background color immediately before drawing text — it never
+    // shows black, so repainting it on every channel hop produces no
+    // visible flash. Now only a genuine contentChanged (new detection /
+    // explicit redraw request) pays for the full body clear+redraw; a bare
+    // channel hop only repaints the header bar.
+    if (headerChanged) {
+        msc_lastCh = ch;
+        char hdrR[22];
+        snprintf(hdrR, sizeof(hdrR), "Ch:%-2u  Det:%-3d", (unsigned)ch, detCount);
+        msc_header("FLOCK-YOU  SCANNING", hdrR, MSC_DARK_GRN, MSC_WHITE);
+    }
+
+    if (!contentChanged) {
+        if (stale) {
+            msc_lastDrawMs = millis();
+            char el[12]; msc_fmtMs(runtimeMs, el, sizeof(el));
+            M5.Display.setTextColor(MSC_GREY, MSC_BLACK);
+            M5.Display.setCursor(3, MSC_BTN_Y - 13);
+            M5.Display.printf("Runtime: %-8s  SPIFFS: %-3s", el, spiffsOk ? "OK" : "ERR");
+        }
         return;
     }
 
     msc_lastDrawMs = millis();
-    msc_lastCh = ch; msc_lastDetCount = detCount; msc_needsRedraw = false;
+    msc_lastDetCount = detCount; msc_needsRedraw = false;
 
     // Red LED: on when at least one target has been detected
     msc_setLED(detCount > 0);
 
-    char hdrR[22];
-    snprintf(hdrR, sizeof(hdrR), "Ch:%-2u  Det:%-3d", (unsigned)ch, detCount);
-    msc_header("FLOCK-YOU  SCANNING", hdrR, MSC_DARK_GRN, MSC_WHITE);
     M5.Display.fillRect(0, MSC_HDR_H, MSC_W, MSC_BTN_Y - MSC_HDR_H, MSC_BLACK);
 
     int y = MSC_HDR_H + 4;
+
 
     // Status
     M5.Display.setTextSize(2);
