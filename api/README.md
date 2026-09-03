@@ -78,6 +78,7 @@ The GPS header row has a **source** dropdown with two options:
 
 ### Detection Management
 - `GET /api/detections` - Get all detections (with optional filtering)
+- `POST /api/flock/dump_session` - Ask the connected device to stream its stored detection table (`{"source": "live"|"prev"}`); records are imported as they arrive
 - `POST /api/detections` - Add new detection from Flock You device
 - `POST /api/clear` - Clear all detections
 

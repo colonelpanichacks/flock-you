@@ -217,6 +217,8 @@ Detections carry `detection_method` and `detection_tier`; the dashboard also kee
 - `GET /api/flock/config` — current per-tier beep state, and asks the device to re-report
 - `POST /api/flock/beep` — `{"tier": 0-4, "enabled": bool}` to mute one tier, or `{"mask": 0-31}` to set all five at once
 
+- `POST /api/flock/dump_session` — `{"source": "live"}` (default) or `{"source": "prev"}`; asks the device to stream its detection table so a standalone run can be pulled into the dashboard after the fact
+
 Commands go to the device as one JSON line over the same USB CDC link the detections come back on. The device answers with an `{"event":"config"}` line, which Flask relays to the browser over the `device_config` socket event — so the switches follow the device's actual state, not the click.
 
 ### GPS wardriving
@@ -317,6 +319,8 @@ pio device monitor
 **With USB + Flask running:** same thing, plus every detection streams live to the dashboard as a JSON line. Flask adds GPS (if configured) and deduplicates across MAC, building the wardriving map as you move.
 
 Both modes work simultaneously — the SPIFFS write path doesn't care if a host is listening.
+
+**Pulling an offline run into the dashboard:** plug the device in afterwards, connect it in the dashboard, and use **Import → Pull current session from device** (the table accumulated since this boot) or **Pull previous session from device** (`/prev_session.json`, the run before the last power cycle). The device answers `{"cmd":"dump_session","source":"live|prev"}` with a `session_begin` line, one `session_det` line per device in the same shape as the SPIFFS records, and a `session_end` line; Flask imports each record as it arrives and reports progress over the `session_dump` socket event. Records carry the on-device hit count but not wall-clock time (the device has no RTC), so imported detections are timestamped at import and get no GPS match.
 
 ---
 
