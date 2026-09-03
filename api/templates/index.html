@@ -907,13 +907,23 @@
             background: rgba(22, 29, 38, 0.8);
             border-radius: 12px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-            overflow: hidden;
+            /* No overflow:hidden here: the Export/Import dropdowns are
+               absolutely positioned inside the header and must be able to
+               hang below a short container (e.g. a single detection).
+               Corner rounding is done on the header and list instead. */
+            overflow: visible;
+            /* backdrop-filter makes this a stacking context, so the dropdown's
+               z-index only competes inside it. Lift the whole container above
+               the map/terminal siblings so an open menu is not painted over. */
+            position: relative;
+            z-index: 2;
             border: 1px solid var(--accent);
             backdrop-filter: blur(10px);
         }
 
         .detections-header {
             background: rgba(17, 22, 29, 0.9);
+            border-radius: 12px 12px 0 0;
             padding: 1rem;
             border-bottom: 1px solid var(--accent);
             display: flex;
@@ -930,6 +940,7 @@
 
         .detections-list {
             max-height: 600px;
+            border-radius: 0 0 12px 12px;
             overflow-y: auto;
             scrollbar-width: thin;
             scrollbar-color: var(--accent) var(--surface-2);
@@ -1853,6 +1864,11 @@
             border-bottom: none;
         }
 
+        /* Header carries the corner radius now; round all four when collapsed. */
+        .detections-container.collapsed .detections-header {
+            border-radius: 12px;
+        }
+
         .map-container, .serial-terminal-container, .oui-search-container {
             margin-bottom: 1.25rem;
         }
@@ -2264,6 +2280,17 @@
 
             .export-dropdown { flex: 1 1 auto; }
             .export-dropdown .export-btn { width: 100%; }
+            /* Narrow buttons + right-anchored 160px menus pushed the left-hand
+               (Export) menu past the viewport edge. Anchor each menu to its
+               own button's left edge and let it grow only as wide as needed,
+               capped so it never leaves the screen. */
+            .export-dropdown .export-dropdown-content {
+                left: 0;
+                right: auto;
+                min-width: 100%;
+                width: max-content;
+                max-width: calc(100vw - 2rem);
+            }
 
             /* Detection cards keep their two rows; the right-hand cluster
                wraps under rather than squeezing the MAC. */
