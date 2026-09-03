@@ -18,6 +18,9 @@ A Flask-based web dashboard for real-time monitoring and analysis of Flock Safet
 - **Location Tagging**: Each detection can include GPS coordinates
 - **Satellite Information**: Display GPS fix quality and satellite count
 
+### Persistence
+Both detection lists live in `api/data/` as pickles. `cumulative_detections.pkl` is the all-time history; `session_detections.pkl` is the current session, saved on every change and reloaded on startup, so restarting the server does not empty the Detections list. The session only resets when you click **Clear**.
+
 ### Data Export
 - **CSV Export**: Download detection data in CSV format
 - **KML Export**: Generate Google Earth compatible KML files
@@ -78,6 +81,7 @@ The GPS header row has a **source** dropdown with two options:
 
 ### Detection Management
 - `GET /api/detections` - Get all detections (with optional filtering)
+- `POST /api/flock/dump_session` - Ask the connected device to stream its stored detection table (`{"source": "live"|"prev"}`); records are imported as they arrive
 - `POST /api/detections` - Add new detection from Flock You device
 - `POST /api/clear` - Clear all detections
 

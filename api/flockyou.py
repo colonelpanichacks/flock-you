@@ -41,6 +41,8 @@ serial_connection = None
 gps_enabled = False
 flock_device_connected = False
 flock_device_port = None
+# Progress of an in-flight dump_session transfer from the device.
+session_dump = {'active': False, 'source': None, 'expected': 0, 'received': 0}
 flock_serial_connection = None
 oui_database = {}
 serial_data_buffer = []
@@ -75,6 +77,7 @@ gps_source = None              # 'serial' | 'gpsd' | None
 # Data storage paths
 DATA_DIR = Path('data')
 CUMULATIVE_DATA_FILE = DATA_DIR / 'cumulative_detections.pkl'
+SESSION_DATA_FILE = DATA_DIR / 'session_detections.pkl'
 SETTINGS_FILE = DATA_DIR / 'settings.json'
 
 # Ensure data directory exists
@@ -103,6 +106,34 @@ def save_cumulative_detections():
         print(f"Saved {len(cumulative_detections)} cumulative detections")
     except Exception as e:
         print(f"Error saving cumulative detections: {e}")
+
+def load_session_detections():
+    """Restore the current session list so a dashboard restart does not wipe
+    it. The session only resets when the user clicks Clear."""
+    global detections, next_detection_id, session_start_time
+    try:
+        if SESSION_DATA_FILE.exists():
+            with open(SESSION_DATA_FILE, 'rb') as f:
+                state = pickle.load(f)
+            detections = state.get('detections', [])
+            next_detection_id = max([d.get('id', 0) for d in detections] + [0]) + 1
+            start = state.get('session_start_time')
+            if start:
+                session_start_time = datetime.fromisoformat(start)
+            print(f"Loaded {len(detections)} session detections "
+                  f"(session started {session_start_time.isoformat(timespec='seconds')})")
+    except Exception as e:
+        print(f"Error loading session detections: {e}")
+        detections = []
+
+def save_session_detections():
+    """Persist the current session list; written on every change."""
+    try:
+        with open(SESSION_DATA_FILE, 'wb') as f:
+            pickle.dump({'detections': detections,
+                         'session_start_time': session_start_time.isoformat()}, f)
+    except Exception as e:
+        print(f"Error saving session detections: {e}")
 
 def load_settings():
     """Load settings from disk"""
@@ -399,7 +430,26 @@ def flock_reader():
                             # Try to parse as detection data
                             try:
                                 data = json.loads(line)
-                                if data.get('event') == 'config':
+                                event = data.get('event')
+                                if event == 'session_begin':
+                                    session_dump.update(active=True, source=data.get('source'),
+                                                        expected=data.get('count', 0), received=0)
+                                    safe_socket_emit('session_dump', {'phase': 'begin', **session_dump})
+                                elif event == 'session_det':
+                                    import_detection_item(data)
+                                    session_dump['received'] += 1
+                                    if session_dump['received'] % 10 == 0:
+                                        safe_socket_emit('session_dump', {'phase': 'progress', **session_dump})
+                                elif event == 'session_end':
+                                    session_dump['active'] = False
+                                    safe_socket_emit('session_dump', {'phase': 'end', **session_dump,
+                                                                      'device_count': data.get('count')})
+                                    print(f"Session dump ({session_dump['source']}): imported {session_dump['received']} detections")
+                                elif event == 'session_error':
+                                    session_dump['active'] = False
+                                    safe_socket_emit('session_dump', {'phase': 'error', **session_dump,
+                                                                      'error': data.get('error', 'unknown')})
+                                elif event == 'config':
                                     # Device reporting its per-tier beep mask.
                                     globals()['device_config'] = data
                                     safe_socket_emit('device_config', data)
@@ -681,6 +731,7 @@ def add_detection_from_serial(data):
                 cum_detection.update(existing_detection)
                 break
         save_cumulative_detections()
+        save_session_detections()
         
         # Emit updated detection
         safe_socket_emit('detection_updated', existing_detection)
@@ -690,7 +741,8 @@ def add_detection_from_serial(data):
         data['id'] = next_detection_id
         next_detection_id += 1
         data['alias'] = ''  # Empty alias by default
-        data['detection_count'] = 1
+        # Imported records (file import, dump_session) carry the device's hit count.
+        data['detection_count'] = int(data.get('detection_count') or 1)
         data['first_seen'] = datetime.now().isoformat()
         data['last_seen'] = datetime.now().isoformat()
         data['detection_tier'] = method_tier(data)
@@ -703,6 +755,7 @@ def add_detection_from_serial(data):
         # Add to cumulative detections
         cumulative_detections.append(data.copy())
         save_cumulative_detections()
+        save_session_detections()
         
         # Emit to connected clients
         safe_socket_emit('new_detection', data)
@@ -1135,6 +1188,26 @@ def set_flock_beep():
     return jsonify({'status': 'success', 'message': msg})
 
 
+@app.route('/api/flock/dump_session', methods=['POST'])
+def dump_flock_session():
+    """Ask the device to stream its detection table over USB.
+
+    Body: {"source": "live"} (default) for the table accumulated since boot,
+       or {"source": "prev"} for /prev_session.json, the previous boot's run.
+    The device answers with session_begin / session_det / session_end lines;
+    flock_reader() imports each record and relays progress on the
+    session_dump socket event.
+    """
+    body = request.get_json(silent=True) or {}
+    source = body.get('source', 'live')
+    if source not in ('live', 'prev'):
+        return jsonify({'status': 'error', 'message': 'source must be "live" or "prev"'}), 400
+    ok, msg = send_device_command({'cmd': 'dump_session', 'source': source})
+    if not ok:
+        return jsonify({'status': 'error', 'message': msg}), 503
+    return jsonify({'status': 'success', 'message': f'Requested {source} session from device'})
+
+
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """Get connection status of both devices"""
@@ -1386,6 +1459,48 @@ def export_kml():
     
     return send_file(filepath, as_attachment=True, download_name=filename)
 
+def import_detection_item(item):
+    """Map one ESP32-format detection record onto the Flask detection schema
+    and add it. Accepts both the on-device session keys (mac, method, tier,
+    count, ssid) and dashboard-export keys (mac_address, detection_method...).
+    Shared by the JSON file import and the live dump_session stream."""
+    # Map ESP32 export fields to Flask detection format
+    method = normalize_method(item.get('method', item.get('detection_method')))
+    data = {
+        'detection_method': method,
+        # This firmware is WiFi-only; the old hardcoded bluetooth_le
+        # mislabelled every imported record.
+        'protocol': item.get('protocol', 'wifi_2_4ghz'),
+        'mac_address': item.get('mac', item.get('mac_address', '')),
+        'device_name': item.get('name', item.get('device_name', '')),
+        'rssi': item.get('rssi', 0),
+        'detection_count': item.get('count', item.get('detection_count', 1)),
+        # Trust an explicit tier from the device, else derive it.
+        'detection_tier': item.get('tier', item.get('detection_tier',
+                                                    METHOD_TIERS.get(method, 0))),
+    }
+    if item.get('channel') is not None:
+        data['channel'] = item['channel']
+    if item.get('ssid'):
+        data['ssid'] = item['ssid']
+
+    # GPS fields from ESP32 wardriving export
+    gps_obj = item.get('gps')
+    if gps_obj and (gps_obj.get('lat') or gps_obj.get('latitude')):
+        data['gps'] = {
+            'latitude': gps_obj.get('lat', gps_obj.get('latitude')),
+            'longitude': gps_obj.get('lon', gps_obj.get('longitude')),
+            'altitude': gps_obj.get('alt', gps_obj.get('altitude', 0)),
+            'fix_quality': 1,
+            'match_quality': 'esp32_phone_gps',
+            'time_diff': 0,
+        }
+        if gps_obj.get('acc') is not None:
+            data['gps']['accuracy'] = gps_obj['acc']
+
+    add_detection_from_serial(data)
+
+
 @app.route('/api/import/json', methods=['POST'])
 def import_json():
     """Import detections from a JSON file (exported from ESP32 Flock-You dashboard)"""
@@ -1407,41 +1522,7 @@ def import_json():
 
         count = 0
         for item in imported:
-            # Map ESP32 export fields to Flask detection format
-            method = normalize_method(item.get('method', item.get('detection_method')))
-            data = {
-                'detection_method': method,
-                # This firmware is WiFi-only; the old hardcoded bluetooth_le
-                # mislabelled every imported record.
-                'protocol': item.get('protocol', 'wifi_2_4ghz'),
-                'mac_address': item.get('mac', item.get('mac_address', '')),
-                'device_name': item.get('name', item.get('device_name', '')),
-                'rssi': item.get('rssi', 0),
-                'detection_count': item.get('count', item.get('detection_count', 1)),
-                # Trust an explicit tier from the device, else derive it.
-                'detection_tier': item.get('tier', item.get('detection_tier',
-                                                            METHOD_TIERS.get(method, 0))),
-            }
-            if item.get('channel') is not None:
-                data['channel'] = item['channel']
-            if item.get('ssid'):
-                data['ssid'] = item['ssid']
-
-            # GPS fields from ESP32 wardriving export
-            gps_obj = item.get('gps')
-            if gps_obj and (gps_obj.get('lat') or gps_obj.get('latitude')):
-                data['gps'] = {
-                    'latitude': gps_obj.get('lat', gps_obj.get('latitude')),
-                    'longitude': gps_obj.get('lon', gps_obj.get('longitude')),
-                    'altitude': gps_obj.get('alt', gps_obj.get('altitude', 0)),
-                    'fix_quality': 1,
-                    'match_quality': 'esp32_phone_gps',
-                    'time_diff': 0,
-                }
-                if gps_obj.get('acc') is not None:
-                    data['gps']['accuracy'] = gps_obj['acc']
-
-            add_detection_from_serial(data)
+            import_detection_item(item)
             count += 1
 
         print(f"Imported {count} detections from JSON file: {file.filename}")
@@ -1678,6 +1759,7 @@ def clear_detections():
     detections.clear()
     next_detection_id = 1  # Reset ID counter
     session_start_time = datetime.now()  # Reset session start time
+    save_session_detections()
     safe_socket_emit('detections_cleared', {})
     return jsonify({'status': 'success', 'message': 'Session detections cleared'})
 
@@ -1731,6 +1813,7 @@ def update_detection_alias():
     for detection in detections:
         if detection.get('id') == detection_id:
             detection['alias'] = alias
+            save_session_detections()
             # Emit update to all clients
             safe_socket_emit('detection_updated', detection)
             return jsonify({'status': 'success', 'message': 'Alias updated'})
@@ -2012,6 +2095,7 @@ def initialize_app():
 
     load_oui_database()
     load_cumulative_detections()
+    load_session_detections()
     load_settings()
 
     # Wire the BLE blueprint to the shared detection sink so BLE hits (live

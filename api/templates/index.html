@@ -2477,6 +2477,8 @@
                             <a href="#" onclick="importFile('json')">Import JSON (from ESP32)</a>
                             <a href="#" onclick="importFile('csv')">Import CSV (from ESP32)</a>
                             <a href="#" onclick="importFile('kml')">Import KML (from ESP32)</a>
+                            <a href="#" onclick="pullDeviceSession('live')">Pull current session from device</a>
+                            <a href="#" onclick="pullDeviceSession('prev')">Pull previous session from device</a>
                         </div>
                     </div>
                     <input type="file" id="importFileInput" accept=".json,.csv,.kml" style="display:none" onchange="handleImportFile()">
@@ -3574,6 +3576,34 @@
             // Reset input so same file can be re-selected
             input.value = '';
         }
+
+        // Ask the connected device to stream its detection table over USB.
+        // Flask imports each record as it arrives and reports progress on
+        // the session_dump socket event.
+        function pullDeviceSession(source) {
+            closeImportDropdown();
+            fetch('/api/flock/dump_session', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source: source })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status !== 'success') alert('Session pull failed: ' + data.message);
+            })
+            .catch(err => alert('Session pull failed: ' + err.message));
+        }
+
+        socket.on('session_dump', function(msg) {
+            if (msg.phase === 'end') {
+                alert('Imported ' + msg.received + ' detections from device (' + msg.source + ' session)');
+                loadDetections();
+                loadCumulativeDetections();
+                updateStats();
+            } else if (msg.phase === 'error') {
+                alert('Device session pull failed: ' + msg.error);
+            }
+        });
 
         // Close dropdowns when clicking outside
         document.addEventListener('click', function(event) {

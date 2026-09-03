@@ -1018,6 +1018,88 @@ static void fySaveBeepMask() {
   fyPrefs.end();
 }
 
+// ------------------------------------------------------------
+// Session dump over USB (host command "dump_session")
+//
+// Streams the detection table to the host as line-delimited JSON so the
+// Flask dashboard can ingest a standalone (offline) run after the fact:
+//   {"event":"session_begin","source":"live|prev","count":N}
+//   {"event":"session_det", <fySerializeDet fields>}   x N
+//   {"event":"session_end","source":"live|prev","count":N}
+// "live" is the in-RAM table for this boot; "prev" is /prev_session.json,
+// the previous boot's table promoted at startup. Live detections may
+// interleave with the dump; the host tells them apart by the event key.
+// ------------------------------------------------------------
+
+static void fyDumpLiveSession() {
+  char line[384];
+  dualPrintf("{\"event\":\"session_begin\",\"source\":\"live\",\"count\":%d}\n", fyDetCount);
+  int sent = 0;
+  for (int i = 0; i < fyDetCount; i++) {
+    size_t n = fySerializeDet(fyDet[i], line, sizeof(line));
+    if (n < 2) continue;
+    // fySerializeDet yields "{...}"; splice the event key in after the '{'.
+    Serial.print("{\"event\":\"session_det\",");
+    Serial.write((const uint8_t*)line + 1, n - 1);
+    Serial.print('\n');
+    sent++;
+    if ((i & 7) == 7) delay(1);   // let USB CDC drain
+  }
+  dualPrintf("{\"event\":\"session_end\",\"source\":\"live\",\"count\":%d}\n", sent);
+}
+
+// Stream the JSON array on line 2 of a session file, one top-level object
+// per output line. Tracks string/escape state so braces inside an SSID
+// don't confuse the depth counter.
+static void fyDumpFileSession(const char* path, const char* source) {
+  if (!fySpiffsReady || !fyValidateSessionFile(path)) {
+    dualPrintf("{\"event\":\"session_error\",\"source\":\"%s\",\"error\":\"no valid session file\"}\n", source);
+    return;
+  }
+  File f = SPIFFS.open(path, "r");
+  if (!f) {
+    dualPrintf("{\"event\":\"session_error\",\"source\":\"%s\",\"error\":\"open failed\"}\n", source);
+    return;
+  }
+  String hdr = f.readStringUntil('\n');
+  int count = -1;
+  const char* cp = strstr(hdr.c_str(), "\"count\":");
+  if (cp) sscanf(cp + 8, "%d", &count);
+  dualPrintf("{\"event\":\"session_begin\",\"source\":\"%s\",\"count\":%d}\n", source, count);
+
+  int  depth = 0, sent = 0;
+  bool inStr = false, esc = false;
+  while (f.available()) {
+    int c = f.read();
+    if (c < 0) break;
+    if (depth == 0) {
+      if (c == '{') {
+        Serial.print("{\"event\":\"session_det\",");
+        depth = 1;
+      }
+      continue;   // skip '[' ',' ']' whitespace between objects
+    }
+    Serial.write((uint8_t)c);
+    if (inStr) {
+      if (esc)             esc = false;
+      else if (c == '\\')  esc = true;
+      else if (c == '"')   inStr = false;
+      continue;
+    }
+    if      (c == '"') inStr = true;
+    else if (c == '{') depth++;
+    else if (c == '}') {
+      if (--depth == 0) {
+        Serial.print('\n');
+        sent++;
+        if ((sent & 7) == 0) delay(1);
+      }
+    }
+  }
+  f.close();
+  dualPrintf("{\"event\":\"session_end\",\"source\":\"%s\",\"count\":%d}\n", source, sent);
+}
+
 static void emitConfigJSON() {
   char tiers[320];
   size_t o = 0;
@@ -1038,6 +1120,12 @@ static void emitConfigJSON() {
 
 static void handleCommandLine(const char* line) {
   if (!strstr(line, "\"cmd\"")) return;
+
+  if (strstr(line, "\"dump_session\"")) {
+    if (strstr(line, "\"prev\"")) fyDumpFileSession(FY_PREV_FILE, "prev");
+    else                          fyDumpLiveSession();
+    return;
+  }
 
   if (strstr(line, "\"get_config\"")) {
     emitConfigJSON();
