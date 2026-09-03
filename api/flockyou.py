@@ -77,6 +77,7 @@ gps_source = None              # 'serial' | 'gpsd' | None
 # Data storage paths
 DATA_DIR = Path('data')
 CUMULATIVE_DATA_FILE = DATA_DIR / 'cumulative_detections.pkl'
+SESSION_DATA_FILE = DATA_DIR / 'session_detections.pkl'
 SETTINGS_FILE = DATA_DIR / 'settings.json'
 
 # Ensure data directory exists
@@ -105,6 +106,34 @@ def save_cumulative_detections():
         print(f"Saved {len(cumulative_detections)} cumulative detections")
     except Exception as e:
         print(f"Error saving cumulative detections: {e}")
+
+def load_session_detections():
+    """Restore the current session list so a dashboard restart does not wipe
+    it. The session only resets when the user clicks Clear."""
+    global detections, next_detection_id, session_start_time
+    try:
+        if SESSION_DATA_FILE.exists():
+            with open(SESSION_DATA_FILE, 'rb') as f:
+                state = pickle.load(f)
+            detections = state.get('detections', [])
+            next_detection_id = max([d.get('id', 0) for d in detections] + [0]) + 1
+            start = state.get('session_start_time')
+            if start:
+                session_start_time = datetime.fromisoformat(start)
+            print(f"Loaded {len(detections)} session detections "
+                  f"(session started {session_start_time.isoformat(timespec='seconds')})")
+    except Exception as e:
+        print(f"Error loading session detections: {e}")
+        detections = []
+
+def save_session_detections():
+    """Persist the current session list; written on every change."""
+    try:
+        with open(SESSION_DATA_FILE, 'wb') as f:
+            pickle.dump({'detections': detections,
+                         'session_start_time': session_start_time.isoformat()}, f)
+    except Exception as e:
+        print(f"Error saving session detections: {e}")
 
 def load_settings():
     """Load settings from disk"""
@@ -702,6 +731,7 @@ def add_detection_from_serial(data):
                 cum_detection.update(existing_detection)
                 break
         save_cumulative_detections()
+        save_session_detections()
         
         # Emit updated detection
         safe_socket_emit('detection_updated', existing_detection)
@@ -725,6 +755,7 @@ def add_detection_from_serial(data):
         # Add to cumulative detections
         cumulative_detections.append(data.copy())
         save_cumulative_detections()
+        save_session_detections()
         
         # Emit to connected clients
         safe_socket_emit('new_detection', data)
@@ -1728,6 +1759,7 @@ def clear_detections():
     detections.clear()
     next_detection_id = 1  # Reset ID counter
     session_start_time = datetime.now()  # Reset session start time
+    save_session_detections()
     safe_socket_emit('detections_cleared', {})
     return jsonify({'status': 'success', 'message': 'Session detections cleared'})
 
@@ -1781,6 +1813,7 @@ def update_detection_alias():
     for detection in detections:
         if detection.get('id') == detection_id:
             detection['alias'] = alias
+            save_session_detections()
             # Emit update to all clients
             safe_socket_emit('detection_updated', detection)
             return jsonify({'status': 'success', 'message': 'Alias updated'})
@@ -2062,6 +2095,7 @@ def initialize_app():
 
     load_oui_database()
     load_cumulative_detections()
+    load_session_detections()
     load_settings()
 
     # Wire the BLE blueprint to the shared detection sink so BLE hits (live
