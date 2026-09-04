@@ -12,6 +12,7 @@ import socket
 import queue
 import uuid
 import pickle
+import atexit
 from pathlib import Path
 
 app = Flask(__name__)
@@ -126,14 +127,55 @@ def load_session_detections():
         print(f"Error loading session detections: {e}")
         detections = []
 
-def save_session_detections():
-    """Persist the current session list; written on every change."""
+# Session writes are debounced. A busy scan touches the list many times a
+# second and every write re-pickles the whole thing, so a single writer thread
+# coalesces a burst of changes into one write per SESSION_SAVE_INTERVAL.
+# Callers that need the write to land before they return ask for a flush.
+SESSION_SAVE_INTERVAL = 2.0
+_session_dirty = threading.Event()
+
+
+def _write_session_file():
+    """Write the session list to disk via a temp file + atomic replace, so a
+    crash mid-write cannot leave a truncated pickle for the next startup."""
+    # Snapshot first: the reader thread keeps appending while we serialize.
+    state = {'detections': [d.copy() for d in detections],
+             'session_start_time': session_start_time.isoformat()}
+    tmp = SESSION_DATA_FILE.with_suffix('.tmp')
     try:
-        with open(SESSION_DATA_FILE, 'wb') as f:
-            pickle.dump({'detections': detections,
-                         'session_start_time': session_start_time.isoformat()}, f)
+        with open(tmp, 'wb') as f:
+            pickle.dump(state, f)
+        os.replace(tmp, SESSION_DATA_FILE)
     except Exception as e:
         print(f"Error saving session detections: {e}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _session_writer_loop():
+    """Drain the dirty flag forever, at most one write per interval."""
+    while True:
+        _session_dirty.wait()
+        time.sleep(SESSION_SAVE_INTERVAL)   # let the burst accumulate
+        # Clear before snapshotting: a change that races the write re-arms the
+        # flag and gets picked up next round rather than being dropped.
+        _session_dirty.clear()
+        _write_session_file()
+
+
+def save_session_detections(flush=False):
+    """Mark the session list dirty; the writer thread persists it shortly.
+
+    Pass flush=True where the new state must be on disk before returning
+    (Clear, shutdown) rather than up to SESSION_SAVE_INTERVAL later.
+    """
+    if flush:
+        _session_dirty.clear()
+        _write_session_file()
+    else:
+        _session_dirty.set()
 
 def load_settings():
     """Load settings from disk"""
@@ -1759,7 +1801,7 @@ def clear_detections():
     detections.clear()
     next_detection_id = 1  # Reset ID counter
     session_start_time = datetime.now()  # Reset session start time
-    save_session_detections()
+    save_session_detections(flush=True)
     safe_socket_emit('detections_cleared', {})
     return jsonify({'status': 'success', 'message': 'Session detections cleared'})
 
@@ -2108,6 +2150,13 @@ def initialize_app():
 
     heartbeat_thread = threading.Thread(target=send_heartbeat, daemon=True)
     heartbeat_thread.start()
+
+    session_writer_thread = threading.Thread(target=_session_writer_loop, daemon=True)
+    session_writer_thread.start()
+
+    # The writer is a daemon, so a pending debounced write would die with the
+    # process; flush whatever is still dirty on the way out.
+    atexit.register(lambda: _session_dirty.is_set() and save_session_detections(flush=True))
 
 
 initialize_app()
