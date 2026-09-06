@@ -267,6 +267,21 @@ No buzzer on this env.
 
 Boot sound (XIAO only): first 6 notes of Super Mario Bros. World 1-2 (underground).
 
+### M5Stack Cardputer (`BOARD_M5STACK_CARDPUTER`, env: `m5stack-cardputer`)
+
+| Peripheral | Function |
+|-----|----------|
+| ST7789 240×135 IPS display | Driven via M5Unified/M5GFX (`M5Cardputer.Display`) |
+| QWERTY keyboard | Dismisses the detection screen — see below |
+| I2S speaker | Detection tones and boot jingle via `M5.Speaker`; no piezo GPIO on this board |
+| USB CDC | Serial JSON for Flask dashboard |
+
+No addressable LED on this board — detections are visual (screen) and audible (speaker) only.
+
+There's no dedicated `m5stack-cardputer` board definition in this platform version, so the env borrows `m5stack-stamps3` (same ESP32-S3 chip, same 8 MB flash layout as `partitions.csv`) and lets the `M5Cardputer`/`M5Unified` libraries own the actual display/keyboard/speaker bring-up at runtime.
+
+**Display:** idle screen shows `SCANNING`, current channel, and unique hit count, same as the T-Dongle. On a detection it shows `DETECT`, the method (e.g. `wifi_oui_addr2`), MAC, RSSI, and channel — but unlike the T-Dongle's 5-second auto-return, **the alert screen stays up until you press any key**, since this board has a keyboard to dismiss it with. A new detection arriving while one is still on-screen redraws with the latest hit's info rather than queuing behind the dismiss.
+
 ### Detection audio
 
 Each tier has its own tone (see the table above), so the detection method is clear without looking at the screen. Individual tiers can be muted from the dashboard's **Audio** panel; muting affects the buzzer only, and detections still log and export. The mask lives in NVS under `flockyou/beepmask` and survives a power cycle.
@@ -309,6 +324,8 @@ pio device monitor
 | `AUTOSAVE_INTERVAL_MS` | 60000 | SPIFFS save cadence |
 | `LED_PIN` | 21 | Onboard user LED |
 | `BUZZER_PIN` | 3 | Piezo |
+| `DEBUG_ALLOW_RANDOMIZED_MAC` | 0 | See `matchOuiRaw()`
+| `DEBUG_LOCAL_OUI` | `00:00:00` | Set to your WiFi MAC for testing
 
 ---
 
