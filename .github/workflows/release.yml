@@ -1,0 +1,56 @@
+name: Build and Release
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    permissions:
+      packages: write
+      contents: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio
+          key: ${{ runner.os }}-pio-${{ hashFiles('**/platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Install library dependencies
+        run: pio pkg install
+
+      - name: Build firmware
+        run: pio run
+
+      - name: Rename firmware binary
+        run: |
+          cp .pio/build/m5stack-cardputer/firmware.bin flockyou-${{ github.event.release.tag_name }}-cardputer.bin
+          cp .pio/build/xiao_esp32s3/firmware.bin flockyou-${{ github.event.release.tag_name }}-xiao_esp32s3.bin
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./flockyou-${{ github.event.release.tag_name }}-cardputer.bin
+            ./flockyou-${{ github.event.release.tag_name }}-xiao_esp32s3.bin
