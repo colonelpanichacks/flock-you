@@ -7,18 +7,19 @@
 
 > **For research & educational use only.** You assume all liability for any use or misuse of these devices — don't do anything illegal or dumb. This project is not affiliated with, endorsed by, or associated with any camera-network operator; all trademarks belong to their respective owners.
 
-This is the `main` branch. It uses a detection set extracted **directly from a Flock Safety ALPR camera firmware dump** (Qualcomm MSM8953 + QCA9377, Android 8.1, codename `hpnotiq`, analyzed 2026-09-16). Every signature below has a provenance inside that firmware image. Full details and internal sources: [`datasets/firmware_derived_signatures.md`](datasets/firmware_derived_signatures.md).
+This is the `main` branch. It runs a **union signature set** combining two provenance sources — community field-research OUIs and signatures extracted directly from a Flock Safety ALPR camera firmware dump (Qualcomm MSM8953 + QCA9377, Android 8.1, codename `hpnotiq`, 2026-09-16). Full firmware details: [`datasets/firmware_derived_signatures.md`](datasets/firmware_derived_signatures.md).
 
-**WiFi:**
-- OUIs `b4:1e:52` (Flock Safety's own IEEE-registered OUI) and `00:03:7f` (Qualcomm Atheros — default MACs `00:03:7f:50:00:01` in `bdwlan30.bin`/`fakeboar.bin`, `00:03:7f:4f:00:16` in `otp30.bin`)
+**WiFi (34-OUI union list):**
+- 32 community prefixes: @NitekryDPaul's [nite-oui-collection](https://github.com/nitekry/nite-oui-collection) (2026-07-16 revision) + `82:6b:f2` from DeFlockJoplin
+- 2 firmware-extracted prefixes: `b4:1e:52` (Flock Safety's own IEEE MA-L) and `00:03:7f` (Qualcomm Atheros QCA9377 — default radio MACs in the firmware dump)
 - QCA9377 broadcast probe requests at ~125 ms intervals, channel-hopping (LOWI geolocation scanning)
-- SSID patterns `Flock-XXXXXX` (SoftAP built in `WifiApService.java`, WPA2 password `security`) and bare `Flock`
+- SSID patterns `Flock-XXXXXX` (SoftAP, WPA2 password `security`) and bare `Flock`
 
-**BLE / Bluetooth:**
-- Penguin battery-pack ads: name `Penguin-NNNNNNNNNN`, a bare 10-digit number, or `FS Ext Battery`; manufacturer data company ID `0x09C8` (XUNTONG) with embedded serials
-- Flock accessory GATT service `e8ccbb38-9532-46a8-9fe5-1814df172e6f`
+**BLE (firmware-derived, passive NimBLE scan in-firmware):**
+- Penguin battery-pack ads: name `Penguin-NNNNNNNNNN`, a bare 10-digit number, `FS Ext Battery`, or `DfuTarg`; manufacturer data company ID `0x09C8` (XUNTONG)
+- Flock accessory GATT service `e8ccbb38-9532-46a8-9fe5-1814df172e6f`; Nordic DFU `00001530-1212-efde-1523-785feabcd123`
 - Raven camera GATT services `0x3100`–`0x3500` (unauthenticated; `0x3101`/`0x3102` leak GPS)
-- Classic BT fallback names `msm8953_32` / `Android` (`net.bt.name=Android`) and SDP Device-ID Qualcomm vendor `0x001D` / product `0x1200` (`bt_did.conf`)
+- Classic BT corroboration (Python companion only): names `msm8953_32`/`Android`, SDP Device-ID Qualcomm `0x001D`/`0x1200`
 
 The community OUI dataset ([`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md)) remains in the repo for reference but is **not active** on this branch.
 
@@ -87,9 +88,9 @@ Both detection methods run at once. The IE fingerprint is the precise one; the b
 
 | Tier | `detection_method` | Gate | Sound |
 |---|---|---|---|
-| 4 | `wifi_wildcard_probe_ie_sig` | OUI + wildcard SSID + IE signature | two-note chirp, 2000→2800 Hz — **currently disabled** (stub pending live QCA9377 recapture) |
-| 3 | `wifi_wildcard_probe` | OUI + wildcard SSID, firmware-derived OUI | two-note chirp, 1400→1800 Hz — **top active tier** |
-| 2 | `wifi_oui_addr2` | Flock OUI in addr2, any frame | single blip, 1200 Hz |
+| 4 | `wifi_wildcard_probe_ie_sig` | OUI + wildcard SSID + community IE fingerprint (LiteON/DeFlockJoplin) | two-note chirp, 2000→2800 Hz |
+| 3 | `wifi_wildcard_probe` | OUI + wildcard SSID, IE did not match | two-note chirp, 1400→1800 Hz |
+| 2 | `wifi_oui_addr2` / `ble_name` / `ble_mfg` / `ble_gatt_svc` | WiFi transmitter-side OUI match, or any BLE firmware-derived hit | single blip, 1200 Hz |
 | 1 | `wifi_oui_addr1` / `wifi_oui_addr3` | Flock OUI in addr1 / BSSID | single blip, 800 Hz |
 | 0 | `wifi_ssid` | SSID keyword (off by default) | single blip, 600 Hz |
 
@@ -147,20 +148,33 @@ The split between callback and loop is deliberate: the WiFi task has hard real-t
 
 ---
 
-## OUI target list (firmware-derived)
+## OUI target list (union, 34 prefixes)
 
-Two OUI prefixes, sourced directly from the Flock Safety ALPR camera firmware dump (codename `hpnotiq`):
+Two provenance sets, both active:
 
-| OUI | Source | Notes |
-|-----|--------|-------|
-| `b4:1e:52` | Flock Safety's own IEEE MA-L registration | Primary; any frame from this prefix is a Flock device |
-| `00:03:7f` | Qualcomm Atheros | Default radio MACs burned into `bdwlan30.bin` (`00:03:7f:50:00:01`) and `otp30.bin` (`00:03:7f:4f:00:16`); camera uses these before OTA provisioning assigns a Flock OUI |
+**Community field-research (32 prefixes)** — @NitekryDPaul's [nite-oui-collection](https://github.com/nitekry/nite-oui-collection), 2026-07-16 revision (31 active) + `82:6b:f2` from DeFlockJoplin:
 
-The community 32-prefix list from @NitekryDPaul is preserved in [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md) for reference. It is not active on this branch — there is zero overlap between the two sets (different hardware generations). If field tests miss visually-confirmed cameras, a union list is worth considering.
+```
+70:c9:4e   3c:91:80   d8:f3:bc   80:30:49   b8:35:32
+14:5a:fc   74:4c:a1   08:3a:88   9c:2f:9d   c0:35:32
+94:08:53   e4:aa:ea   f4:6a:dd   e0:0a:f6   24:b2:b9
+00:f4:8d   d0:39:57   e8:d0:fc   e0:4f:43   b8:1e:a4
+70:08:94   58:8e:81   ec:1b:bd   3c:71:bf   58:00:e3
+90:35:ea   5c:93:a2   64:6e:69   48:27:ea   a4:cf:12
+14:b5:cd
+82:6b:f2   ← DeFlockJoplin (locally-administered bit set — do NOT add a LA-MAC skip filter)
+```
 
-Pre-compiled into a byte table in `setup()` so the matcher stays entirely in IRAM with no flash-resident lookups during callback execution.
+**Firmware-extracted (2 prefixes)** — from Flock Safety ALPR camera firmware dump (codename `hpnotiq`, 2026-09-16):
 
-Full provenance: [`datasets/firmware_derived_signatures.md`](datasets/firmware_derived_signatures.md).
+| OUI | Source |
+|-----|--------|
+| `b4:1e:52` | Flock Safety's own IEEE MA-L (Atlanta HQ) |
+| `00:03:7f` | Qualcomm Atheros QCA9377 — default radio MACs burned into the dump (`00:03:7f:50:00:01` in `bdwlan30.bin`, `00:03:7f:4f:00:16` in `otp30.bin`) |
+
+The two sets have zero overlap. Pre-compiled into a byte table in `setup()` so the matcher stays entirely in IRAM.
+
+Full dataset and methodology: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md) (community), [`datasets/firmware_derived_signatures.md`](datasets/firmware_derived_signatures.md) (firmware-extracted).
 
 ---
 
@@ -331,9 +345,9 @@ Both modes work simultaneously — the SPIFFS write path doesn't care if a host 
 
 ## Scope
 
-**WiFi firmware** (`main.cpp` + `api/flockyou.py`): 2.4 GHz promiscuous sniffing. The ESP32 radio is dedicated to WiFi; all detections are `protocol: wifi_2_4ghz`.
+**WiFi + BLE firmware** (`main.cpp`): both radios passive. WiFi promiscuous sniffing gets ~90% of airtime; NimBLE passive scan runs at 10% duty (30 ms window / 300 ms interval). WiFi detections emit `protocol: wifi_2_4ghz`; BLE detections emit `protocol: ble` with the advertised `device_name` filled in.
 
-**BLE companion** (`api/flockyou_ble.py`): runs alongside the Flask dashboard and scans for Penguin battery packs (`Penguin-NNNNNNNNNN`, `FS Ext Battery`, mfg ID `0x09C8`), the Flock accessory GATT service, and Raven GATT services — all from the firmware dump. Detections are tagged `firmware_sig: true` and `matched_signatures` in the API response; the dashboard frontend does not render these fields yet (KML export also lacks them — CSV has full coverage).
+**Python BLE companion** (`api/flockyou_ble.py`): host-side BLE scan for Classic BT corroboration (names `msm8953_32`/`Android`, SDP Device-ID Qualcomm `0x001D`/`0x1200`) that the on-device NimBLE scanner can't reach. Detections are tagged `firmware_sig: true` and `matched_signatures` in the API; the dashboard frontend does not render these fields yet (KML export also lacks them — CSV has full coverage).
 
 ---
 
