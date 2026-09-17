@@ -1,5 +1,7 @@
 # Flock Safety WiFi OUIs — Research by @NitekryDPaul
 
+> **Note (`dev-firmware-detections` branch):** this version of the firmware does **not** use the community OUI list below. It matches only on signatures extracted directly from a Flock camera firmware dump — see [`firmware_derived_signatures.md`](firmware_derived_signatures.md) for the active detection set. This file is kept for reference and for branches that still use the community list.
+
 **Researcher:** OrdoOuroboros (**@NitekryDPaul**, GitHub [@nitekry](https://github.com/nitekry))
 
 Upstream source: [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection) — `groups/flockers/my_tested_flock.md`. Last synced: **2026-07-16**.

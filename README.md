@@ -9,6 +9,25 @@
 
 This is the `dev` branch. It carries the DeFlockJoplin Information Element research and wildcard-probe signature, and runs @NitekryDPaul's broad OUI paths alongside them under a confidence-tier system — see "Running both methods together" below.
 
+---
+
+## dev-firmware-detections branch
+
+This development version replaces the community OUI list with a detection set extracted **directly from a Flock Safety ALPR camera firmware dump** (Qualcomm MSM8953 + QCA9377, Android 8.1, codename `hpnotiq`, analyzed 2026-09-16). Every signature below has a provenance inside that firmware image; nothing community-sourced is in the active matcher on this branch. Full details and internal sources: [`datasets/firmware_derived_signatures.md`](datasets/firmware_derived_signatures.md).
+
+**WiFi:**
+- OUIs `b4:1e:52` (Flock Safety's own IEEE-registered OUI) and `00:03:7f` (Qualcomm Atheros — default MACs `00:03:7f:50:00:01` in `bdwlan30.bin`/`fakeboar.bin`, `00:03:7f:4f:00:16` in `otp30.bin`)
+- QCA9377 broadcast probe requests at ~125 ms intervals, channel-hopping (LOWI geolocation scanning)
+- SSID patterns `Flock-XXXXXX` (SoftAP built in `WifiApService.java`, WPA2 password `security`) and bare `Flock`
+
+**BLE / Bluetooth:**
+- Penguin battery-pack ads: name `Penguin-NNNNNNNNNN`, a bare 10-digit number, or `FS Ext Battery`; manufacturer data company ID `0x09C8` (XUNTONG) with embedded serials
+- Flock accessory GATT service `e8ccbb38-9532-46a8-9fe5-1814df172e6f`
+- Raven camera GATT services `0x3100`–`0x3500` (unauthenticated; `0x3101`/`0x3102` leak GPS)
+- Classic BT fallback names `msm8953_32` / `Android` (`net.bt.name=Android`) and SDP Device-ID Qualcomm vendor `0x001D` / product `0x1200` (`bt_did.conf`)
+
+The community OUI dataset ([`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md)) remains in the repo for reference but is **not active** on this branch.
+
 > **Region:** Flock Cam hardware is deployed primarily in the United States (and to a lesser extent Canada). If you're outside North America the OUI list and probe-request signatures here won't match anything — the tool is still useful for research, but it's not going to find infrastructure that isn't there.
 
 ---

@@ -26,6 +26,7 @@ WiFi hits (they carry timestamp_source="device_replay" for dumped entries).
 from flask import Blueprint, jsonify, request
 import json
 import queue
+import re
 import threading
 import time
 from datetime import datetime
@@ -35,6 +36,216 @@ import serial.tools.list_ports
 
 
 bp = Blueprint("flockyou_ble", __name__)
+
+
+# ---------------------------------------------------------------------------
+# BLE / Bluetooth detection signatures
+# ---------------------------------------------------------------------------
+#
+# Authoritative target set, extracted from an actual Flock Safety camera
+# firmware dump. This is the ONLY detection set this version uses. The match
+# itself runs on the ESP32 BLE detector; this copy is the dashboard's
+# reference for labelling, imports, and corroboration.
+
+# Complete Local Name (AD type 0x09) patterns seen from Penguin battery packs:
+#   "Penguin-NNNNNNNNNN" — "Penguin-" + 10-digit serial
+#   "NNNNNNNNNN"         — bare 10-digit serial
+#   "FS Ext Battery"     — extended-battery accessory
+BLE_COMPLETE_NAME_PATTERNS = (
+    re.compile(r"^Penguin-\d{10}$"),
+    re.compile(r"^\d{10}$"),
+    "FS Ext Battery",
+)
+
+# Manufacturer-specific data (AD type 0xFF) company IDs. 0x09C8 (2504) is
+# XUNTONG, the Penguin pack's BLE chipset vendor; the payload embeds serials
+# like TN72023022000771.
+BLE_MFG_COMPANY_IDS = {
+    0x09C8: "XUNTONG (Penguin battery pack, serial in payload)",
+}
+
+# Flock accessory GATT service exposed by the battery packs, with the two
+# characteristics that matter (key exchange and control).
+FLOCK_ACCESSORY_GATT_SERVICE_UUID = "e8ccbb38-9532-46a8-9fe5-1814df172e6f"
+FLOCK_ACCESSORY_GATT_CHARACTERISTICS = (
+    "628913a6-8701-40ff-a3ce-8f453ff0818d",  # key characteristic
+    "bb18d1d2-fe71-439f-9529-d4b472d139b5",  # control characteristic
+)
+
+# Raven camera BLE GATT services live in 16-bit space 0x3100-0x3500 and are
+# unauthenticated — 0x3101/0x3102 leak GPS latitude/longitude.
+RAVEN_GATT_SERVICE_RANGE = (0x3100, 0x3500)
+
+# Corroborating classic-Bluetooth signals (weaker on their own, strong next
+# to any BLE hit above):
+#   device names "msm8953_32" (Snapdragon 625 platform default) and "Android"
+#   (net.bt.name=Android, no vendor override in the firmware)
+CLASSIC_BT_DEVICE_NAMES = (
+    "msm8953_32",
+    "Android",
+)
+# SDP Device-ID record from bt_did.conf: Qualcomm vendor / product pair.
+CLASSIC_BT_SDP_DEVICE_ID = {
+    "vendor_id": 0x001D,   # Qualcomm
+    "product_id": 0x1200,
+}
+
+
+def matches_ble_complete_name(name):
+    """True when a BLE complete local name matches a firmware-derived pattern."""
+    if not name:
+        return False
+    name = str(name)
+    for pattern in BLE_COMPLETE_NAME_PATTERNS:
+        if isinstance(pattern, str):
+            if name == pattern:
+                return True
+        elif pattern.match(name):
+            return True
+    return False
+
+
+def matches_ble_mfg_company(company_id):
+    """True when a manufacturer-data company ID is a known Flock vendor."""
+    return company_id in BLE_MFG_COMPANY_IDS
+
+
+def matches_raven_gatt_service(uuid16):
+    """True when a 16-bit GATT service UUID falls in the Raven camera range."""
+    try:
+        value = int(uuid16)
+    except (TypeError, ValueError):
+        return False
+    low, high = RAVEN_GATT_SERVICE_RANGE
+    return low <= value <= high
+
+
+# ---------------------------------------------------------------------------
+# Signature matching — turns the reference constants above into per-detection
+# tags (`matched_signatures` / `firmware_sig`) before records are handed to
+# the shared ingest sink.
+# ---------------------------------------------------------------------------
+
+# Parallel to BLE_COMPLETE_NAME_PATTERNS: the tag each pattern earns.
+_BLE_NAME_TAGS = (
+    "ble_name:penguin_serial",
+    "ble_name:bare_serial",
+    "ble_name:fs_ext_battery",
+)
+
+
+def _parse_int_flexible(value):
+    """Accept an int, a decimal string ("2504"), or hex ("0x09c8" / "09c8")."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    for base in (0, 16):
+        try:
+            return int(text, base)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _ble_name_signatures(name):
+    """Tags for a BLE/classic complete local name, or empty list."""
+    if not name:
+        return []
+    name = str(name)
+    sigs = []
+    for pattern, tag in zip(BLE_COMPLETE_NAME_PATTERNS, _BLE_NAME_TAGS):
+        hit = (name == pattern) if isinstance(pattern, str) else bool(pattern.match(name))
+        if hit:
+            sigs.append(tag)
+            break  # first matching pattern wins; the patterns are exclusive
+    if name in CLASSIC_BT_DEVICE_NAMES:
+        sigs.append(f"classic_bt_name:{name.lower()}")
+    return sigs
+
+
+def _gatt_service_signatures(uuids):
+    """Tags for advertised GATT service UUIDs (Flock accessory / Raven range)."""
+    sigs = []
+    for raw in uuids:
+        text = str(raw).strip().lower()
+        if text == FLOCK_ACCESSORY_GATT_SERVICE_UUID:
+            sigs.append("gatt:flock_accessory")
+            continue
+        value = _parse_int_flexible(text)
+        if value is None:
+            # Standard Bluetooth base-UUID form: 0000XXXX-0000-1000-8000-...
+            m = re.match(r"^([0-9a-f]{4})[0-9a-f]{4}-0000-1000-8000-00805f9b34fb$", text)
+            if m:
+                value = int(m.group(1), 16)
+        if value is not None and matches_raven_gatt_service(value):
+            sigs.append(f"gatt:raven_service:0x{value:04x}")
+    return sigs
+
+
+def ble_signature_matches(data):
+    """Firmware-derived BLE/Bluetooth signature tags for one observation.
+
+    Looks at every field spelling the BLE detector firmware has used:
+    names under device_name/name/complete_name, company IDs under
+    company_id/mfg_company_id/manufacturer_company_id, service UUIDs under
+    service_uuids/service_uuid/gatt_services, and the classic-BT SDP
+    Device-ID vendor/product pair.
+    """
+    if not isinstance(data, dict):
+        return []
+    sigs = []
+
+    sigs += _ble_name_signatures(
+        data.get("device_name") or data.get("name") or data.get("complete_name"))
+
+    for key in ("company_id", "mfg_company_id", "manufacturer_company_id"):
+        company = _parse_int_flexible(data.get(key))
+        if company is not None:
+            if matches_ble_mfg_company(company):
+                sigs.append(f"ble_mfg_company:0x{company:04x}")
+            break
+
+    uuids = []
+    for key in ("service_uuids", "gatt_services", "service_uuid"):
+        value = data.get(key)
+        if isinstance(value, (list, tuple)):
+            uuids.extend(value)
+        elif value:
+            uuids.append(value)
+    sigs += _gatt_service_signatures(uuids)
+
+    vendor = _parse_int_flexible(data.get("sdp_vendor_id", data.get("vendor_id")))
+    product = _parse_int_flexible(data.get("sdp_product_id", data.get("product_id")))
+    if (vendor == CLASSIC_BT_SDP_DEVICE_ID["vendor_id"]
+            and product == CLASSIC_BT_SDP_DEVICE_ID["product_id"]):
+        sigs.append("classic_bt_sdp_did:qualcomm_001d_1200")
+
+    # Dedupe while preserving order (a UUID list can repeat a service).
+    seen = set()
+    unique = []
+    for sig in sigs:
+        if sig not in seen:
+            seen.add(sig)
+            unique.append(sig)
+    return unique
+
+
+def tag_detection_signatures(data):
+    """Merge firmware-signature tags onto a BLE detection dict in place.
+
+    Sets matched_signatures (ordered, unioned with tags the device itself
+    may already have attached) and firmware_sig. The shared ingest sink in
+    flockyou.py preserves these when it adds its WiFi-side tags.
+    """
+    matched = ble_signature_matches(data)
+    for sig in data.get("matched_signatures") or []:
+        if sig not in matched:
+            matched.append(sig)
+    data["matched_signatures"] = matched
+    data["firmware_sig"] = bool(matched)
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +339,7 @@ def _reader_loop():
                 # Mark timestamps as device-relayed live so the dashboard can
                 # style them differently from GPS-anchored WiFi hits.
                 data.setdefault("timestamp_source", "device_live")
+                tag_detection_signatures(data)
                 try:
                     _ingest_detection(data)
                 except Exception as exc:
@@ -250,6 +462,7 @@ def _ingest_replayed(lines, source_tag: str):
         data.setdefault("replay_source", source_tag)
         data.setdefault("timestamp_source", "device_replay")
         data.setdefault("protocol", "ble")
+        tag_detection_signatures(data)
         if _ingest_detection:
             try:
                 _ingest_detection(data)
