@@ -5,6 +5,7 @@
 #include <string.h>
 #include <SPIFFS.h>
 #include <Preferences.h>
+#include <NimBLEDevice.h>   // BLE side of the signature union (Flock BLE adverts)
 #include "display_dongle.h"
 
 // ============================================================
@@ -83,16 +84,18 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 // when several paths hit the same MAC, and whether a broad hit is allowed to
 // squat on the dedupe cooldown ahead of a better one.
 //
-//   4  wildcard_probe_ie_sig  RETIRED — the IE fingerprint behind this tier was
-//                              community/LiteON-derived, not extracted from our
-//                              Flock firmware dump, so the check always fails
-//                              and nothing reaches tier 4. The tier constant and
-//                              alert-type name are kept so the dashboard/serial
-//                              protocol is unchanged. TODO: restore with a
-//                              firmware-derived IE fingerprint once we capture a
-//                              live QCA9377 probe burst.
-//   3  wildcard_probe         OUI + wildcard SSID (currently the top live tier)
-//   2  oui_addr2              @NitekryDPaul: transmitter-side OUI, any frame
+//   4  wildcard_probe_ie_sig  OUI + wildcard SSID + IE fingerprint. The
+//                              fingerprint is the community/LiteON drive-test
+//                              signature (@NitekryDPaul/DeFlockJoplin), kept as
+//                              half of the signature union with the
+//                              firmware-derived set.
+//   3  wildcard_probe         OUI + wildcard SSID, no IE verification
+//   2  oui_addr2 / BLE        @NitekryDPaul: transmitter-side OUI, any frame.
+//                             BLE hits (firmware-derived Penguin/FS-battery
+//                             name, 0x09C8 mfg data, Flock/Raven GATT UUIDs)
+//                             also land here — a battery pack or Flock GATT
+//                             service on the air is high-confidence camera
+//                             presence.
 //   1  oui_addr1 / oui_addr3  @NitekryDPaul: receiver / BSSID OUI — AP echoes
 //   0  ssid                   SSID keyword match (off by default)
 //
@@ -150,20 +153,34 @@ static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(t
 // TARGET OUI LIST  (all lowercase, colons only)
 // ============================================================
 
-// Extracted from an actual Flock Safety camera firmware dump (2026-09-16) —
-// these two prefixes are the only OUIs this version matches on:
+// UNION of two provenance sets — 34 prefixes total:
 //
-//   b4:1e:52  Flock Safety's own IEEE-registered OUI (MA-L, Atlanta HQ)
-//   00:03:7f  Qualcomm Atheros. The camera radio is a Qualcomm QCA9377 and
-//             the dump's default MACs use this prefix: 00:03:7f:50:00:01
-//             (bdwlan30.bin / fakeboar.bin) and 00:03:7f:4f:00:16 (otp30.bin).
-//
-// Cameras emit broadcast probe requests (~125 ms interval, channel-hopping)
-// from the QCA9377's LOWI geolocation scanning, so these prefixes appear in
-// addr2 on the air even with no AP association. Both are globally
-// administered (bit 1 of the first octet clear), so the
-// locally-administered-MAC skip in matchOuiRaw() cannot drop them.
+// COMMUNITY FIELD-RESEARCH (@NitekryDPaul / DeFlockJoplin), 32 prefixes:
+// synced with @NitekryDPaul's nite-oui-collection my_tested_flock.md,
+// 2026-07-16 revision: 31 active prefixes, plus 82:6b:f2 from DeFlockJoplin.
+// 82:6b:f2 has the locally-administered bit set, which is why matchOuiRaw()
+// must NOT filter locally-administered MACs (see there).
 static const char* target_ouis[] = {
+  "70:c9:4e", "3c:91:80", "d8:f3:bc", "80:30:49", "b8:35:32",
+  "14:5a:fc", "74:4c:a1", "08:3a:88", "9c:2f:9d", "c0:35:32",
+  "94:08:53", "e4:aa:ea", "f4:6a:dd", "e0:0a:f6", "24:b2:b9",
+  "00:f4:8d", "d0:39:57", "e8:d0:fc", "e0:4f:43", "b8:1e:a4",
+  "70:08:94", "58:8e:81", "ec:1b:bd", "3c:71:bf", "58:00:e3",
+  "90:35:ea", "5c:93:a2", "64:6e:69", "48:27:ea", "a4:cf:12",
+  "14:b5:cd",
+  "82:6b:f2",  // contributed by DeFlockJoplin (locally-administered bit set)
+
+  // FIRMWARE-EXTRACTED (Flock Safety camera firmware dump, 2026-09-16;
+  // Qualcomm MSM8953 + QCA9377 radio):
+  //
+  //   b4:1e:52  Flock Safety's own IEEE-registered OUI (MA-L, Atlanta HQ)
+  //   00:03:7f  Qualcomm Atheros. The camera radio is a Qualcomm QCA9377 and
+  //             the dump's default MACs use this prefix: 00:03:7f:50:00:01
+  //             (bdwlan30.bin / fakeboar.bin) and 00:03:7f:4f:00:16 (otp30.bin).
+  //
+  // Cameras emit broadcast probe requests (~125 ms interval, channel-hopping)
+  // from the QCA9377's LOWI geolocation scanning, so these prefixes appear in
+  // addr2 on the air even with no AP association.
   "b4:1e:52",  // Flock Safety (IEEE MA-L)
   "00:03:7f"   // Qualcomm Atheros QCA9377 — firmware default MACs
 };
@@ -185,15 +202,18 @@ typedef enum : uint8_t {
   ALERT_OUI_ADDR3       = 2,
   ALERT_SSID            = 3,
   // Wildcard probe + OUI + primary IE signature (wifi_wildcard_probe_ie_sig).
-  // Name kept for dashboard/serial protocol compatibility; the IE fingerprint
-  // check itself is retired (always fails), so this type is never enqueued
-  // until a firmware-derived fingerprint is restored — see the TODO stub below.
   ALERT_WILDCARD_PROBE_IE_SIG = 4,
-  // Wildcard probe + OUI, no IE verification. With the IE fingerprint retired
-  // this is the top live tier: every OUI + wildcard-probe hit lands here.
-  // Kept separate from addr2 because the wildcard behaviour is still meaningful
-  // on its own.
+  // Wildcard probe + OUI, IE fingerprint did NOT match. Kept as its own tier
+  // rather than folded into addr2: the wildcard behaviour is still meaningful
+  // on its own, and separating it shows which cameras the IE signature misses.
   ALERT_WILDCARD_PROBE  = 5,
+  // BLE hits (firmware-derived Flock BLE signatures, 2026-09-16 dump). All
+  // three map to tier 2 — a Penguin battery pack or a Flock/Raven GATT
+  // service on the air is high-confidence camera presence. Appended after
+  // the WiFi types so existing enum values / serial protocol are unchanged.
+  ALERT_BLE_NAME = 6,   // "Penguin-NNNNNNNNNN", bare 10-digit serial, "FS Ext Battery", "DfuTarg"
+  ALERT_BLE_MFG  = 7,   // manufacturer data with company ID 0x09C8 (XUNTONG)
+  ALERT_BLE_GATT = 8,   // Flock accessory / Nordic DFU GATT UUID, or Raven 0x3100-0x3500 svc
 } AlertType;
 
 static inline uint8_t alertTypeToTier(AlertType t) {
@@ -201,11 +221,18 @@ static inline uint8_t alertTypeToTier(AlertType t) {
     case ALERT_WILDCARD_PROBE_IE_SIG: return TIER_IE_SIG;
     case ALERT_WILDCARD_PROBE:        return TIER_PROBE;
     case ALERT_OUI_ADDR2:             return TIER_OUI;
+    case ALERT_BLE_NAME:              return TIER_OUI;
+    case ALERT_BLE_MFG:               return TIER_OUI;
+    case ALERT_BLE_GATT:              return TIER_OUI;
     case ALERT_OUI_ADDR1:             return TIER_ECHO;
     case ALERT_OUI_ADDR3:             return TIER_ECHO;
     case ALERT_SSID:                  return TIER_SSID;
     default:                          return TIER_SSID;
   }
+}
+
+static inline bool alertTypeIsBle(AlertType t) {
+  return t == ALERT_BLE_NAME || t == ALERT_BLE_MFG || t == ALERT_BLE_GATT;
 }
 
 typedef struct {
@@ -510,10 +537,10 @@ static inline bool IRAM_ATTR isMulticast(const uint8_t* mac) {
 }
 
 static bool IRAM_ATTR matchOuiRaw(const uint8_t* mac) {
-  // Locally-administered (randomised) MACs have bit 1 of byte 0 set.
-  // Fixed infrastructure devices never use them — skip immediately.
-  if (mac[0] & 0x02) return false;
-
+  // No locally-administered (bit 1 of byte 0) pre-filter here: 82:6b:f2 in
+  // the community list has that bit set, so skipping LA MACs would silently
+  // drop DeFlockJoplin's camera. Randomised phone MACs simply fail the OUI
+  // byte comparison instead.
   for (size_t i = 0; i < OUI_COUNT; i++) {
     if (mac[0] == oui_bytes[i][0] &&
         mac[1] == oui_bytes[i][1] &&
@@ -641,6 +668,10 @@ static const char* alertTypeToMethod(AlertType t) {
     case ALERT_SSID:                   return "ssid";
     case ALERT_WILDCARD_PROBE_IE_SIG:  return "wildcard_probe_ie_sig";
     case ALERT_WILDCARD_PROBE:         return "wildcard_probe";
+    // Bare method names — the "ble_" protocol prefix is added at emit time.
+    case ALERT_BLE_NAME:               return "name";
+    case ALERT_BLE_MFG:                return "mfg";
+    case ALERT_BLE_GATT:               return "gatt_svc";
     default:                           return "unknown";
   }
 }
@@ -954,29 +985,36 @@ static void fyPromotePrevSession() {
 // GPS is handled Flask-side via its own USB NMEA puck or browser geolocation;
 // we don't embed GPS here because there's no on-device AP / phone link.
 
-static void emitDetectionJSON(const char* mac, const char* method, uint8_t tier,
-                              int8_t rssi, uint8_t ch, const char* ssid) {
+static void emitDetectionJSON(const char* proto, const char* mac, const char* method,
+                              uint8_t tier, int8_t rssi, uint8_t ch,
+                              const char* ssid, const char* devName) {
   char ssidEsc[sizeof(((FYDetection*)0)->ssid) * 6 + 1];
   jsonEscape(ssidEsc, sizeof(ssidEsc), ssid ? ssid : "");
+  char nameEsc[sizeof(((FYDetection*)0)->ssid) * 6 + 1];
+  jsonEscape(nameEsc, sizeof(nameEsc), devName ? devName : "");
   char oui[9];
   uint8_t mbytes[6] = {0};
   sscanf(mac, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
          &mbytes[0], &mbytes[1], &mbytes[2], &mbytes[3], &mbytes[4], &mbytes[5]);
   ouiFromMac(mbytes, oui, sizeof(oui));
 
+  // proto is "wifi" or "ble"; the "protocol" field keeps its historical
+  // "wifi_2_4ghz" value for WiFi hits. BLE adverts have no WiFi channel, so
+  // channel arrives as 0xFF and frequency reports 0.
+  const char* protocol = (strcmp(proto, "wifi") == 0) ? "wifi_2_4ghz" : "ble";
   dualPrintf(
       "{\"event\":\"detection\","
-      "\"detection_method\":\"wifi_%s\","
+      "\"detection_method\":\"%s_%s\","
       "\"detection_tier\":%u,"
-      "\"protocol\":\"wifi_2_4ghz\","
+      "\"protocol\":\"%s\","
       "\"mac_address\":\"%s\","
       "\"oui\":\"%s\","
-      "\"device_name\":\"\","
+      "\"device_name\":\"%s\","
       "\"rssi\":%d,"
       "\"channel\":%u,"
       "\"frequency\":%u,"
       "\"ssid\":\"%s\"}\n",
-      method, (unsigned)tier, mac, oui, rssi,
+      proto, method, (unsigned)tier, protocol, mac, oui, nameEsc, rssi,
       (unsigned)ch, (unsigned)channelFreqMhz(ch), ssidEsc);
 }
 
@@ -1240,21 +1278,221 @@ static int IRAM_ATTR isWildcardProbeIE(const uint8_t* body, int len) {
   return -1;
 }
 
-// --- IE fingerprint: RETIRED (community-derived) ---
+// --- IE fingerprint: community/LiteON-derived (restored as union half) ---
 //
-// The old LiteON/community fingerprint (PACK sig "2,12,127,221:506f9a16030103,
-// 45,191,221:0050f208000000" and its FLOCK_PROBE_IE_SIG_PRIMARY /
-// FLOCK_LITEON_IE_SIG_PREFIX constants) was removed: it came from drive-test
-// captures, not from our Flock firmware dump, so it does not belong in this
-// firmware-derived detection set. This stub keeps the caller's tier routing
-// intact while always failing the IE check, so every OUI + wildcard-probe hit
-// lands at tier 3 (ALERT_WILDCARD_PROBE). TIER_IE_SIG and
-// ALERT_WILDCARD_PROBE_IE_SIG remain defined for protocol compatibility.
-// TODO: replace with a firmware-derived IE fingerprint once we capture a live
-// QCA9377 probe burst from a real camera.
+// PACK method 2 PoC: Flock probe IE signature (primary allowlist only). This
+// fingerprint came from community drive-test captures (@NitekryDPaul /
+// DeFlockJoplin), not from our Flock firmware dump — it stays in the
+// signature union because it remains the highest-precision WiFi signature
+// fielded against LiteON-built cameras. If a live QCA9377 probe burst yields
+// a firmware-derived fingerprint, add it as a second allowlist entry rather
+// than replacing this one.
+
+static const char FLOCK_PROBE_IE_SIG_PRIMARY[] =
+    "2,12,127,221:506f9a16030103,45,191,221:0050f208000000";
+static const char FLOCK_LITEON_IE_SIG_PREFIX[] = "221:506f9a16030103";
+
+#define FY_IE_SSID    0
+#define FY_IE_VENDOR  221
+#define FY_PHANTOM_SKIP_CAP 16
+#define FY_TLV_RESYNC_MAX   64
+
+// Encode n raw bytes as lowercase hex pairs (no separator) for vendor IE tokens.
+static void IRAM_ATTR fyHexNibbles(char* dst, const uint8_t* b, int n) {
+  static const char hd[] = "0123456789abcdef";
+  for (int i = 0; i < n; i++) {
+    dst[i * 2]     = hd[b[i] >> 4];
+    dst[i * 2 + 1] = hd[b[i] & 0x0f];
+  }
+}
+// True when ies[pos] starts vendor IE 221 with OUI 50:6f:9a (LiteON / Flock stack).
+// Used to spot real IE boundaries inside corrupted/overflow TLV runs.
+static bool IRAM_ATTR fyLiteonVendorAt(const uint8_t* ies, int len, int pos) {
+  return pos + 9 <= len && ies[pos] == FY_IE_VENDOR && ies[pos + 1] == 7
+      && ies[pos + 2] == 0x50 && ies[pos + 3] == 0x6f && ies[pos + 4] == 0x9a;
+}
+// Scan up to 32 bytes past a bogus TLV header for a real LiteON vendor IE —
+// signals a phantom overflow (driver length/FCS skew) rather than end of frame.
+static bool IRAM_ATTR fyPhantomLiteonAhead(const uint8_t* ies, int len, int pos) {
+  int end = pos + 2 + 32;
+  if (end > len - 1) end = len - 1;
+  for (int j = pos + 2; j < end; j++) {
+    if (fyLiteonVendorAt(ies, len, j)) return true;
+  }
+  return false;
+}
+// True when declared IE length extends past the buffer but looks like a phantom
+// tag-64/len-128 overflow with LiteON payload still present ahead in the buffer.
+static bool IRAM_ATTR fyIsPhantomOverflow(const uint8_t* ies, int len,
+                                          uint8_t id, int elen, int i) {
+  if (i + 2 + elen <= len) return false;
+  if (elen > 200) return true;
+  return id == 64 && elen == 128 && fyPhantomLiteonAhead(ies, len, i);
+}
+// After a TLV parse failure, slide forward up to FY_TLV_RESYNC_MAX bytes to find
+// the next plausible IE header (id + len that fits in the buffer).
+static int IRAM_ATTR fyTlvResync(const uint8_t* ies, int len, int start) {
+  int end = start + FY_TLV_RESYNC_MAX;
+  if (end > len - 1) end = len - 1;
+  for (int j = start; j < end; j++) {
+    int elen = (int)ies[j + 1];
+    if (elen <= 200 && j + 2 + elen <= len) return j;
+  }
+  return -1;
+}
+// Append a comma-separated fragment to the growing IE signature string; fails if cap exceeded.
+static bool IRAM_ATTR fySigAppend(char* out, size_t cap, size_t* pos, const char* part) {
+  size_t plen = strlen(part);
+  if (*pos != 0) {
+    if (*pos + 1 >= cap) return false;
+    out[(*pos)++] = ',';
+  }
+  if (*pos + plen >= cap) return false;
+  memcpy(out + *pos, part, plen);
+  *pos += plen;
+  out[*pos] = '\0';
+  return true;
+}
+// Append a non-vendor IE as its decimal tag id (e.g. "12", "127", "45").
+static bool IRAM_ATTR fySigAppendTag(char* out, size_t cap, size_t* pos, uint8_t id) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%u", (unsigned)id);
+  return fySigAppend(out, cap, pos, buf);
+}
+// Append vendor IE as "221:" + up to 8 payload bytes hex (matches PACK sig format).
+static bool IRAM_ATTR fySigAppendVendor(char* out, size_t cap, size_t* pos,
+                                        const uint8_t* body, int elen) {
+  char buf[24];
+  int take = elen < 8 ? elen : 8;
+  buf[0] = '2'; buf[1] = '2'; buf[2] = '1'; buf[3] = ':';
+  fyHexNibbles(buf + 4, body, take);
+  buf[4 + take * 2] = '\0';
+  return fySigAppend(out, cap, pos, buf);
+}
+
+// Walk 802.11 IE TLVs and build comma-separated fingerprint: skip SSID (tag 0),
+// encode vendor 221 payloads, otherwise record tag numbers. Handles phantom
+// overflows and resync. Sets *complete when every byte was consumed.
+static bool IRAM_ATTR fyBuildFlockIeSigFromIes(const uint8_t* ies, int len,
+                                               char* out, size_t cap, bool* complete) {
+  if (!ies || len < 2 || !out || cap < 2) return false;
+  size_t pos = 0;
+  out[0] = '\0';
+  int i = 0;
+  uint8_t phantomSkips = 0;
+  while (i + 2 <= len) {
+    uint8_t id = ies[i];
+    int elen = (int)ies[i + 1];
+    if (i + 2 + elen > len) {
+      if (phantomSkips < FY_PHANTOM_SKIP_CAP
+          && fyIsPhantomOverflow(ies, len, id, elen, i)) {
+        phantomSkips++;
+        i += 2;
+        continue;
+      }
+      int j = fyTlvResync(ies, len, i);
+      if (j > i) {
+        i = j;
+        continue;
+      }
+      return false;
+    }
+    i += 2;
+    if (id == FY_IE_SSID) {
+      if (elen == 0) {
+        while (i + 2 <= len && ies[i] == 0 && ies[i + 1] == 0) i += 2;
+      } else {
+        i += elen;
+      }
+      continue;
+    }
+    if (id == FY_IE_VENDOR && elen >= 4) {
+      if (!fySigAppendVendor(out, cap, &pos, ies + i, elen)) return false;
+    } else {
+      if (!fySigAppendTag(out, cap, &pos, id)) return false;
+    }
+    i += elen;
+  }
+  if (complete) *complete = (i == len);
+  return pos > 0;
+}
+// Normalize signature to "2,12,127,<rest from LiteON anchor>" when the LiteON
+// vendor prefix is present but leading tags were truncated by parse skew.
+static void IRAM_ATTR fyCanonicalizeFlockIeSig(char* sig, size_t cap) {
+  if (!sig || cap < 8) return;
+  if (strncmp(sig, "2,12,127,", 9) == 0
+      && strstr(sig, FLOCK_LITEON_IE_SIG_PREFIX) != nullptr) {
+    return;
+  }
+  const char* anchor = strstr(sig, FLOCK_LITEON_IE_SIG_PREFIX);
+  if (!anchor) return;
+  char tmp[128];
+  int n = snprintf(tmp, sizeof(tmp), "2,12,127,%s", anchor);
+  if (n > 0 && (size_t)n < cap) memcpy(sig, tmp, (size_t)n + 1);
+}
+// Normalize signature to "2,12,127,<rest from LiteON anchor>" when the LiteON
+// vendor prefix is present but leading tags were truncated by parse skew.
+static bool IRAM_ATTR fyPickBetterSig(const char* a, bool aComplete,
+                                      const char* b, bool bComplete,
+                                      char* out, size_t cap) {
+  if (!a[0] && !b[0]) return false;
+  if (a[0] && !b[0]) {
+    strncpy(out, a, cap - 1);
+    out[cap - 1] = '\0';
+    return true;
+  }
+  if (!a[0] && b[0]) {
+    strncpy(out, b, cap - 1);
+    out[cap - 1] = '\0';
+    return true;
+  }
+  const char* pick = a;
+  if (aComplete && !bComplete) pick = a;
+  else if (!aComplete && bComplete) pick = b;
+  else if (strlen(b) > strlen(a)) pick = b;
+  strncpy(out, pick, cap - 1);
+  out[cap - 1] = '\0';
+  return true;
+}
+// Build fingerprint from full body and from body+2 (skip leading empty SSID IE pair);
+// merge, canonicalize, write to out.
+static bool IRAM_ATTR fyBuildFlockIeSigFromProbeBody(const uint8_t* body, int bodyLen,
+                                                     char* out, size_t cap) {
+  if (!body || bodyLen < 2 || !out || cap < 16) return false;
+  char sigA[128] = {0};
+  char sigB[128] = {0};
+  bool completeA = false, completeB = false;
+  bool okA = fyBuildFlockIeSigFromIes(body, bodyLen, sigA, sizeof(sigA), &completeA);
+  bool okB = false;
+  if (bodyLen >= 2 && body[0] == 0 && body[1] == 0) {
+    okB = fyBuildFlockIeSigFromIes(body + 2, bodyLen - 2, sigB, sizeof(sigB), &completeB);
+  }
+  char merged[128] = {0};
+  if (!fyPickBetterSig(okA ? sigA : "", completeA, okB ? sigB : "", completeB,
+                       merged, sizeof(merged))) {
+    return false;
+  }
+  fyCanonicalizeFlockIeSig(merged, sizeof(merged));
+  strncpy(out, merged, cap - 1);
+  out[cap - 1] = '\0';
+  return out[0] != '\0';
+}
+// True when sig exactly matches FLOCK_PROBE_IE_SIG_PRIMARY (drive-tested allowlist entry).
+static bool IRAM_ATTR fyFlockIeSigIsPrimary(const char* sig) {
+  return sig && strcmp(sig, FLOCK_PROBE_IE_SIG_PRIMARY) == 0;
+}
+
 static bool IRAM_ATTR fyProbeBodyFlockIeSigPrimary(const uint8_t* body, int bodyLen) {
-  (void)body;
-  (void)bodyLen;
+  char ieSig[128];
+  int len = bodyLen;
+  if (fyBuildFlockIeSigFromProbeBody(body, len, ieSig, sizeof(ieSig))
+      && fyFlockIeSigIsPrimary(ieSig)) {
+    return true;
+  }
+  if (len > 4 && fyBuildFlockIeSigFromProbeBody(body, len - 4, ieSig, sizeof(ieSig))
+      && fyFlockIeSigIsPrimary(ieSig)) {
+    return true;
+  }
   return false;
 }
 
@@ -1308,15 +1546,14 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         if (r == -1 && bodyLen > 4) r = isWildcardProbeIE(body, bodyLen - 4);
         if (r == 1) {
           if (fyProbeBodyFlockIeSigPrimary(body, bodyLen)) {
-            // Tier 4 — OUI + wildcard + IE fingerprint. Currently unreachable:
-            // the fingerprint stub always fails (see its TODO). Kept so the
-            // tier collapses back automatically once a firmware-derived IE
-            // fingerprint is restored.
+            // Tier 4 — DeFlockJoplin: OUI + wildcard + IE fingerprint.
             enqueueAlert(ALERT_WILDCARD_PROBE_IE_SIG, hdr->addr2, rssi, ch,
                          nullptr, "probe_req");
           } else {
-            // Tier 3 — wildcard probe from a Flock OUI. With the IE check
-            // retired this is where every OUI + wildcard-probe hit lands.
+            // Tier 3 — wildcard probe from a Flock OUI whose IE fields did
+            // not match. Either a camera on firmware we haven't fingerprinted
+            // or an unrelated device sharing the OUI; worth hearing, worth
+            // distinguishing.
             enqueueAlert(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, ch,
                          nullptr, "probe_req");
           }
@@ -1433,8 +1670,10 @@ static void drainAlertQueue() {
     // REDISCOVER_MS of silence (drove away and came back).
     bool chirpWorthy = false;
     const uint8_t tier = alertTypeToTier(e.type);
+    const bool    isBle = alertTypeIsBle(e.type);
+    // BLE hits reuse the ssid[] slot to carry the advertised device name.
     int idx = fyAddDetection(macStr, method, tier, e.rssi, e.channel,
-                             (e.type == ALERT_SSID) ? e.ssid : nullptr,
+                             (e.type == ALERT_SSID || isBle) ? e.ssid : nullptr,
                              &chirpWorthy);
 
     // Refresh the global "still around" timer for the heartbeat tick.
@@ -1452,7 +1691,11 @@ static void drainAlertQueue() {
     // Human-readable line (for serial terminal / mirror).
     char oui[9];
     ouiFromMac(e.mac, oui, sizeof(oui));
-    if (e.type == ALERT_SSID) {
+    if (isBle) {
+      dualPrintf("[flockyou] DETECT-BLE method=ble_%s mac=%s name=\"%s\" rssi=%d count=%d\n",
+                 method, macStr, e.ssid, e.rssi,
+                 (idx >= 0) ? (int)fyDet[idx].count : 0);
+    } else if (e.type == ALERT_SSID) {
       dualPrintf("[flockyou] DETECT-SSID type=%s mac=%s ssid=\"%s\" rssi=%d ch=%u count=%d\n",
                  e.frameKind, macStr, e.ssid, e.rssi, e.channel,
                  (idx >= 0) ? (int)fyDet[idx].count : 0);
@@ -1464,8 +1707,9 @@ static void drainAlertQueue() {
     }
 
     // Flask-compatible JSON line (parsed by api/flockyou.py over USB CDC).
-    emitDetectionJSON(macStr, method, tier, e.rssi, e.channel,
-                      (e.type == ALERT_SSID) ? e.ssid : "");
+    emitDetectionJSON(isBle ? "ble" : "wifi", macStr, method, tier, e.rssi,
+                      e.channel, (e.type == ALERT_SSID) ? e.ssid : "",
+                      isBle ? e.ssid : "");
 
     // Audio feedback:
     //   - NEW MAC or confidence upgrade → that tier's signature sound
@@ -1480,7 +1724,7 @@ static void drainAlertQueue() {
     ledFlash(LED_FLASH_MS);
 
     char methodLine[40];
-    snprintf(methodLine, sizeof(methodLine), "wifi_%s", method);
+    snprintf(methodLine, sizeof(methodLine), "%s_%s", isBle ? "ble" : "wifi", method);
     dongleDisplayShowAlert(methodLine, macStr, e.rssi, e.channel, ALERT_COOLDOWN_MS);
 
 #if STOP_ON_OUI_HIT
@@ -1515,6 +1759,133 @@ static void heartbeatTick() {
   if (!tierAudible(fyLastTargetTier)) return;                  // tier muted
   heartbeatBeep();
   fyLastHeartbeatAt = now;
+}
+
+// ============================================================
+// BLE DETECTION  — firmware-derived Flock BLE signatures
+// ============================================================
+//
+// Extracted from the same Flock camera firmware dump (2026-09-16). Penguin
+// battery packs and Raven cameras advertise BLE; any of these on the air
+// means a camera (or its battery) is physically nearby:
+//
+//   name      "Penguin-" + 10 digits, a bare 10-digit serial,
+//             "FS Ext Battery" (battery packs — strong camera-presence
+//             signal), or "DfuTarg" (Penguin battery receiving a firmware
+//             update over Nordic legacy DFU)
+//   mfg data  manufacturer-specific AD structure with company ID 0x09C8
+//             (XUNTONG — Penguin battery)
+//   GATT svc  advertised 128-bit UUID e8ccbb38-9532-46a8-9fe5-1814df172e6f
+//             (Flock accessory service), Nordic legacy DFU service
+//             00001530-1212-efde-1523-785feabcd123, or any 16-bit service
+//             UUID in 0x3100-0x3500 (Raven camera GATT services)
+//
+// Generic names like "msm8953_32" / "Android" are deliberately NOT matched —
+// too common to mean anything on their own.
+//
+// Radio coexistence: WiFi promiscuous RX and the BLE scan share the 2.4 GHz
+// radio. Passive scan (no SCAN_REQ ever transmitted), short window inside a
+// longer interval — 30 ms every 300 ms (~10% duty) — so the WiFi sniffer
+// keeps ~90% of the airtime. Flock adverts repeat continuously, so a low
+// duty cycle still catches them within seconds.
+
+#define FY_BLE_SCAN_WINDOW_MS    30
+#define FY_BLE_SCAN_INTERVAL_MS  300
+#define FY_BLE_MFG_XUNTONG       0x09C8
+#define FY_BLE_RAVEN_SVC_MIN     0x3100
+#define FY_BLE_RAVEN_SVC_MAX     0x3500
+
+static NimBLEUUID fyFlockGattUuid("e8ccbb38-9532-46a8-9fe5-1814df172e6f");
+// Nordic legacy DFU service — Penguin battery advertises this (and the name
+// "DfuTarg") while receiving a firmware update (system.img bundles
+// no.nordicsemi.android.dfu + heated_battery_fw.bin).
+static NimBLEUUID fyNordicDfuUuid("00001530-1212-efde-1523-785feabcd123");
+
+// "Penguin-" + exactly 10 digits (case-insensitive prefix).
+static bool fyBleNameIsPenguinSerial(const char* n) {
+  if (strncasecmp(n, "penguin-", 8) != 0) return false;
+  for (int i = 8; i < 18; i++) if (!isdigit((unsigned char)n[i])) return false;
+  return n[18] == '\0';
+}
+// Exactly 10 digits, nothing else.
+static bool fyBleNameIsBareSerial(const char* n) {
+  for (int i = 0; i < 10; i++) if (!isdigit((unsigned char)n[i])) return false;
+  return n[10] == '\0';
+}
+
+// Evaluate one advert against the Flock BLE signature set and enqueue the
+// highest-signal match (name > mfg > GATT). Runs on the NimBLE host task;
+// enqueueAlert's critical-section ring is safe from task context.
+static void fyBleCheckDevice(NimBLEAdvertisedDevice* dev) {
+  int rssi = dev->getRSSI();
+  if (rssi < RSSI_MIN) return;
+
+  AlertType hit     = ALERT_BLE_GATT;  // placeholder; set when matched
+  char      name[33] = {0};
+  bool      matched  = false;
+
+  if (dev->haveName()) {
+    std::string n = dev->getName();
+    strlcpy(name, n.c_str(), sizeof(name));
+    if (fyBleNameIsPenguinSerial(name) || fyBleNameIsBareSerial(name) ||
+        strcasecmp(name, "fs ext battery") == 0 ||
+        strcasecmp(name, "dfutarg") == 0) {
+      hit = ALERT_BLE_NAME;
+      matched = true;
+    }
+  }
+
+  if (!matched && dev->haveManufacturerData()) {
+    std::string md = dev->getManufacturerData();
+    if (md.size() >= 2) {
+      uint16_t cid = (uint16_t)(uint8_t)md[0] | ((uint16_t)(uint8_t)md[1] << 8);
+      if (cid == FY_BLE_MFG_XUNTONG) { hit = ALERT_BLE_MFG; matched = true; }
+    }
+  }
+
+  if (!matched) {
+    int svcCount = (int)dev->getServiceUUIDCount();
+    for (int i = 0; i < svcCount; i++) {
+      NimBLEUUID u = dev->getServiceUUID(i);
+      if (u.bitSize() == 128) {
+        if (u.equals(fyFlockGattUuid) || u.equals(fyNordicDfuUuid)) { hit = ALERT_BLE_GATT; matched = true; break; }
+      } else if (u.bitSize() == 16) {
+        uint16_t u16 = u.getNative()->u16.value;
+        if (u16 >= FY_BLE_RAVEN_SVC_MIN && u16 <= FY_BLE_RAVEN_SVC_MAX) {
+          hit = ALERT_BLE_GATT; matched = true; break;
+        }
+      }
+    }
+  }
+
+  if (!matched) return;
+
+  // NimBLE stores the address LSB-first; flip to display (MSB-first) order.
+  const uint8_t* nat = dev->getAddress().getNative();
+  uint8_t mac[6];
+  for (int i = 0; i < 6; i++) mac[i] = nat[5 - i];
+
+  enqueueAlert(hit, mac, (int8_t)rssi, 0xFF, name[0] ? name : nullptr, "ble_adv");
+}
+
+class FYBleCallbacks : public NimBLEAdvertisedDeviceCallbacks {
+  void onResult(NimBLEAdvertisedDevice* dev) override {
+    if (dev) fyBleCheckDevice(dev);
+  }
+};
+static FYBleCallbacks fyBleCb;
+
+static void fyBleStart() {
+  if (!NimBLEDevice::getInitialized()) NimBLEDevice::init("");
+  NimBLEScan* s = NimBLEDevice::getScan();
+  s->setActiveScan(false);             // passive — never emit SCAN_REQ
+  s->setInterval(FY_BLE_SCAN_INTERVAL_MS);
+  s->setWindow(FY_BLE_SCAN_WINDOW_MS);
+  s->setDuplicateFilter(false);
+  s->setAdvertisedDeviceCallbacks(&fyBleCb, /*wantDuplicates=*/false);
+  s->start(0, nullptr, false);         // continuous scan, no duration limit
+  dualPrintf("[flockyou] BLE scan started (win=%ums int=%ums)\n",
+             (unsigned)FY_BLE_SCAN_WINDOW_MS, (unsigned)FY_BLE_SCAN_INTERVAL_MS);
 }
 
 // ============================================================
@@ -1591,6 +1962,10 @@ void setup() {
   esp_wifi_set_promiscuous_filter(&filt);
   esp_wifi_set_promiscuous_rx_cb(&wifiSniffer);
   esp_wifi_set_promiscuous(true);
+
+  // BLE side of the union — passive NimBLE scan sharing the radio with
+  // promiscuous WiFi RX (low duty cycle; see the BLE section above).
+  fyBleStart();
 
   dualPrintln("[flockyou] merged WiFi detector started");
   dualPrintf("[flockyou] mode=%s dwell_ms=%u start_channel=%u rssi_min=%d spiffs=%d\n",
