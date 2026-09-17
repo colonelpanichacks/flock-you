@@ -7,13 +7,7 @@
 
 > **For research & educational use only.** You assume all liability for any use or misuse of these devices — don't do anything illegal or dumb. This project is not affiliated with, endorsed by, or associated with any camera-network operator; all trademarks belong to their respective owners.
 
-This is the `dev` branch. It carries the DeFlockJoplin Information Element research and wildcard-probe signature, and runs @NitekryDPaul's broad OUI paths alongside them under a confidence-tier system — see "Running both methods together" below.
-
----
-
-## dev-firmware-detections branch
-
-This development version replaces the community OUI list with a detection set extracted **directly from a Flock Safety ALPR camera firmware dump** (Qualcomm MSM8953 + QCA9377, Android 8.1, codename `hpnotiq`, analyzed 2026-09-16). Every signature below has a provenance inside that firmware image; nothing community-sourced is in the active matcher on this branch. Full details and internal sources: [`datasets/firmware_derived_signatures.md`](datasets/firmware_derived_signatures.md).
+This is the `main` branch. It uses a detection set extracted **directly from a Flock Safety ALPR camera firmware dump** (Qualcomm MSM8953 + QCA9377, Android 8.1, codename `hpnotiq`, analyzed 2026-09-16). Every signature below has a provenance inside that firmware image. Full details and internal sources: [`datasets/firmware_derived_signatures.md`](datasets/firmware_derived_signatures.md).
 
 **WiFi:**
 - OUIs `b4:1e:52` (Flock Safety's own IEEE-registered OUI) and `00:03:7f` (Qualcomm Atheros — default MACs `00:03:7f:50:00:01` in `bdwlan30.bin`/`fakeboar.bin`, `00:03:7f:4f:00:16` in `otp30.bin`)
@@ -69,7 +63,7 @@ Flock cameras transmit wildcard probe requests on wi-fi channels in ascending or
 
 On that basis the original branch disabled every other detection method. While they are associated with Flock cameras, they are essentially all echoes of the camera itself, which is only gated by OUI match.  The other methods can fire when any OUI matched device is sending wildcard probes because nearby APs can respond and generate a false positive match on addr1 or addr3 methods.
 
-> **Update (`dev` branch):** those methods are back on, but demoted rather than trusted. The reasoning above is why they sit at tiers 1–2 with their own quieter tones — they are echoes, and they do misfire on addr1/addr3. The difference now is that a weak hit can't overwrite a fingerprint-confirmed one, so they cost nothing in label quality while still covering stations that never transmit during a dwell window.
+> The addr1/addr3 echo methods remain enabled but sit at tiers 1–2 with quieter tones — they are echoes, and they do misfire. The firmware-derived OUI set means a false positive must belong to either Flock Safety's registered IEEE block or a Qualcomm Atheros radio, which is a much narrower target than the community 32-prefix list.
 
 The new method relies on IE fingerprinting research done by others in the past such [here](https://www.researchgate.net/publication/367065691_Analysis_of_Wi-Fi_Probe_Requests_Towards_Information_Element_Fingerprinting).  According to the linked paper, IE field detection can already be a high confidence identifier, combining it with the OUI list collected by @NitekryDPaul yields an extremely certain signature — no false positive was observed across hundreds of miles of drive-testing. Other detection methods have trended towards more active methods, but this is entirely passive. 
 
@@ -93,8 +87,8 @@ Both detection methods run at once. The IE fingerprint is the precise one; the b
 
 | Tier | `detection_method` | Gate | Sound |
 |---|---|---|---|
-| 4 | `wifi_wildcard_probe_ie_sig` | OUI + wildcard SSID + IE signature | two-note chirp, 2000→2800 Hz |
-| 3 | `wifi_wildcard_probe` | OUI + wildcard SSID, IE unverified | two-note chirp, 1400→1800 Hz |
+| 4 | `wifi_wildcard_probe_ie_sig` | OUI + wildcard SSID + IE signature | two-note chirp, 2000→2800 Hz — **currently disabled** (stub pending live QCA9377 recapture) |
+| 3 | `wifi_wildcard_probe` | OUI + wildcard SSID, firmware-derived OUI | two-note chirp, 1400→1800 Hz — **top active tier** |
 | 2 | `wifi_oui_addr2` | Flock OUI in addr2, any frame | single blip, 1200 Hz |
 | 1 | `wifi_oui_addr1` / `wifi_oui_addr3` | Flock OUI in addr1 / BSSID | single blip, 800 Hz |
 | 0 | `wifi_ssid` | SSID keyword (off by default) | single blip, 600 Hz |
@@ -153,28 +147,20 @@ The split between callback and loop is deliberate: the WiFi task has hard real-t
 
 ---
 
-## OUI target list (@NitekryDPaul research)
+## OUI target list (firmware-derived)
 
-All lowercase, colon-separated. 32 prefixes — 31 active from @NitekryDPaul's [nite-oui-collection](https://github.com/nitekry/nite-oui-collection) as of his 2026-07-16 revision, plus 1 from DeFlockJoplin:
+Two OUI prefixes, sourced directly from the Flock Safety ALPR camera firmware dump (codename `hpnotiq`):
 
-```
-70:c9:4e   3c:91:80   d8:f3:bc   80:30:49   b8:35:32
-14:5a:fc   74:4c:a1   08:3a:88   9c:2f:9d   c0:35:32
-94:08:53   e4:aa:ea   f4:6a:dd   e0:0a:f6   24:b2:b9
-00:f4:8d   d0:39:57   e8:d0:fc   e0:4f:43   b8:1e:a4
-70:08:94   58:8e:81   ec:1b:bd   3c:71:bf   58:00:e3
-90:35:ea   5c:93:a2   64:6e:69   48:27:ea   a4:cf:12
-14:b5:cd
-82:6b:f2   ← contributed by DeFlockJoplin
-```
+| OUI | Source | Notes |
+|-----|--------|-------|
+| `b4:1e:52` | Flock Safety's own IEEE MA-L registration | Primary; any frame from this prefix is a Flock device |
+| `00:03:7f` | Qualcomm Atheros | Default radio MACs burned into `bdwlan30.bin` (`00:03:7f:50:00:01`) and `otp30.bin` (`00:03:7f:4f:00:16`); camera uses these before OTA provisioning assigns a Flock OUI |
 
-Changes in the 2026-07-16 sync: **removed** `f8:a2:d6` (@NitekryDPaul demoted it — hits a Sony Media Player, not a Flock device); **added** `e0:0a:f6` and `14:b5:cd`.
-
-> Do not add a "skip locally-administered MAC" filter to the match path. `82:6b:f2` has bit 1 of the first octet set, so that rule would silently drop DeFlockJoplin's camera.
+The community 32-prefix list from @NitekryDPaul is preserved in [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md) for reference. It is not active on this branch — there is zero overlap between the two sets (different hardware generations). If field tests miss visually-confirmed cameras, a union list is worth considering.
 
 Pre-compiled into a byte table in `setup()` so the matcher stays entirely in IRAM with no flash-resident lookups during callback execution.
 
-Full dataset and methodology: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
+Full provenance: [`datasets/firmware_derived_signatures.md`](datasets/firmware_derived_signatures.md).
 
 ---
 
@@ -343,9 +329,11 @@ Both modes work simultaneously — the SPIFFS write path doesn't care if a host 
 
 ---
 
-## Scope: WiFi only
+## Scope
 
-This firmware and dashboard are 2.4 GHz WiFi only. BLE detection stopped working in spring 2026, so the BLE paths — stat counters, map markers and import defaults — are gone rather than left reporting zeroes. Everything is `protocol: wifi_2_4ghz`.
+**WiFi firmware** (`main.cpp` + `api/flockyou.py`): 2.4 GHz promiscuous sniffing. The ESP32 radio is dedicated to WiFi; all detections are `protocol: wifi_2_4ghz`.
+
+**BLE companion** (`api/flockyou_ble.py`): runs alongside the Flask dashboard and scans for Penguin battery packs (`Penguin-NNNNNNNNNN`, `FS Ext Battery`, mfg ID `0x09C8`), the Flock accessory GATT service, and Raven GATT services — all from the firmware dump. Detections are tagged `firmware_sig: true` and `matched_signatures` in the API response; the dashboard frontend does not render these fields yet (KML export also lacks them — CSV has full coverage).
 
 ---
 
