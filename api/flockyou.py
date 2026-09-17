@@ -155,6 +155,105 @@ def save_settings():
     except Exception as e:
         print(f"Error saving settings: {e}")
 
+# ---------------------------------------------------------------------------
+# WiFi detection signatures
+# ---------------------------------------------------------------------------
+#
+# Authoritative target set, extracted from an actual Flock Safety camera
+# firmware dump. This is the ONLY detection set this version uses — it
+# replaces the older crowd-sourced OUI collections.
+#
+# The match itself runs on the ESP32 (main.cpp); this copy is the dashboard's
+# reference for labelling, imports, and corroboration.
+
+# Target OUIs (all lowercase, colons only):
+#   b4:1e:52 — Flock Safety's own IEEE-registered OUI (MA-L, Atlanta HQ)
+#   00:03:7f — Qualcomm Atheros; the camera's QCA9377 radio ships firmware
+#              default MACs 00:03:7f:50:00:01 (bdwlan30.bin/fakeboar.bin) and
+#              00:03:7f:4f:00:16 (otp30.bin), and emits broadcast probe
+#              requests (~125ms, channel-hopping) from LOWI geolocation
+#              scanning.
+FLOCK_TARGET_OUIS = (
+    "b4:1e:52",
+    "00:03:7f",
+)
+
+# SSID keywords, matched case-insensitively (same substring semantics as the
+# firmware's strcasestr_local):
+#   "flock"          — "Flock-XXXXXX" SoftAP (built in WifiApService.java as
+#                      "Flock-" + last 6 chars of the WiFi MAC, WPA2 password
+#                      "security") and bare "Flock" on provisioned units
+#   "penguin"        — Penguin battery-pack naming
+#   "fs ext battery" — "FS Ext Battery" extended-battery accessory
+FLOCK_SSID_KEYWORDS = (
+    "flock",
+    "penguin",
+    "fs ext battery",
+)
+
+
+def matches_flock_ssid(ssid):
+    """True when an SSID contains any firmware-derived keyword (case-insensitive)."""
+    if not ssid:
+        return False
+    lowered = str(ssid).lower()
+    return any(k in lowered for k in FLOCK_SSID_KEYWORDS)
+
+
+def matches_flock_oui(mac_address):
+    """True when a MAC address starts with one of the firmware-derived OUIs."""
+    if not mac_address:
+        return False
+    cleaned = str(mac_address).replace('-', ':').lower()
+    return any(cleaned.startswith(oui) for oui in FLOCK_TARGET_OUIS)
+
+
+def firmware_signature_matches(data):
+    """WiFi-side firmware-derived signature matches for one observation.
+
+    Returns a list of signature tags such as "oui:b4:1e:52" or
+    "ssid_keyword:flock". Empty list when nothing in the firmware-derived
+    target set matches. BLE-side tags are attached by flockyou_ble before
+    the record reaches this pipeline and are preserved by the merge below.
+    """
+    if not isinstance(data, dict):
+        return []
+    matched = []
+    mac = data.get('mac_address')
+    if mac:
+        cleaned = str(mac).replace('-', ':').lower()
+        for oui in FLOCK_TARGET_OUIS:
+            if cleaned.startswith(oui):
+                matched.append(f'oui:{oui}')
+                break
+    ssid = data.get('ssid')
+    if ssid:
+        lowered = str(ssid).lower()
+        for keyword in FLOCK_SSID_KEYWORDS:
+            if keyword in lowered:
+                matched.append(f'ssid_keyword:{keyword}')
+    return matched
+
+
+def tag_firmware_signatures(data):
+    """Merge firmware-signature matches onto a detection dict.
+
+    Sets two additive fields (existing JSON fields are untouched):
+      matched_signatures — ordered list of every signature tag that hit,
+                           unioned with any tags already on the record
+                           (e.g. BLE tags from flockyou_ble).
+      firmware_sig       — True when at least one firmware-derived
+                           signature matched.
+    """
+    matched = list(data.get('matched_signatures') or [])
+    for sig in firmware_signature_matches(data):
+        if sig not in matched:
+            matched.append(sig)
+    data['matched_signatures'] = matched
+    data['firmware_sig'] = bool(matched)
+    return data
+
+
 # Load OUI database
 def load_oui_database():
     """Load the IEEE OUI database for manufacturer lookups"""
@@ -682,6 +781,10 @@ def add_detection_from_serial(data):
     # Add manufacturer information
     if 'mac_address' in data:
         data['manufacturer'] = lookup_manufacturer(data['mac_address'])
+
+    # Tag firmware-derived signature hits (OUI / SSID keyword here; BLE tags
+    # arrive pre-attached by flockyou_ble and are merged, not overwritten).
+    tag_firmware_signatures(data)
     
     # Check if we already have a detection for this MAC address
     mac_address = data.get('mac_address')
@@ -720,6 +823,17 @@ def add_detection_from_serial(data):
             seen[new_method] = seen.get(new_method, 0) + 1
             existing_detection['last_method'] = new_method
 
+        # Union in any firmware-signature tags from this observation, so a
+        # device first seen without a hit and later confirmed still reads as
+        # firmware-matched (and vice versa the tag never disappears).
+        new_sigs = data.get('matched_signatures') or []
+        if new_sigs:
+            merged = existing_detection.get('matched_signatures') or []
+            for sig in new_sigs:
+                if sig not in merged:
+                    merged.append(sig)
+            existing_detection['matched_signatures'] = merged
+            existing_detection['firmware_sig'] = True
 
         # Update GPS if new data is available
         if data.get('gps'):
@@ -977,6 +1091,8 @@ def add_detection():
     # Add manufacturer information
     if 'mac_address' in data:
         data['manufacturer'] = lookup_manufacturer(data['mac_address'])
+
+    tag_firmware_signatures(data)
     
     # Add server timestamp
     data['server_timestamp'] = datetime.now().isoformat()
@@ -1289,6 +1405,7 @@ def export_csv():
             # detection
             'detection_method', 'detection_label', 'detection_tier',
             'last_method', 'methods_seen', 'detection_count', 'protocol',
+            'firmware_sig', 'matched_signatures',
             # signal
             'rssi', 'last_rssi', 'signal_strength', 'channel', 'last_channel',
             # location
@@ -1323,6 +1440,8 @@ def export_csv():
                 ),
                 'detection_count': detection.get('detection_count', 1),
                 'protocol': detection.get('protocol'),
+                'firmware_sig': detection.get('firmware_sig', False),
+                'matched_signatures': '; '.join(detection.get('matched_signatures') or []),
                 # signal
                 'rssi': detection.get('rssi'),
                 'last_rssi': detection.get('last_rssi'),

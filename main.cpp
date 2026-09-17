@@ -83,8 +83,15 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 // when several paths hit the same MAC, and whether a broad hit is allowed to
 // squat on the dedupe cooldown ahead of a better one.
 //
-//   4  wildcard_probe_ie_sig  DeFlockJoplin: OUI + wildcard SSID + IE fingerprint
-//   3  wildcard_probe         OUI + wildcard SSID, no IE verification
+//   4  wildcard_probe_ie_sig  RETIRED — the IE fingerprint behind this tier was
+//                              community/LiteON-derived, not extracted from our
+//                              Flock firmware dump, so the check always fails
+//                              and nothing reaches tier 4. The tier constant and
+//                              alert-type name are kept so the dashboard/serial
+//                              protocol is unchanged. TODO: restore with a
+//                              firmware-derived IE fingerprint once we capture a
+//                              live QCA9377 probe burst.
+//   3  wildcard_probe         OUI + wildcard SSID (currently the top live tier)
 //   2  oui_addr2              @NitekryDPaul: transmitter-side OUI, any frame
 //   1  oui_addr1 / oui_addr3  @NitekryDPaul: receiver / BSSID OUI — AP echoes
 //   0  ssid                   SSID keyword match (off by default)
@@ -118,7 +125,13 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 // audible. Runtime-settable over serial by the Flask dashboard, persisted to
 // NVS so it survives a power cycle.
 #define BEEP_MASK_DEFAULT 0x1F   // 0b11111 — all five tiers on
-static const char* target_ssid_keywords[] = { "flock" };
+// Firmware-derived names (Flock camera firmware dump, 2026-09-16). Matching
+// is case-insensitive — strcasestr_local() lowercases both sides — so these
+// lowercase keywords still catch the mixed-case "Penguin-NNNNNNNNNN" /
+// "FS Ext Battery" Penguin battery-pack advertisements. "flock" also covers
+// the "Flock-XXXXXX" SoftAP SSID, built in WifiApService.java as "Flock-" +
+// the last 6 hex chars of the WiFi MAC.
+static const char* target_ssid_keywords[] = { "flock", "penguin", "fs ext battery" };
 static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(target_ssid_keywords[0]);
 
 #define STOP_ON_SSID_HIT 0
@@ -137,21 +150,22 @@ static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(t
 // TARGET OUI LIST  (all lowercase, colons only)
 // ============================================================
 
-// Synced with @NitekryDPaul's nite-oui-collection my_tested_flock.md,
-// 2026-07-16 revision: 31 active prefixes. Plus 82:6b:f2 from DeFlockJoplin.
+// Extracted from an actual Flock Safety camera firmware dump (2026-09-16) —
+// these two prefixes are the only OUIs this version matches on:
 //
-// Note: do NOT add a locally-administered filter to the match path. 82:6b:f2
-// has bit 1 of the first octet set, so a "skip locally-administered" rule
-// would silently drop DeFlockJoplin's camera.
+//   b4:1e:52  Flock Safety's own IEEE-registered OUI (MA-L, Atlanta HQ)
+//   00:03:7f  Qualcomm Atheros. The camera radio is a Qualcomm QCA9377 and
+//             the dump's default MACs use this prefix: 00:03:7f:50:00:01
+//             (bdwlan30.bin / fakeboar.bin) and 00:03:7f:4f:00:16 (otp30.bin).
+//
+// Cameras emit broadcast probe requests (~125 ms interval, channel-hopping)
+// from the QCA9377's LOWI geolocation scanning, so these prefixes appear in
+// addr2 on the air even with no AP association. Both are globally
+// administered (bit 1 of the first octet clear), so the
+// locally-administered-MAC skip in matchOuiRaw() cannot drop them.
 static const char* target_ouis[] = {
-  "70:c9:4e", "3c:91:80", "d8:f3:bc", "80:30:49", "b8:35:32",
-  "14:5a:fc", "74:4c:a1", "08:3a:88", "9c:2f:9d", "c0:35:32",
-  "94:08:53", "e4:aa:ea", "f4:6a:dd", "e0:0a:f6", "24:b2:b9",
-  "00:f4:8d", "d0:39:57", "e8:d0:fc", "e0:4f:43", "b8:1e:a4",
-  "70:08:94", "58:8e:81", "ec:1b:bd", "3c:71:bf", "58:00:e3",
-  "90:35:ea", "5c:93:a2", "64:6e:69", "48:27:ea", "a4:cf:12",
-  "14:b5:cd",
-  "82:6b:f2"  // contributed by DeFlockJoplin
+  "b4:1e:52",  // Flock Safety (IEEE MA-L)
+  "00:03:7f"   // Qualcomm Atheros QCA9377 — firmware default MACs
 };
 static const size_t OUI_COUNT = sizeof(target_ouis) / sizeof(target_ouis[0]);
 
@@ -171,10 +185,14 @@ typedef enum : uint8_t {
   ALERT_OUI_ADDR3       = 2,
   ALERT_SSID            = 3,
   // Wildcard probe + OUI + primary IE signature (wifi_wildcard_probe_ie_sig).
+  // Name kept for dashboard/serial protocol compatibility; the IE fingerprint
+  // check itself is retired (always fails), so this type is never enqueued
+  // until a firmware-derived fingerprint is restored — see the TODO stub below.
   ALERT_WILDCARD_PROBE_IE_SIG = 4,
-  // Wildcard probe + OUI, IE fingerprint did NOT match. Kept as its own tier
-  // rather than folded into addr2: the wildcard behaviour is still meaningful
-  // on its own, and separating it shows which cameras the IE signature misses.
+  // Wildcard probe + OUI, no IE verification. With the IE fingerprint retired
+  // this is the top live tier: every OUI + wildcard-probe hit lands here.
+  // Kept separate from addr2 because the wildcard behaviour is still meaningful
+  // on its own.
   ALERT_WILDCARD_PROBE  = 5,
 } AlertType;
 
@@ -1222,213 +1240,21 @@ static int IRAM_ATTR isWildcardProbeIE(const uint8_t* body, int len) {
   return -1;
 }
 
-// --- PACK method 2 PoC: Flock probe IE signature (primary allowlist only) ---
-
-static const char FLOCK_PROBE_IE_SIG_PRIMARY[] =
-    "2,12,127,221:506f9a16030103,45,191,221:0050f208000000";
-static const char FLOCK_LITEON_IE_SIG_PREFIX[] = "221:506f9a16030103";
-
-#define FY_IE_SSID    0
-#define FY_IE_VENDOR  221
-#define FY_PHANTOM_SKIP_CAP 16
-#define FY_TLV_RESYNC_MAX   64
-
-// Encode n raw bytes as lowercase hex pairs (no separator) for vendor IE tokens.
-static void IRAM_ATTR fyHexNibbles(char* dst, const uint8_t* b, int n) {
-  static const char hd[] = "0123456789abcdef";
-  for (int i = 0; i < n; i++) {
-    dst[i * 2]     = hd[b[i] >> 4];
-    dst[i * 2 + 1] = hd[b[i] & 0x0f];
-  }
-}
-// True when ies[pos] starts vendor IE 221 with OUI 50:6f:9a (LiteON / Flock stack).
-// Used to spot real IE boundaries inside corrupted/overflow TLV runs.
-static bool IRAM_ATTR fyLiteonVendorAt(const uint8_t* ies, int len, int pos) {
-  return pos + 9 <= len && ies[pos] == FY_IE_VENDOR && ies[pos + 1] == 7
-      && ies[pos + 2] == 0x50 && ies[pos + 3] == 0x6f && ies[pos + 4] == 0x9a;
-}
-// Scan up to 32 bytes past a bogus TLV header for a real LiteON vendor IE —
-// signals a phantom overflow (driver length/FCS skew) rather than end of frame.
-static bool IRAM_ATTR fyPhantomLiteonAhead(const uint8_t* ies, int len, int pos) {
-  int end = pos + 2 + 32;
-  if (end > len - 1) end = len - 1;
-  for (int j = pos + 2; j < end; j++) {
-    if (fyLiteonVendorAt(ies, len, j)) return true;
-  }
-  return false;
-}
-// True when declared IE length extends past the buffer but looks like a phantom
-// tag-64/len-128 overflow with LiteON payload still present ahead in the buffer.
-static bool IRAM_ATTR fyIsPhantomOverflow(const uint8_t* ies, int len,
-                                          uint8_t id, int elen, int i) {
-  if (i + 2 + elen <= len) return false;
-  if (elen > 200) return true;
-  return id == 64 && elen == 128 && fyPhantomLiteonAhead(ies, len, i);
-}
-// After a TLV parse failure, slide forward up to FY_TLV_RESYNC_MAX bytes to find
-// the next plausible IE header (id + len that fits in the buffer).
-static int IRAM_ATTR fyTlvResync(const uint8_t* ies, int len, int start) {
-  int end = start + FY_TLV_RESYNC_MAX;
-  if (end > len - 1) end = len - 1;
-  for (int j = start; j < end; j++) {
-    int elen = (int)ies[j + 1];
-    if (elen <= 200 && j + 2 + elen <= len) return j;
-  }
-  return -1;
-}
-// Append a comma-separated fragment to the growing IE signature string; fails if cap exceeded.
-static bool IRAM_ATTR fySigAppend(char* out, size_t cap, size_t* pos, const char* part) {
-  size_t plen = strlen(part);
-  if (*pos != 0) {
-    if (*pos + 1 >= cap) return false;
-    out[(*pos)++] = ',';
-  }
-  if (*pos + plen >= cap) return false;
-  memcpy(out + *pos, part, plen);
-  *pos += plen;
-  out[*pos] = '\0';
-  return true;
-}
-// Append a non-vendor IE as its decimal tag id (e.g. "12", "127", "45").
-static bool IRAM_ATTR fySigAppendTag(char* out, size_t cap, size_t* pos, uint8_t id) {
-  char buf[8];
-  snprintf(buf, sizeof(buf), "%u", (unsigned)id);
-  return fySigAppend(out, cap, pos, buf);
-}
-// Append vendor IE as "221:" + up to 8 payload bytes hex (matches PACK sig format).
-static bool IRAM_ATTR fySigAppendVendor(char* out, size_t cap, size_t* pos,
-                                        const uint8_t* body, int elen) {
-  char buf[24];
-  int take = elen < 8 ? elen : 8;
-  buf[0] = '2'; buf[1] = '2'; buf[2] = '1'; buf[3] = ':';
-  fyHexNibbles(buf + 4, body, take);
-  buf[4 + take * 2] = '\0';
-  return fySigAppend(out, cap, pos, buf);
-}
-
-// Walk 802.11 IE TLVs and build comma-separated fingerprint: skip SSID (tag 0),
-// encode vendor 221 payloads, otherwise record tag numbers. Handles phantom
-// overflows and resync. Sets *complete when every byte was consumed.
-static bool IRAM_ATTR fyBuildFlockIeSigFromIes(const uint8_t* ies, int len,
-                                               char* out, size_t cap, bool* complete) {
-  if (!ies || len < 2 || !out || cap < 2) return false;
-  size_t pos = 0;
-  out[0] = '\0';
-  int i = 0;
-  uint8_t phantomSkips = 0;
-  while (i + 2 <= len) {
-    uint8_t id = ies[i];
-    int elen = (int)ies[i + 1];
-    if (i + 2 + elen > len) {
-      if (phantomSkips < FY_PHANTOM_SKIP_CAP
-          && fyIsPhantomOverflow(ies, len, id, elen, i)) {
-        phantomSkips++;
-        i += 2;
-        continue;
-      }
-      int j = fyTlvResync(ies, len, i);
-      if (j > i) {
-        i = j;
-        continue;
-      }
-      return false;
-    }
-    i += 2;
-    if (id == FY_IE_SSID) {
-      if (elen == 0) {
-        while (i + 2 <= len && ies[i] == 0 && ies[i + 1] == 0) i += 2;
-      } else {
-        i += elen;
-      }
-      continue;
-    }
-    if (id == FY_IE_VENDOR && elen >= 4) {
-      if (!fySigAppendVendor(out, cap, &pos, ies + i, elen)) return false;
-    } else {
-      if (!fySigAppendTag(out, cap, &pos, id)) return false;
-    }
-    i += elen;
-  }
-  if (complete) *complete = (i == len);
-  return pos > 0;
-}
-// Normalize signature to "2,12,127,<rest from LiteON anchor>" when the LiteON
-// vendor prefix is present but leading tags were truncated by parse skew.
-static void IRAM_ATTR fyCanonicalizeFlockIeSig(char* sig, size_t cap) {
-  if (!sig || cap < 8) return;
-  if (strncmp(sig, "2,12,127,", 9) == 0
-      && strstr(sig, FLOCK_LITEON_IE_SIG_PREFIX) != nullptr) {
-    return;
-  }
-  const char* anchor = strstr(sig, FLOCK_LITEON_IE_SIG_PREFIX);
-  if (!anchor) return;
-  char tmp[128];
-  int n = snprintf(tmp, sizeof(tmp), "2,12,127,%s", anchor);
-  if (n > 0 && (size_t)n < cap) memcpy(sig, tmp, (size_t)n + 1);
-}
-// Normalize signature to "2,12,127,<rest from LiteON anchor>" when the LiteON
-// vendor prefix is present but leading tags were truncated by parse skew.
-static bool IRAM_ATTR fyPickBetterSig(const char* a, bool aComplete,
-                                      const char* b, bool bComplete,
-                                      char* out, size_t cap) {
-  if (!a[0] && !b[0]) return false;
-  if (a[0] && !b[0]) {
-    strncpy(out, a, cap - 1);
-    out[cap - 1] = '\0';
-    return true;
-  }
-  if (!a[0] && b[0]) {
-    strncpy(out, b, cap - 1);
-    out[cap - 1] = '\0';
-    return true;
-  }
-  const char* pick = a;
-  if (aComplete && !bComplete) pick = a;
-  else if (!aComplete && bComplete) pick = b;
-  else if (strlen(b) > strlen(a)) pick = b;
-  strncpy(out, pick, cap - 1);
-  out[cap - 1] = '\0';
-  return true;
-}
-// Build fingerprint from full body and from body+2 (skip leading empty SSID IE pair);
-// merge, canonicalize, write to out.
-static bool IRAM_ATTR fyBuildFlockIeSigFromProbeBody(const uint8_t* body, int bodyLen,
-                                                     char* out, size_t cap) {
-  if (!body || bodyLen < 2 || !out || cap < 16) return false;
-  char sigA[128] = {0};
-  char sigB[128] = {0};
-  bool completeA = false, completeB = false;
-  bool okA = fyBuildFlockIeSigFromIes(body, bodyLen, sigA, sizeof(sigA), &completeA);
-  bool okB = false;
-  if (bodyLen >= 2 && body[0] == 0 && body[1] == 0) {
-    okB = fyBuildFlockIeSigFromIes(body + 2, bodyLen - 2, sigB, sizeof(sigB), &completeB);
-  }
-  char merged[128] = {0};
-  if (!fyPickBetterSig(okA ? sigA : "", completeA, okB ? sigB : "", completeB,
-                       merged, sizeof(merged))) {
-    return false;
-  }
-  fyCanonicalizeFlockIeSig(merged, sizeof(merged));
-  strncpy(out, merged, cap - 1);
-  out[cap - 1] = '\0';
-  return out[0] != '\0';
-}
-// True when sig exactly matches FLOCK_PROBE_IE_SIG_PRIMARY (drive-tested allowlist entry).
-static bool IRAM_ATTR fyFlockIeSigIsPrimary(const char* sig) {
-  return sig && strcmp(sig, FLOCK_PROBE_IE_SIG_PRIMARY) == 0;
-}
-
+// --- IE fingerprint: RETIRED (community-derived) ---
+//
+// The old LiteON/community fingerprint (PACK sig "2,12,127,221:506f9a16030103,
+// 45,191,221:0050f208000000" and its FLOCK_PROBE_IE_SIG_PRIMARY /
+// FLOCK_LITEON_IE_SIG_PREFIX constants) was removed: it came from drive-test
+// captures, not from our Flock firmware dump, so it does not belong in this
+// firmware-derived detection set. This stub keeps the caller's tier routing
+// intact while always failing the IE check, so every OUI + wildcard-probe hit
+// lands at tier 3 (ALERT_WILDCARD_PROBE). TIER_IE_SIG and
+// ALERT_WILDCARD_PROBE_IE_SIG remain defined for protocol compatibility.
+// TODO: replace with a firmware-derived IE fingerprint once we capture a live
+// QCA9377 probe burst from a real camera.
 static bool IRAM_ATTR fyProbeBodyFlockIeSigPrimary(const uint8_t* body, int bodyLen) {
-  char ieSig[128];
-  int len = bodyLen;
-  if (fyBuildFlockIeSigFromProbeBody(body, len, ieSig, sizeof(ieSig))
-      && fyFlockIeSigIsPrimary(ieSig)) {
-    return true;
-  }
-  if (len > 4 && fyBuildFlockIeSigFromProbeBody(body, len - 4, ieSig, sizeof(ieSig))
-      && fyFlockIeSigIsPrimary(ieSig)) {
-    return true;
-  }
+  (void)body;
+  (void)bodyLen;
   return false;
 }
 
@@ -1482,14 +1308,15 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         if (r == -1 && bodyLen > 4) r = isWildcardProbeIE(body, bodyLen - 4);
         if (r == 1) {
           if (fyProbeBodyFlockIeSigPrimary(body, bodyLen)) {
-            // Tier 4 — DeFlockJoplin: OUI + wildcard + IE fingerprint.
+            // Tier 4 — OUI + wildcard + IE fingerprint. Currently unreachable:
+            // the fingerprint stub always fails (see its TODO). Kept so the
+            // tier collapses back automatically once a firmware-derived IE
+            // fingerprint is restored.
             enqueueAlert(ALERT_WILDCARD_PROBE_IE_SIG, hdr->addr2, rssi, ch,
                          nullptr, "probe_req");
           } else {
-            // Tier 3 — wildcard probe from a Flock OUI whose IE fields did
-            // not match. Either a camera on firmware we haven't fingerprinted
-            // or an unrelated device sharing the OUI; worth hearing, worth
-            // distinguishing.
+            // Tier 3 — wildcard probe from a Flock OUI. With the IE check
+            // retired this is where every OUI + wildcard-probe hit lands.
             enqueueAlert(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, ch,
                          nullptr, "probe_req");
           }
