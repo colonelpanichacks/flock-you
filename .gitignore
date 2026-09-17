@@ -6,5 +6,8 @@
 .DS_Store
 
 .claude/
+CLAUDE.md
+AGENTS.md
+.specstory/
 api/data/
 api/exports/
