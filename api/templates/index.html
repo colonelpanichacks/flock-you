@@ -2650,6 +2650,11 @@
             'wifi_wildcard_probe_ie_sig': 4,
             'wifi_wildcard_probe':        3,
             'wifi_oui_addr2':             2,
+            // BLE paths share tier 2 with the addr2 OUI match, per
+            // alertTypeToTier() in the firmware.
+            'ble_name':                   2,
+            'ble_mfg':                    2,
+            'ble_gatt_svc':               2,
             'wifi_oui_addr1':             1,
             'wifi_oui_addr3':             1,
             'wifi_ssid':                  0,
@@ -2659,6 +2664,9 @@
             'wifi_wildcard_probe_ie_sig': 'IE fingerprint',
             'wifi_wildcard_probe':        'Wildcard probe',
             'wifi_oui_addr2':             'OUI transmitter',
+            'ble_name':                   'BLE name',
+            'ble_mfg':                    'BLE manufacturer',
+            'ble_gatt_svc':               'BLE GATT service',
             'wifi_oui_addr1':             'OUI receiver',
             'wifi_oui_addr3':             'OUI BSSID',
             'wifi_ssid':                  'SSID keyword',
@@ -3470,7 +3478,7 @@
                 const seen = detection.methods_seen || {};
                 const otherMethods = Object.keys(seen)
                     .filter(m => m !== detection.detection_method)
-                    .sort((a, b) => METHOD_TIER[b] - METHOD_TIER[a]);
+                    .sort((a, b) => (METHOD_TIER[b] ?? 0) - (METHOD_TIER[a] ?? 0));
                 const alsoHtml = otherMethods.map(m => `
                     <span class="method-chip tier-${METHOD_TIER[m] ?? 0}" title="${m} — ${seen[m]} hit(s)">
                         ${methodLabel(m)}<span class="chip-count">${seen[m]}</span>
