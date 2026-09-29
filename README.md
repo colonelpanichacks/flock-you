@@ -217,7 +217,7 @@ The firmware emits one JSON line per detection, which `api/flockyou.py` ingests 
 The device also emits a config line on boot and after every audio command, which the dashboard uses to render the per-tier switches:
 
 ```json
-{"event":"config","beep_mask":31,"oui_count":32,"tiers":[{"tier":0,"method":"wifi_ssid","beep":1}, ...]}
+{"event":"config","beep_mask":31,"oui_count":34,"tiers":[{"tier":0,"method":"wifi_ssid","beep":1}, ...]}
 ```
 
 `detection_method` values:
@@ -242,13 +242,14 @@ Commands go to the device as one JSON line over the same USB CDC link the detect
 
 ### GPS wardriving
 
-GPS is handled Flask-side, since the ESP32 radio is dedicated to sniffing and there's no on-device AP. Three options, all selectable from the dashboard's GPS **source** dropdown:
+GPS is handled Flask-side, since the ESP32 radio is dedicated to sniffing and there's no on-device AP. Two options, both selectable from the dashboard's GPS **source** dropdown:
 
 - **Serial NMEA** — a USB NMEA puck plugged into the host running Flask; Flask reads NMEA at 9600 baud and timestamps a GPS timeline
 - **gpsd** — connect to a running `gpsd` daemon over TCP (default `localhost:2947`, host and port are configurable in the dashboard). Uses gpsd's line-delimited JSON protocol directly; no extra Python client library needed. Handy when several tools already share the same GPS via gpsd.
-- **Browser Geolocation** — the Flask dashboard open in a phone browser; the browser Geolocation API posts updates to Flask
 
-Flask does a temporal match between detection timestamp and GPS timeline, then exports JSON / CSV / KML for Google Earth.
+Flask does a temporal match between detection timestamp and GPS timeline: the closest reading within 30 s is attached to the detection, and a match inside 5 s also adopts the GPS timestamp. With no temporal match the current fix is used instead. Tagged detections export to CSV and KML for Google Earth.
+
+A detection line may also carry its own `gps` object — `{"latitude":…,"longitude":…,"accuracy":…}` — which Flask tags `match_quality: "esp32_phone_gps"`. Note that a Flask-side fix wins: `add_detection_from_serial()` overwrites `gps` whenever a temporal match or a current fix is available, so a device-supplied position only survives when Flask has no GPS of its own. Nothing in this firmware emits that field; it exists for a GPS-equipped variant or an external feed posting to `/api/detections`.
 
 ### Running Flask
 
@@ -347,7 +348,7 @@ Both modes work simultaneously — the SPIFFS write path doesn't care if a host 
 
 **WiFi + BLE firmware** (`main.cpp`): both radios passive. WiFi promiscuous sniffing gets ~90% of airtime; NimBLE passive scan runs at 10% duty (30 ms window / 300 ms interval). WiFi detections emit `protocol: wifi_2_4ghz`; BLE detections emit `protocol: ble` with the advertised `device_name` filled in.
 
-**Python BLE companion** (`api/flockyou_ble.py`): host-side BLE scan for Classic BT corroboration (names `msm8953_32`/`Android`, SDP Device-ID Qualcomm `0x001D`/`0x1200`) that the on-device NimBLE scanner can't reach. Detections are tagged `firmware_sig: true` and `matched_signatures` in the API; the dashboard frontend does not render these fields yet (KML export also lacks them — CSV has full coverage).
+**Python BLE companion** (`api/flockyou_ble.py`): a Flask blueprint that bridges a *second* serial device — an ESP32 running [oui-spy-unified-blue](https://github.com/colonelpanichacks/oui-spy-unified-blue) Mode 1 (BLE Detector) — into the same detection list, over a line-oriented `CMD:` protocol (`CMD:STATUS`, `CMD:DUMP_LIVE`, `CMD:DUMP_PREV`, `CMD:CLEAR_*`). It does **not** scan Bluetooth on the host: the only dependency it adds is `pyserial`, and the radio work happens on that device. What lives here is the signature reference used to label incoming records, including Classic BT corroboration (names `msm8953_32`/`Android`, SDP Device-ID Qualcomm `0x001D`/`0x1200`) that the on-device NimBLE scanner can't reach — those tags apply when a record arrives carrying the relevant fields. Matching records are tagged `firmware_sig: true` and `matched_signatures` in the API; the dashboard frontend does not render these fields yet (KML export also lacks them — CSV has full coverage).
 
 ---
 

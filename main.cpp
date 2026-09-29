@@ -982,8 +982,8 @@ static void fyPromotePrevSession() {
 // and extracts these fields:  mac_address, rssi, channel, frequency, ssid,
 // device_name, gps.latitude, gps.longitude, gps.accuracy.
 //
-// GPS is handled Flask-side via its own USB NMEA puck or browser geolocation;
-// we don't embed GPS here because there's no on-device AP / phone link.
+// GPS is handled Flask-side via its own USB NMEA puck or a gpsd daemon; we
+// don't embed GPS here because there's no on-device AP / phone link.
 
 static void emitDetectionJSON(const char* proto, const char* mac, const char* method,
                               uint8_t tier, int8_t rssi, uint8_t ch,
