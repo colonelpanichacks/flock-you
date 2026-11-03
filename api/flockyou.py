@@ -653,6 +653,11 @@ METHOD_TIERS = {
     'wifi_wildcard_probe_ie_sig': 4,
     'wifi_wildcard_probe':        3,
     'wifi_oui_addr2':             2,
+    # BLE paths sit at tier 2, matching alertTypeToTier() in main.cpp, which
+    # maps ALERT_BLE_NAME / _MFG / _GATT to TIER_OUI.
+    'ble_name':                   2,
+    'ble_mfg':                    2,
+    'ble_gatt_svc':               2,
     'wifi_oui_addr1':             1,
     'wifi_oui_addr3':             1,
     'wifi_ssid':                  0,
@@ -662,6 +667,9 @@ METHOD_LABELS = {
     'wifi_wildcard_probe_ie_sig': 'IE fingerprint',
     'wifi_wildcard_probe':        'Wildcard probe',
     'wifi_oui_addr2':             'OUI transmitter',
+    'ble_name':                   'BLE name',
+    'ble_mfg':                    'BLE manufacturer',
+    'ble_gatt_svc':               'BLE GATT service',
     'wifi_oui_addr1':             'OUI receiver',
     'wifi_oui_addr3':             'OUI BSSID',
     'wifi_ssid':                  'SSID keyword',
@@ -671,9 +679,12 @@ METHOD_LABELS = {
 # imported back to canonical method keys.
 LABEL_TO_METHOD = {v: k for k, v in METHOD_LABELS.items()}
 
-# The firmware's SPIFFS session format writes bare method names (no wifi_
-# prefix); normalise them on import so an on-device session file and a
-# dashboard export both land on the same canonical keys.
+# The firmware's SPIFFS session format writes bare method names with no
+# protocol prefix -- alertTypeToMethod() in main.cpp returns "oui_addr2" or
+# "name", and emitDetectionJSON() prepends "wifi_"/"ble_" only on the live
+# wire. Records pulled from the device's stored table therefore arrive bare,
+# so try both prefixes here. WiFi is tried first to preserve the previous
+# resolution order; the two sets do not overlap.
 def normalize_method(raw):
     if not raw:
         return 'unknown'
@@ -682,9 +693,22 @@ def normalize_method(raw):
         return m
     if m in LABEL_TO_METHOD:              # "IE fingerprint"
         return LABEL_TO_METHOD[m]
-    if ('wifi_' + m) in METHOD_TIERS:     # "wildcard_probe_ie_sig"
-        return 'wifi_' + m
+    for prefix in ('wifi_', 'ble_'):      # "wildcard_probe_ie_sig", "gatt_svc"
+        if (prefix + m) in METHOD_TIERS:
+            return prefix + m
     return m
+
+
+def protocol_for_method(method, fallback='wifi_2_4ghz'):
+    """Protocol implied by a canonical method name.
+
+    The on-device session record has no protocol field (fySerializeDet() in
+    main.cpp writes mac/method/tier/rssi/channel/first/last/count/ssid), so a
+    BLE device pulled from the stored table used to import as wifi_2_4ghz --
+    wrong in the UI, in the CSV, in the KML, and in the /api/stats WiFi count.
+    The method name is the only signal available, so derive it from there.
+    """
+    return 'ble' if str(method or '').startswith('ble_') else fallback
 
 
 def method_tier(data_or_method):
@@ -1587,9 +1611,9 @@ def import_detection_item(item):
     method = normalize_method(item.get('method', item.get('detection_method')))
     data = {
         'detection_method': method,
-        # This firmware is WiFi-only; the old hardcoded bluetooth_le
-        # mislabelled every imported record.
-        'protocol': item.get('protocol', 'wifi_2_4ghz'),
+        # An explicit protocol wins; otherwise infer it from the method, since
+        # the device's session records carry no protocol field at all.
+        'protocol': item.get('protocol') or protocol_for_method(method),
         'mac_address': item.get('mac', item.get('mac_address', '')),
         'device_name': item.get('name', item.get('device_name', '')),
         'rssi': item.get('rssi', 0),
@@ -1675,7 +1699,7 @@ def import_csv():
             method = normalize_method(row.get('method', row.get('detection_method')))
             data = {
                 'detection_method': method,
-                'protocol': row.get('protocol') or 'wifi_2_4ghz',
+                'protocol': row.get('protocol') or protocol_for_method(method),
                 'mac_address': row.get('mac', row.get('mac_address', '')),
                 'device_name': row.get('name', row.get('device_name', '')),
                 'rssi': int(row.get('rssi', 0)) if row.get('rssi') else 0,
@@ -1843,7 +1867,8 @@ def import_kml():
             data = {
                 'detection_method': method,
                 'detection_tier': tier,
-                'protocol': proto_match.group(1).strip() if proto_match else 'wifi_2_4ghz',
+                'protocol': (proto_match.group(1).strip() if proto_match
+                             else protocol_for_method(method)),
                 'mac_address': mac,
                 'device_name': device_name,
                 'rssi': rssi,
